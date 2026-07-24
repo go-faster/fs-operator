@@ -60,37 +60,55 @@ gated on; later phases (P3–P4) stay in the spec until they are next.
 **P1 (core) is complete.** Next focus is P2 (day-2), which is gated on the
 upstream fs endpoints below.
 
-## Parallel track — upstream go-faster/fs (unblocks P2)
+## Upstream go-faster/fs — done, shipped in fs v0.6.0
 
-In `/src/faster/fs`, per SPEC §11 (sequencing: 1, 2, 7 first). **The three
-gating items are up as go-faster/fs PR #91** (CI green, mergeable), plus fs
-PR #90 already shipped cluster status and a headless `fs admin`:
+Per SPEC §11 (items 1, 2, 7 gate P2). All merged (fs PRs #90/#91) and
+released as **fs v0.6.0**, which the operator is now pinned to:
 
-- ✅ `POST /api/v1/reload` — admin reload endpoint (SIGHUP equivalent),
-  returning what it reloaded + the config revision now in effect
+- ✅ `POST /api/v1/reload` — reloads credentials/TLS like SIGHUP, returns
+  what it reloaded + the config revision now in effect
 - ✅ Config revision echo — a top-level `revision` config marker fs reports
-  via `GET /api/v1/info` (`config_revision`) and the reload result, so the
-  operator can verify a node applied a rendered config (§8.3)
-- ✅ `GET /api/v1/cluster/status` (PR #90) — schema versions, per-node/-disk
-  capacity, placement skew, rebalance state. Aggregate repair-queue depth
-  and per-node object count still deferred upstream; interim is the
-  per-node rebalance endpoint's `repair_queue_depth`
-- ✅ Public admin client — `internal/adminapi` → importable
-  `github.com/go-faster/fs/adminapi`
-- ✅ Headless `fs admin` service (PR #90) — a dedicated control-plane-only
-  admin the operator can run as its own Deployment + Service for cluster
-  status / rebalance control (SPEC §11, §4.2). Reload + credential ops stay
-  per-node
-
-Once PR #91 merges and fs cuts a release, P2 can start: hot-reload with
-revision verification, convergence-gated rollouts, and the migration Job.
+  via `GET /api/v1/info` (`config_revision`) and the reload result (§8.3)
+- ✅ `GET /api/v1/cluster/status` — schema versions, per-node/-disk capacity,
+  placement skew, rebalance state. Aggregate repair-queue depth and per-node
+  object count still deferred upstream; interim is the per-node rebalance
+  endpoint's `repair_queue_depth`
+- ✅ Importable admin client — `github.com/go-faster/fs/adminapi`
+- ✅ Headless `fs admin` service — a control-plane-only admin the operator
+  can run as its own Deployment + Service for cluster status / rebalance
+  control (§11, §4.2). Reload + credential ops stay per-node
 
 Observed during e2e (fs-side, not operator): in cluster mode a **multipart**
 part upload returns 500 (`mc pipe` reproduces it) while a single-shot PUT/GET
 round-trips fine. The operator e2e uses a single PUT, so it is unaffected;
 worth filing upstream.
 
-## Definition of done for P1
+## P2 (day-2) — build order
+
+Now unblocked by fs v0.6.0. Sequenced so each piece builds on the last:
+
+1. **fs admin client** — `internal/fsclient`: a thin wrapper over
+   `github.com/go-faster/fs/adminapi` (reload, cluster status, info +
+   config-revision) with a connection cache keyed by cluster, dialing the
+   per-pod admin over the headless Service (SPEC §4.2, §12). Foundation for
+   2–4.
+2. **Hot reload with revision verification** — the config step splits a
+   node's diff into hot-reloadable (auth keys/grants, public-read, TLS) vs
+   restart-requiring; on a hot-only diff, bump the config Secret and
+   `POST /api/v1/reload` per pod, then poll `config_revision` until every
+   node reports the target — `ConfigurationInSync` flips True (SPEC §8.3).
+3. **Convergence-gated rollouts** — the rollout gate also waits on
+   `cluster/status` convergence (placement skew ≈ 0) and a drained repair
+   queue (per-node rebalance endpoint) before the next node, to
+   `convergenceTimeout`; `Converged` condition (SPEC §8.2).
+4. **Schema migration Job** — after a full rollout with binary schema >
+   cluster schema, run `fs cluster migrate` as a Job (Auto policy);
+   `SchemaCurrent` condition (SPEC §8.2 Migrating).
+5. **Day-2 extras** — scale-up alignment from registered nodes, PVC
+   expansion (§8.5), optional PodMonitor, NetworkPolicy (§9); docs guides
+   (upgrades, scaling, monitoring) complete (§13). Then release **v0.2.0**.
+
+## Definition of done for P1 (met — v0.1.0)
 
 `kubectl apply -f examples/01-minimal.yaml` on a kind cluster with etcd
 produces a running 3-node fs cluster serving S3; `make test`, `make lint`,
