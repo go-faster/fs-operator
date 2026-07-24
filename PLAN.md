@@ -161,9 +161,31 @@ bucket-scheme admin endpoints — go-faster/fs PR #95):
 **P3 (tenancy) is complete and released as `v0.3.0` (2026-07-24).** Multi-arch
 image `ghcr.io/go-faster/fs-operator:v0.3.0` and chart
 `oci://ghcr.io/go-faster/charts/fs-operator` (chart `0.3.0`, appVersion
-`v0.3.0`); operator pinned to fs `v0.7.0`. All CI green on `a767707`. Next focus
-is P4 (lifecycle: decommission/drain, disk add/remove, etcd TLS, managed
-dev-etcd, admission webhook, Grafana dashboards — SPEC §16).
+`v0.3.0`); operator pinned to fs `v0.7.0`.
+
+## Post-P3: cluster-wide runtime credentials — released as `v0.4.0` (2026-07-24)
+
+Incorporated fs **v0.8.0** (PR #96, DESIGN §6.8): the runtime key store is now
+cluster-wide in etcd, sealed by the cluster secret and hot-reloaded on every
+node. This removed the reason v0.1–0.3 rendered credentials into config
+(node-local runtime keys), so the credential path was reworked:
+
+- ✅ Config renders `auth.source: etcd` and no keys/public-read; the root
+  credential seeds etcd via the `FS_ROOT_*` env on first boot.
+- ✅ **FSAccessKey controller** now manages credentials through the admin API
+  (`CreateAccessKey`/`DeleteAccessKey`), re-creating on grant change or
+  imported-Secret rotation (material fingerprint) and revoking on delete.
+- ✅ **Public-read** (`spec.auth.publicReadBuckets`) reconciled via
+  `GET`/`PUT /api/v1/public-read-buckets`; the FSAccessKey render-merge, its
+  watch and RBAC removed.
+- ✅ `fsclient` gained `CreateAccessKey`/`DeleteAccessKey`/`Get`+`SetPublicReadBuckets`
+  and grants on `ListAccessKeys`. Golden configs, SPEC §7, the guide, RBAC and
+  tests updated; e2e green (etcd-backed key round-trip).
+- ✅ Release **v0.4.0**; operator pinned to fs `v0.8.0`. All CI green on
+  `00add8b`.
+
+Next focus is P4 (lifecycle: decommission/drain, disk add/remove, etcd TLS,
+managed dev-etcd, admission webhook, Grafana dashboards — SPEC §16).
 
 ## Definition of done for P1 (met — v0.1.0)
 
