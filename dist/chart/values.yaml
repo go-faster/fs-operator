@@ -1,3 +1,16 @@
+## Global values shared across the chart.
+##
+global:
+  ## Registry host for air-gapped or mirrored deployments. When set, the
+  ## registry host of every image is replaced with this value — both the
+  ## operator image below and the fs node image the operator deploys into
+  ## each FSCluster:
+  ##   ghcr.io/go-faster/fs-operator -> <imageRegistry>/go-faster/fs-operator
+  ##   ghcr.io/go-faster/fs          -> <imageRegistry>/go-faster/fs
+  ## Leave empty to pull each image from its own registry.
+  ##
+  imageRegistry: ""
+
 ## String to partially override chart.fullname template (will maintain the release name)
 ##
 # nameOverride: ""

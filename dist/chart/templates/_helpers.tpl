@@ -50,6 +50,45 @@ Dynamically calculates safe truncation to ensure total name length <= 63 chars.
 {{- end }}
 
 {{/*
+Rewrite the registry host of an image repository to global.imageRegistry, for
+air-gapped or mirrored deployments. Mirrors the operator's ApplyRegistry
+(api/v1alpha1): replaces the leading host segment (when it looks like a
+registry host — it contains a "." or ":") with the global registry; otherwise
+prepends it. An empty registry leaves the repository untouched.
+Takes a dict with:
+  - .repository: the image repository (e.g. ghcr.io/go-faster/fs-operator)
+  - .registry: the global registry override (may be empty)
+*/}}
+{{- define "fs-operator.applyRegistry" -}}
+{{- $repo := .repository -}}
+{{- $registry := .registry | default "" | trimSuffix "/" -}}
+{{- if not $registry -}}
+{{- $repo -}}
+{{- else -}}
+{{- $host := splitList "/" $repo | first -}}
+{{- if and (gt (len (splitList "/" $repo)) 1) (or (contains "." $host) (contains ":" $host)) -}}
+{{- printf "%s/%s" $registry (trimPrefix (printf "%s/" $host) $repo) -}}
+{{- else -}}
+{{- printf "%s/%s" $registry $repo -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Fully qualified manager image reference: the repository with the global
+registry applied, then the tag (defaulting to the chart appVersion) unless the
+repository already pins a digest.
+*/}}
+{{- define "fs-operator.managerImage" -}}
+{{- $repo := include "fs-operator.applyRegistry" (dict "repository" .Values.manager.image.repository "registry" (.Values.global).imageRegistry) -}}
+{{- if contains "@" $repo -}}
+{{- $repo -}}
+{{- else -}}
+{{- printf "%s:%s" $repo (.Values.manager.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 ServiceAccount name to use.
 If serviceAccount.enabled is false and serviceAccount.name is set, use that name.
 Otherwise, use the standard resourceName helper with "controller-manager" suffix.

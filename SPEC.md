@@ -852,6 +852,15 @@ the chart to `oci://ghcr.io/go-faster/charts/fs-operator` with chart
 version `X.Y.Z` and `appVersion vX.Y.Z` (the chart's default image tag), so
 a chart release always pulls its matching image.
 
+For air-gapped installs `global.imageRegistry` replaces the registry host of
+every image from a private mirror. It rewrites the manager image in the chart
+and is passed to the operator as `FS_IMAGE_REGISTRY` (`--fs-image-registry`),
+which rewrites the fs node image of every `FSCluster` it reconciles — so a
+mirror that keeps the `go-faster/...` path needs no per-cluster
+`spec.image.repository`. The rewrite is host-replacement only (the leading
+registry segment), shared between the chart template and the operator's
+`ApplyRegistry` so the two never diverge.
+
 ## 15. Testing
 
 - **Unit**: config renderer golden tests (spec → per-node config.yaml);

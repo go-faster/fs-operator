@@ -77,6 +77,12 @@ type Reconciler struct {
 	// NetworkPolicy can allow the admin and peer ports from it (SPEC §9).
 	OperatorNamespace string
 
+	// FSImageRegistry, when set, replaces the registry host of every fs node
+	// image the operator deploys, so an air-gapped install pulls from a
+	// private mirror without every FSCluster having to spell out the registry.
+	// Empty keeps each cluster's own image.repository.
+	FSImageRegistry string
+
 	poolOnce sync.Once
 	pool     *fsclient.Pool
 }
@@ -121,7 +127,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 
-	result, err := r.pipeline().Run(ctx, newPass(object))
+	result, err := r.pipeline().Run(ctx, newPass(object, r.FSImageRegistry))
 	if result.RequeueAfter == 0 && err == nil {
 		result.RequeueAfter = resyncInterval
 	}
@@ -200,10 +206,13 @@ type pass struct {
 	failure error
 }
 
-// newPass prepares the state of a reconcile pass.
-func newPass(object *fsv1alpha1.FSCluster) *pass {
+// newPass prepares the state of a reconcile pass. imageRegistry, when set,
+// rewrites the registry host of the defaulted fs image so every node pulls
+// from a private mirror (air-gapped installs).
+func newPass(object *fsv1alpha1.FSCluster, imageRegistry string) *pass {
 	cluster := object.DeepCopy()
 	cluster.Spec.WithDefaults()
+	cluster.Spec.Image.Repository = fsv1alpha1.ApplyRegistry(cluster.Spec.Image.Repository, imageRegistry)
 
 	return &pass{
 		object:  object,

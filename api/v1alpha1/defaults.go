@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -52,6 +53,32 @@ const (
 	// DefaultOTLPProtocol is the default OTLP transport.
 	DefaultOTLPProtocol = "grpc"
 )
+
+// ApplyRegistry rewrites the registry host of an image repository to registry,
+// for air-gapped or mirrored deployments where every image must resolve from a
+// private mirror. It replaces the leading host segment — the part before the
+// first "/", when it looks like a registry host (it contains a "." or ":") —
+// with registry; when the repository carries no host segment it prepends
+// registry. An empty registry (the default) leaves the repository untouched.
+//
+//	ApplyRegistry("ghcr.io/go-faster/fs", "registry.internal")
+//	  -> "registry.internal/go-faster/fs"
+//
+// The chart's fs-operator.applyRegistry template mirrors this logic; keep the
+// two in step.
+func ApplyRegistry(repository, registry string) string {
+	if registry == "" || repository == "" {
+		return repository
+	}
+
+	registry = strings.TrimSuffix(registry, "/")
+
+	if host, rest, ok := strings.Cut(repository, "/"); ok && strings.ContainsAny(host, ".:") {
+		return registry + "/" + rest
+	}
+
+	return registry + "/" + repository
+}
 
 // EtcdPrefix returns the effective etcd prefix for a cluster in a namespace:
 // the spec value, or the default /fs/<namespace>/<name>.

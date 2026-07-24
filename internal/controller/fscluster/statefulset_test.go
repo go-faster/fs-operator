@@ -83,6 +83,38 @@ func TestNewStatefulSet(t *testing.T) {
 	}
 }
 
+// TestNewPassImageRegistry pins the air-gapped override: when the operator runs
+// with an FSImageRegistry, newPass rewrites the fs node image's registry host
+// so every node pulls from the private mirror, and leaves it alone otherwise.
+func TestNewPassImageRegistry(t *testing.T) {
+	tests := []struct {
+		name     string
+		registry string
+		want     string
+	}{
+		{
+			name:     "no override keeps the default registry",
+			registry: "",
+			want:     "ghcr.io/go-faster/fs:" + fsv1alpha1.DefaultImageTag,
+		},
+		{
+			name:     "override rewrites the registry host",
+			registry: "registry.internal",
+			want:     "registry.internal/go-faster/fs:" + fsv1alpha1.DefaultImageTag,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newPass(testCluster(), tt.registry)
+
+			if got := Image(p.cluster); got != tt.want {
+				t.Errorf("image = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestStatefulSetIsUnprivileged pins the hardening SPEC §9 promises.
 func TestStatefulSetIsUnprivileged(t *testing.T) {
 	set := nodeStatefulSet(t, testCluster())

@@ -62,6 +62,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var fsImageRegistry string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -80,6 +81,10 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&fsImageRegistry, "fs-image-registry", os.Getenv("FS_IMAGE_REGISTRY"),
+		"Registry host that replaces the registry of every fs node image the operator deploys, "+
+			"for air-gapped or mirrored installs (e.g. registry.internal). "+
+			"Empty keeps each FSCluster's own image.repository. Defaults to $FS_IMAGE_REGISTRY.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -191,6 +196,9 @@ func main() {
 		// The operator's own namespace, so a cluster's NetworkPolicy can allow
 		// the admin/peer ports from it (POD_NAMESPACE via the downward API).
 		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		// Registry override for air-gapped installs: rewrites the fs node
+		// image registry so every cluster pulls from the private mirror.
+		FSImageRegistry: fsImageRegistry,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "fscluster")
 		os.Exit(1)
