@@ -111,9 +111,15 @@ Now unblocked by fs v0.6.0. Sequenced so each piece builds on the last:
    create-once Job keyed by target schema. `SchemaCurrent` condition, the
    `Migrating` phase, and `status.schemaVersion`; Manual only surfaces the
    pending migration (SPEC §8.2).
-5. **Day-2 extras** — scale-up alignment from registered nodes, PVC
-   expansion (§8.5), optional PodMonitor, NetworkPolicy (§9); docs guides
-   (upgrades, scaling, monitoring) complete (§13). Then release **v0.2.0**.
+5. **Day-2 extras** — in progress:
+   - ✅ **NetworkPolicy** (§9) — opt-in `spec.networkPolicy`, restricts
+     peer/admin ports to cluster pods + operator namespace (POD_NAMESPACE)
+   - ☐ **PVC expansion** (§8.5) — grow disk PVCs + orphan-recreate the
+     StatefulSet; controller-side disk-shrink refusal
+   - ☐ **PodMonitor** — optional, created when `monitoring.coreos.com` is
+     discoverable
+   - ☐ **Docs guides** — upgrades, scaling, monitoring (§13)
+   - ☐ Release **v0.2.0**
 
 ## Definition of done for P1 (met — v0.1.0)
 
