@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 /*
 Copyright 2026.
@@ -25,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -32,9 +32,6 @@ import (
 
 	"github.com/go-faster/fs-operator/test/utils"
 )
-
-// namespace where the project is deployed in
-const namespace = "fs-operator-system"
 
 // serviceAccountName created for the project
 const serviceAccountName = "fs-operator-controller-manager"
@@ -52,26 +49,13 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-
-		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
+		// The operator itself is installed once for the whole suite, from
+		// the chart a user would install (see BeforeSuite).
+		By("labeling the operator namespace to enforce the restricted security policy")
+		cmd := exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
+		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
-
-		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -81,17 +65,6 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
-		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
-
-		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
-
-		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -175,10 +148,24 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=fs-operator-metrics-reader",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
-			)
+			// A ClusterRoleBinding outlives the namespace, so a previous run
+			// may have left it behind; apply is idempotent where create is not.
+			binding := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: %s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fs-operator-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: %s
+    namespace: %s
+`, metricsRoleBindingName, serviceAccountName, namespace)
+
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(binding)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 
@@ -225,9 +212,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"name": "curl",
 							"image": "curlimages/curl:latest",
 							"command": ["/bin/sh", "-c"],
-							"args": [
-								"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"
-							],
+							"args": ["for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"],
 							"securityContext": {
 								"readOnlyRootFilesystem": true,
 								"allowPrivilegeEscalation": false,

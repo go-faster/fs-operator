@@ -27,3 +27,15 @@ jobs:
         run: |
           go mod tidy
           make test
+
+      - name: Generated artifacts are in sync
+        # The owned chart carries generated copies (CRDs, the manager RBAC)
+        # that must not drift from config/. A stale manager role is not a lint
+        # failure — it is an operator that starts, cannot list what it owns,
+        # and silently never reconciles — so the check runs on every PR, not
+        # only at release. The fs pin must also be spelled the same
+        # everywhere (SPEC §14, §8.2).
+        run: |
+          make manifests generate helm-sync-crds
+          git diff --exit-code config dist/chart api
+          make check-fs-version

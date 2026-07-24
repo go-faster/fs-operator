@@ -180,9 +180,14 @@ func main() {
 	}
 
 	if err := (&fscluster.Reconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("fs-operator"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// The classic record.EventRecorder, not the new events API: it is
+		// what kubebuilder scaffolds and the standard for operators, and its
+		// Eventf shape (no action verb, no related object) fits how the
+		// reconciler reports refusals and rollout steps. The deprecation is a
+		// future-major signal; controller-runtime still ships it.
+		Recorder: mgr.GetEventRecorderFor("fs-operator"), //nolint:staticcheck // see comment
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "fscluster")
 		os.Exit(1)

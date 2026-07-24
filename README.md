@@ -49,7 +49,7 @@ make lint                 # golangci-lint
 ```
 
 The Helm chart in `dist/chart` is committed and hand-owned; its CRD
-templates are synced from `config/crd` by `hack/sync-chart-crds.sh` and CI
+templates and the manager RBAC are synced from `config/` by `hack/sync-chart.sh` and CI
 fails on drift.
 
 ## License

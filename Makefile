@@ -120,8 +120,8 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+docker-build: ## Build docker image with the manager. Extra flags via DOCKER_BUILD_FLAGS (e.g. --network=host where the build sandbox cannot reach the Go module proxy).
+	$(CONTAINER_TOOL) build $(DOCKER_BUILD_FLAGS) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -279,8 +279,8 @@ install-helm: ## Install the latest version of Helm.
 	}
 
 .PHONY: helm-sync-crds
-helm-sync-crds: manifests ## Sync the owned chart's CRD templates from config/crd (run after changing the API types).
-	./hack/sync-chart-crds.sh
+helm-sync-crds: manifests ## Sync the owned chart's CRDs and manager RBAC from config/ (run after changing the API types or RBAC markers).
+	./hack/sync-chart.sh
 
 .PHONY: fs-version
 fs-version: ## Pin the fs release everywhere (API default, CRDs, chart, examples, e2e, docs). Usage: make fs-version FS_VERSION=v0.6.0

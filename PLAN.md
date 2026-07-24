@@ -9,7 +9,7 @@ Done:
 
 - API types (`FSCluster`, `FSBucket`, `FSAccessKey`) with CEL validation,
   conditions and defaults (SPEC §5–7)
-- Owned Helm chart in `dist/chart` + CRD sync (`hack/sync-chart-crds.sh`,
+- Owned Helm chart in `dist/chart` + CRD & RBAC sync (`hack/sync-chart.sh`,
   `make helm-sync-crds`)
 - Docs skeleton, examples 01–03, valid samples
 - Release CI: image → `ghcr.io/go-faster/fs-operator`, chart →
@@ -38,13 +38,23 @@ Done:
   gates and hot reload arrive in P2 with the upstream fs endpoints
   (SPEC §8.2, §11)
 
+- **kind e2e** — `test/e2e`: operator installed from `dist/chart`, a 3-pod
+  etcd, the `examples/01-minimal.yaml` cluster, S3 bucket + put/get through
+  the generated root credentials against real fs v0.5.0, and the
+  scale-down refusal. Caught a real bug: the owned chart's manager RBAC had
+  drifted from `config/rbac`, so the operator started but its `Owns()`
+  informers could not list StatefulSets/Secrets/Services and it silently
+  never reconciled. `hack/sync-chart.sh` now syncs the manager role too,
+  and the sync + fs-pin checks run on every PR (were release-only)
+- **fs version command** — `make fs-version FS_VERSION=vX.Y.Z` (and
+  `hack/set-fs-version.sh`) rewrites the pin everywhere it is spelled out —
+  API default, CRD, chart, examples, e2e, docs — then regenerates;
+  `make check-fs-version` fails on drift
+
 ## Remaining P1 — build order
 
-1. **Tests + first release** — remaining envtest coverage (idempotency,
-   ownership/GC, refusal paths); kind e2e: operator via `dist/chart`, a
-   minimal 3-pod etcd, 3-node FSCluster from `examples/01-minimal.yaml`,
-   S3 smoke against real fs v0.5.0. Then tag `v0.1.0` to exercise the
-   release pipeline end to end.
+1. **First release** — tag `v0.1.0` to exercise the release pipeline end
+   to end (multi-arch image + chart to ghcr).
 
 ## Parallel track — upstream go-faster/fs (unblocks P2)
 
@@ -54,6 +64,11 @@ In `/src/faster/fs`, per SPEC §11 (sequencing: 1, 2, 7 first):
 - `GET /api/v1/cluster/status` — schema versions, config revision,
   occupancy, convergence, repair queue
 - Export the admin API client as a public package
+
+Observed during e2e (fs-side, not operator): in cluster mode a **multipart**
+part upload returns 500 (`mc pipe` reproduces it) while a single-shot PUT/GET
+round-trips fine. The operator e2e uses a single PUT, so it is unaffected;
+worth filing upstream.
 
 ## Definition of done for P1
 

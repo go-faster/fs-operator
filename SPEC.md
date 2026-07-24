@@ -750,8 +750,8 @@ internal/fsclient/       thin wrappers: admin API client + minio-go S3
 config/                  kustomize (crd, rbac, manager, samples, …) — the
                          authoritative manifest source
 dist/chart/              the OWNED Helm chart (§14)
-hack/sync-chart-crds.sh  regenerates dist/chart/templates/crd/* from
-                         config/crd/bases after `make manifests`
+hack/sync-chart.sh       regenerates dist/chart CRD + manager-role
+                         templates from config/ after `make manifests`
 docs/, examples/         §13
 test/e2e/                kind-based e2e
 SPEC.md                  this document
@@ -808,9 +808,12 @@ into `dist/chart`, then committed and hand-owned: it deploys the operator
 (manager Deployment, RBAC, metrics service, optional network policy /
 Prometheus bits) and ships the CRDs as templates guarded by
 `.Values.crd.enable`, with `helm.sh/resource-policy: keep` behind
-`.Values.crd.keep` (default true). Because CRDs are generated from Go
-types, the chart copy must never drift: `hack/sync-chart-crds.sh` wraps
-each `config/crd/bases/*.yaml` into its chart template, `make
+`.Values.crd.keep` (default true). Because the CRDs and the manager's RBAC
+are generated from Go types, the chart copy must never drift:
+`hack/sync-chart.sh` wraps each `config/crd/bases/*.yaml` into its chart
+template and rewrites the chart's manager-role from `config/rbac/role.yaml`
+(a drifted manager role is not a lint failure but an operator that starts,
+cannot list what it owns, and silently never reconciles); `make
 helm-sync-crds` runs it after `manifests`, and CI fails on any diff.
 
 Releases are keyed by git tag (`vX.Y.Z`): the release workflow publishes

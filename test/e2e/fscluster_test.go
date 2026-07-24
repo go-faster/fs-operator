@@ -1,0 +1,260 @@
+//go:build e2e
+
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"os/exec"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+
+	"github.com/go-faster/fs-operator/test/utils"
+)
+
+const (
+	// clusterNamespace is where the fs cluster and its etcd run — a tenant
+	// namespace, separate from the operator's.
+	clusterNamespace = "fs-e2e"
+
+	// clusterName is the FSCluster of examples/01-minimal.yaml.
+	clusterName = "fs-dev"
+
+	// forwardPort is the local port the S3 endpoint is forwarded to.
+	forwardPort = "18080"
+)
+
+// This is the end-to-end claim of P1: `kubectl apply` one FSCluster on a
+// cluster with etcd produces a running fs cluster serving S3. Everything below
+// goes through the same surfaces a user has — kubectl, the published example,
+// the S3 API — and nothing reaches into the operator's internals.
+var _ = Describe("FSCluster", Ordered, func() {
+	BeforeAll(func() {
+		By("creating the tenant namespace")
+		// A previous run's namespace may still be terminating; wait it out so
+		// the create does not race a delete (and the operator does not try to
+		// write into a namespace being torn down).
+		Eventually(func() error {
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", clusterNamespace))
+
+			return err
+		}).WithTimeout(2*time.Minute).WithPolling(3*time.Second).Should(Succeed(),
+			"Failed to create the tenant namespace")
+
+		By("deploying a three-member etcd")
+		_, err := utils.Run(exec.Command("kubectl", "apply",
+			"-n", clusterNamespace, "-f", "test/e2e/testdata/etcd.yaml"))
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy etcd")
+
+		_, err = utils.Run(exec.Command("kubectl", "rollout", "status",
+			"statefulset/etcd", "-n", clusterNamespace, "--timeout", "5m"))
+		Expect(err).NotTo(HaveOccurred(), "etcd did not become ready")
+	})
+
+	AfterAll(func() {
+		if CurrentSpecReport().Failed() {
+			dumpCluster()
+		}
+
+		By("deleting the tenant namespace")
+		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", clusterNamespace,
+			"--ignore-not-found", "--timeout", "5m"))
+	})
+
+	It("provisions a cluster from the published example", func() {
+		By("applying examples/01-minimal.yaml")
+		apply := exec.Command("kubectl", "apply", "-n", clusterNamespace, "-f", "-")
+		apply.Stdin = strings.NewReader(minimalExample())
+
+		_, err := utils.Run(apply)
+		Expect(err).NotTo(HaveOccurred(), "Failed to apply the example")
+
+		By("waiting for every node's StatefulSet")
+		Eventually(func(g Gomega) {
+			out, err := utils.Run(exec.Command("kubectl", "get", "statefulset",
+				"-n", clusterNamespace, "-l", "fs.go-faster.org/cluster="+clusterName,
+				"-o", "jsonpath={.items[*].status.readyReplicas}"))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(strings.Fields(out)).To(HaveLen(3), "expected three node StatefulSets")
+
+			for ready := range strings.FieldsSeq(out) {
+				g.Expect(ready).To(Equal("1"), "a node is not ready")
+			}
+		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
+
+		By("waiting for the cluster to report Ready")
+		Eventually(func(g Gomega) {
+			g.Expect(clusterCondition("Ready")).To(Equal("True"))
+		}).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+
+		Expect(clusterCondition("SpecValid")).To(Equal("True"))
+		Expect(clusterCondition("NodesHealthy")).To(Equal("True"))
+		Expect(clusterCondition("ConfigurationInSync")).To(Equal("True"))
+	})
+
+	It("serves S3", func() {
+		stop := forwardS3()
+		defer stop()
+
+		client := s3Client()
+
+		const bucket = "e2e"
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		By("creating a bucket")
+		Expect(client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{})).To(Succeed())
+
+		By("putting an object")
+		payload := []byte("fs-operator end-to-end")
+		_, err := client.PutObject(ctx, bucket, "hello.txt",
+			bytes.NewReader(payload), int64(len(payload)), minio.PutObjectOptions{})
+		Expect(err).NotTo(HaveOccurred(), "Failed to put an object")
+
+		By("getting it back")
+		object, err := client.GetObject(ctx, bucket, "hello.txt", minio.GetObjectOptions{})
+		Expect(err).NotTo(HaveOccurred(), "Failed to get the object")
+
+		defer func() { _ = object.Close() }()
+
+		got, err := io.ReadAll(object)
+		Expect(err).NotTo(HaveOccurred(), "Failed to read the object")
+		Expect(got).To(Equal(payload), "the object came back different")
+	})
+
+	It("refuses to shrink the cluster", func() {
+		By("asking for one node fewer")
+		_, err := utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
+			"-n", clusterNamespace, "--type", "merge",
+			"-p", `{"spec":{"topology":{"nodes":2}}}`))
+		Expect(err).NotTo(HaveOccurred(), "Failed to patch the cluster")
+
+		By("waiting for the refusal")
+		Eventually(func(g Gomega) {
+			g.Expect(clusterCondition("SpecValid")).To(Equal("False"))
+		}).WithTimeout(2 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+
+		By("checking that every node is still there")
+		out, err := utils.Run(exec.Command("kubectl", "get", "statefulset",
+			"-n", clusterNamespace, "-l", "fs.go-faster.org/cluster="+clusterName,
+			"-o", "jsonpath={.items[*].metadata.name}"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.Fields(out)).To(HaveLen(3), "the operator removed a node it should have refused to")
+	})
+})
+
+// minimalExample is the published example, pointed at the e2e etcd. Only the
+// endpoint changes: everything a reader of the docs would get, they get here.
+func minimalExample() string {
+	example, err := utils.Run(exec.Command("cat", "examples/01-minimal.yaml"))
+	Expect(err).NotTo(HaveOccurred(), "Failed to read the example")
+
+	return strings.ReplaceAll(example,
+		"http://etcd.default.svc:2379",
+		fmt.Sprintf("http://etcd.%s.svc:2379", clusterNamespace))
+}
+
+// clusterCondition reads one condition of the cluster.
+func clusterCondition(conditionType string) string {
+	out, err := utils.Run(exec.Command("kubectl", "get", "fscluster", clusterName,
+		"-n", clusterNamespace,
+		"-o", fmt.Sprintf("jsonpath={.status.conditions[?(@.type==%q)].status}", conditionType)))
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(out)
+}
+
+// forwardS3 forwards the cluster's S3 Service to a local port and returns how
+// to stop it.
+func forwardS3() func() {
+	cmd := exec.Command("kubectl", "port-forward", "-n", clusterNamespace,
+		"service/"+clusterName, forwardPort+":8080")
+
+	Expect(cmd.Start()).To(Succeed(), "Failed to start the port forward")
+
+	// Give the forward a moment to bind before the first request.
+	Eventually(func() error {
+		_, err := utils.Run(exec.Command("kubectl", "get", "service", clusterName, "-n", clusterNamespace))
+
+		return err
+	}).WithTimeout(time.Minute).WithPolling(2 * time.Second).Should(Succeed())
+
+	time.Sleep(3 * time.Second)
+
+	return func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+}
+
+// s3Client builds an S3 client from the cluster's generated root credentials —
+// the same Secret an application would read.
+func s3Client() *minio.Client {
+	accessKey := secretValue(clusterName+"-root-credentials", "access-key")
+	secretKey := secretValue(clusterName+"-root-credentials", "secret-key")
+
+	client, err := minio.New("localhost:"+forwardPort, &minio.Options{
+		Creds: credentials.NewStaticV4(accessKey, secretKey, ""),
+	})
+	Expect(err).NotTo(HaveOccurred(), "Failed to build the S3 client")
+
+	return client
+}
+
+// secretValue reads one key of a Secret in the tenant namespace.
+func secretValue(name, key string) string {
+	out, err := utils.Run(exec.Command("kubectl", "get", "secret", name,
+		"-n", clusterNamespace, "-o", fmt.Sprintf("jsonpath={.data.%s}", key)))
+	Expect(err).NotTo(HaveOccurred(), "Failed to read secret %q", name)
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out))
+	Expect(err).NotTo(HaveOccurred(), "Failed to decode secret %q", name)
+
+	return string(decoded)
+}
+
+// dumpCluster prints what a failing run needs to be diagnosed from CI logs.
+func dumpCluster() {
+	const get = "get"
+
+	for _, args := range [][]string{
+		{get, "fscluster", "-n", clusterNamespace, "-o", "yaml"},
+		{get, "pods", "-n", clusterNamespace, "-o", "wide"},
+		{get, "events", "-n", clusterNamespace, "--sort-by=.lastTimestamp"},
+		{"logs", "-n", clusterNamespace, "-l", "app.kubernetes.io/name=fs", "--tail", "100", "--prefix"},
+		{"logs", "-n", namespace, "-l", "control-plane=controller-manager", "--tail", "200"},
+	} {
+		out, err := utils.Run(exec.Command("kubectl", args...))
+		if err == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "\n$ kubectl %s\n%s\n", strings.Join(args, " "), out)
+		}
+	}
+}
