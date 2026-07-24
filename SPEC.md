@@ -594,9 +594,12 @@ target revision; `ConfigurationInSync` flips True when every node does.
 - **Scale-down** (`nodes` decreased or a rack removed): decommission
   strictly one node at a time, highest node index first within the affected
   rack:
-  1. **Drain**: re-render the node's config with all disk weights 0 and
-     roll that node (§8.2 machinery); on restart it re-registers drained
-     and the auto-rebalancer moves its data off.
+  1. **Drain**: re-render the node's config with all disk weights drained
+     and roll that node (§8.2 machinery); on restart it re-registers drained
+     and the auto-rebalancer moves its data off. A drained disk is rendered
+     with a *negative* weight, not 0: fs's config layer reads 0 as "unset"
+     and substitutes 1, while placement skips any disk whose weight is not
+     positive. §11.6 replaces this with an API call.
   2. **Wait drained**: the node holds no object data (needs per-node
      occupancy from the cluster status endpoint, §11.2 — until it exists,
      scale-down is refused with `SpecValid=False/ScaleDownRequiresDrain`).
@@ -705,7 +708,11 @@ feature. Each is small and independently useful outside Kubernetes:
    Nice-to-have (per-node configs carry the rack today).
 6. **Hot drain / weight override** — persisted per-disk drain flag or weight
    override (etcd) settable via CLI + admin API. Unblocks: drain without a
-   node restart (§8.4 step 1 becomes an API call) and disk removal.
+   node restart (§8.4 step 1 becomes an API call) and disk removal. Also
+   worth fixing on the way: `cluster.disks[].weight: 0` in the config file
+   means "unset" (fs substitutes 1) while placement treats any weight ≤ 0 as
+   drained, so the documented "weight 0 drains the disk" is only reachable
+   through a negative weight today (§8.4).
 7. **Public admin client** — export the ogen-generated admin API client
    (today `internal/adminapi`) as an importable package so the operator and
    other tooling don't re-generate from `_oas/admin.yml`.
@@ -726,7 +733,9 @@ api/v1alpha1/            fscluster_types.go, fsbucket_types.go,
                          groupversion, deepcopy
 internal/controller/     step.go (pipeline), fscluster/ (controller,
                          rolling state machine, resource builders, config
-                         renderer), fsbucket/, fsaccesskey/
+                         renderer, names), fsbucket/, fsaccesskey/
+internal/fsconfig/       mirror of the fs config file schema (upstream
+                         cmd/fs/config.go) + the checks fs makes on startup
 internal/fsclient/       thin wrappers: admin API client + minio-go S3
                          client, connection cache keyed by cluster
 config/                  kustomize (crd, rbac, manager, samples, …) — the

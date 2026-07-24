@@ -1,0 +1,107 @@
+# Rendered by fs-operator for node prod-0 of FSCluster tenant-a/prod. Do not edit.
+server:
+  addr: :8080
+  read_timeout: 1m0s
+  write_timeout: 2m0s
+  idle_timeout: 5m0s
+  health_path: /health
+storage:
+  root: /var/lib/fs
+  type: cluster
+auth: {}
+admin:
+  enabled: true
+  addr: :8090
+cluster:
+  node_id: prod-0
+  addr: :7080
+  advertise_addr: prod-0-0.prod-peers.tenant-a.svc:7080
+  scheme: rf2.5
+  disks:
+    - id: d0
+      path: /var/lib/fs/disks/d0
+      weight: 1
+  etcd:
+    endpoints:
+      - http://etcd-0.etcd.fs-system:2379
+      - http://etcd-1.etcd.fs-system:2379
+      - http://etcd-2.etcd.fs-system:2379
+    prefix: /fs/tenant-a/prod
+integrity: {}
+observability:
+  service_name: prod
+  enable_request_logging: false
+  enable_metrics: true
+  enable_tracing: false
+---
+# Rendered by fs-operator for node prod-1 of FSCluster tenant-a/prod. Do not edit.
+server:
+  addr: :8080
+  read_timeout: 1m0s
+  write_timeout: 2m0s
+  idle_timeout: 5m0s
+  health_path: /health
+storage:
+  root: /var/lib/fs
+  type: cluster
+auth: {}
+admin:
+  enabled: true
+  addr: :8090
+cluster:
+  node_id: prod-1
+  addr: :7080
+  advertise_addr: prod-1-0.prod-peers.tenant-a.svc:7080
+  scheme: rf2.5
+  disks:
+    - id: d0
+      path: /var/lib/fs/disks/d0
+      weight: -1
+  etcd:
+    endpoints:
+      - http://etcd-0.etcd.fs-system:2379
+      - http://etcd-1.etcd.fs-system:2379
+      - http://etcd-2.etcd.fs-system:2379
+    prefix: /fs/tenant-a/prod
+integrity: {}
+observability:
+  service_name: prod
+  enable_request_logging: false
+  enable_metrics: true
+  enable_tracing: false
+---
+# Rendered by fs-operator for node prod-2 of FSCluster tenant-a/prod. Do not edit.
+server:
+  addr: :8080
+  read_timeout: 1m0s
+  write_timeout: 2m0s
+  idle_timeout: 5m0s
+  health_path: /health
+storage:
+  root: /var/lib/fs
+  type: cluster
+auth: {}
+admin:
+  enabled: true
+  addr: :8090
+cluster:
+  node_id: prod-2
+  addr: :7080
+  advertise_addr: prod-2-0.prod-peers.tenant-a.svc:7080
+  scheme: rf2.5
+  disks:
+    - id: d0
+      path: /var/lib/fs/disks/d0
+      weight: 1
+  etcd:
+    endpoints:
+      - http://etcd-0.etcd.fs-system:2379
+      - http://etcd-1.etcd.fs-system:2379
+      - http://etcd-2.etcd.fs-system:2379
+    prefix: /fs/tenant-a/prod
+integrity: {}
+observability:
+  service_name: prod
+  enable_request_logging: false
+  enable_metrics: true
+  enable_tracing: false

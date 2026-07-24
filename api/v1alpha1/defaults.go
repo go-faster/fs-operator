@@ -115,15 +115,25 @@ func (s *FSClusterSpec) WithDefaults() {
 	}
 }
 
+// NodeName is a node's name — its fs node_id, the name of its StatefulSet and
+// a DNS label: <cluster>-<rack>-<index>, or <cluster>-<index> in the flat
+// topology (empty rack).
+func NodeName(cluster, rack string, index int) string {
+	if rack == "" {
+		return fmt.Sprintf("%s-%d", cluster, index)
+	}
+
+	return fmt.Sprintf("%s-%s-%d", cluster, rack, index)
+}
+
 // NodeNames expands the topology into the ordered node (and StatefulSet)
-// names: <cluster>-<rack>-<n> per rack, or <cluster>-<n> for the flat
-// topology.
+// names.
 func (s *FSClusterSpec) NodeNames(cluster string) []string {
-	var names []string
+	names := make([]string, 0, s.TotalNodes())
 
 	if s.Topology.Nodes != nil {
 		for i := range int(*s.Topology.Nodes) {
-			names = append(names, fmt.Sprintf("%s-%d", cluster, i))
+			names = append(names, NodeName(cluster, "", i))
 		}
 
 		return names
@@ -131,7 +141,7 @@ func (s *FSClusterSpec) NodeNames(cluster string) []string {
 
 	for _, rack := range s.Topology.Racks {
 		for i := range int(rack.Nodes) {
-			names = append(names, fmt.Sprintf("%s-%s-%d", cluster, rack.Name, i))
+			names = append(names, NodeName(cluster, rack.Name, i))
 		}
 	}
 
