@@ -30,15 +30,9 @@ import (
 	"github.com/go-faster/fs-operator/internal/controller"
 )
 
-// health is what one pass observed of the running cluster.
-//
-// In P1 it is read from Kubernetes alone: a node's own StatefulSet already
-// knows whether its pod is up and whether that pod is the current one, which
-// is exactly what the rollout gate needs. Registration in etcd, the repair
-// queue and placement convergence need the cluster status endpoint fs does not
-// have yet (SPEC §11.2), so the conditions that depend on them — the fuller
-// meaning of Converged, and SchemaCurrent — are left for the phase that lands
-// it.
+// health is what one pass observed of the running cluster: pod state from
+// Kubernetes (filled by observe) and applied configuration from the admin API
+// (filled by the reload step).
 type health struct {
 	// ready is the number of nodes whose pod is up and current.
 	ready int32
@@ -49,8 +43,15 @@ type health struct {
 	readyDomains int
 
 	// current is the number of ready nodes already running the desired
-	// StatefulSet.
+	// StatefulSet (pod template).
 	current int32
+
+	// configCurrent is the number of nodes the admin API confirms are running
+	// the desired configuration revision. It drives ConfigurationInSync; a
+	// mid-roll or not-yet-reloaded node is not counted until it reports the
+	// target (SPEC §8.3). Set by the reload step, so it is meaningful only
+	// once that step has run.
+	configCurrent int32
 
 	// notReady names the declared nodes that are not serving, in declaration
 	// order. A rollout will not touch a second node while it is non-empty.
@@ -229,25 +230,32 @@ func (r *Reconciler) summarizeAlignment(p *pass) {
 
 	desired := p.object.Status.Nodes
 
-	if p.health.current == desired {
-		p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionTrue,
-			fsv1alpha1.ReasonUpToDate, fmt.Sprintf("All %d declared nodes are running", desired))
-		p.setCondition(fsv1alpha1.ConditionConfigurationInSync, metav1.ConditionTrue,
-			fsv1alpha1.ReasonUpToDate, "Every node runs the desired configuration")
-
-		return
-	}
-
-	if int32(len(p.live)) < desired { //nolint:gosec // the topology is bounded at 16 nodes
+	// ClusterSizeAligned reflects the node *set*: every declared node exists
+	// and its pod is the current template.
+	switch {
+	case int32(len(p.live)) < desired: //nolint:gosec // the topology is bounded at 16 nodes
 		p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
 			fsv1alpha1.ReasonScalingUp,
 			fmt.Sprintf("%d of %d declared nodes exist", len(p.live), desired))
-	} else {
+	case p.health.current == desired:
 		p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionTrue,
 			fsv1alpha1.ReasonUpToDate, fmt.Sprintf("All %d declared nodes are running", desired))
+	default:
+		p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
+			fsv1alpha1.ReasonRollingNodes,
+			fmt.Sprintf("%d of %d nodes run the desired pod template", p.health.current, desired))
 	}
 
-	p.setCondition(fsv1alpha1.ConditionConfigurationInSync, metav1.ConditionFalse,
-		fsv1alpha1.ReasonRollingNodes,
-		fmt.Sprintf("%d of %d nodes run the desired configuration", p.health.current, desired))
+	// ConfigurationInSync reflects what each node has actually *applied*, as
+	// its admin API reports it: every node must run the desired configuration
+	// revision, whether it got there by a restart or a verified hot reload
+	// (SPEC §8.3).
+	if p.health.configCurrent == desired {
+		p.setCondition(fsv1alpha1.ConditionConfigurationInSync, metav1.ConditionTrue,
+			fsv1alpha1.ReasonUpToDate, "Every node runs the desired configuration")
+	} else {
+		p.setCondition(fsv1alpha1.ConditionConfigurationInSync, metav1.ConditionFalse,
+			fsv1alpha1.ReasonConfigReloadPending,
+			fmt.Sprintf("%d of %d nodes have applied the desired configuration", p.health.configCurrent, desired))
+	}
 }

@@ -57,8 +57,20 @@ func TestMain(m *testing.M) {
 }
 
 // reconciler starts the shared test environment and returns a reconciler
-// wired to it. Tests that do not reach the API server never pay for it.
+// wired to it, with a benign fake admin (no node reports a config revision, so
+// nothing is config-current). Tests that need to drive reloads use
+// reconcilerWithAdmin.
 func reconciler(t *testing.T) (*Reconciler, *record.FakeRecorder) {
+	t.Helper()
+
+	r, recorder, _ := reconcilerWithAdmin(t)
+
+	return r, recorder
+}
+
+// reconcilerWithAdmin also returns the fake admin, so a test can set what each
+// node reports and assert on the reloads the operator drives.
+func reconcilerWithAdmin(t *testing.T) (*Reconciler, *record.FakeRecorder, *fakeAdmin) {
 	t.Helper()
 
 	envOnce.Do(startEnv)
@@ -68,12 +80,16 @@ func reconciler(t *testing.T) (*Reconciler, *record.FakeRecorder) {
 	}
 
 	recorder := record.NewFakeRecorder(eventBuffer)
+	admin := newFakeAdmin()
 
-	return &Reconciler{
+	r := &Reconciler{
 		Client:   k8sClient,
 		Scheme:   scheme.Scheme,
 		Recorder: recorder,
-	}, recorder
+		Admin:    admin.client,
+	}
+
+	return r, recorder, admin
 }
 
 // startEnv brings up the API server the controller tests share.

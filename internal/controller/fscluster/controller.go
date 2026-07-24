@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/go-faster/errors"
@@ -37,6 +38,7 @@ import (
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/fsclient"
 )
 
 // resyncInterval refreshes the health-derived part of the status even when no
@@ -64,6 +66,26 @@ type Reconciler struct {
 	// Recorder reports the decisions a user cannot read off the status:
 	// refusals, warnings and the steps of a rollout.
 	Recorder record.EventRecorder
+
+	// Admin builds an admin API client for a node's endpoint and bearer token.
+	// Nil uses a pooled default that reuses connections across reconciles;
+	// tests inject a fake to stand in for unreachable pods.
+	Admin func(baseURL, token string) (fsclient.Interface, error)
+
+	poolOnce sync.Once
+	pool     *fsclient.Pool
+}
+
+// adminClient builds an admin client for a node, defaulting to the shared
+// connection pool.
+func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, error) {
+	if r.Admin != nil {
+		return r.Admin(baseURL, token)
+	}
+
+	r.poolOnce.Do(func() { r.pool = fsclient.NewPool() })
+
+	return r.pool.Client(baseURL, token)
 }
 
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters,verbs=get;list;watch;create;update;patch;delete
@@ -110,6 +132,7 @@ func (r *Reconciler) pipeline() controller.Pipeline[*pass] {
 		{Name: "services", Run: r.reconcileServices},
 		{Name: "configs", Run: r.reconcileNodeConfigs},
 		{Name: "nodes", Run: r.reconcileNodes},
+		{Name: "reload", Run: r.reconcileReload},
 		{Name: "budget", Run: r.reconcileBudget},
 		{Name: "status", AlwaysRun: true, Run: r.reconcileStatus},
 	}

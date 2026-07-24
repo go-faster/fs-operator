@@ -53,6 +53,7 @@ const (
 	storageClass = "fast-nvme"
 	tlsSecret    = "prod-s3-tls"
 	teamValue    = "storage"
+	publicBucket = "public"
 )
 
 // testCluster is a minimal valid cluster: three flat nodes, one disk, external
@@ -115,7 +116,7 @@ func TestRenderNodeConfig(t *testing.T) {
 				}
 				c.Spec.Etcd.Prefix = "/fs/prod"
 				c.Spec.Etcd.TTL = &metav1.Duration{Duration: 15 * time.Second}
-				c.Spec.Auth.PublicReadBuckets = []string{"public", "assets"}
+				c.Spec.Auth.PublicReadBuckets = []string{publicBucket, "assets"}
 				c.Spec.S3.TLS.SecretName = tlsSecret
 				c.Spec.Rebalance = fsv1alpha1.RebalanceSpec{
 					Settle:        &metav1.Duration{Duration: 2 * time.Minute},
