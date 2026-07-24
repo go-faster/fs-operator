@@ -521,7 +521,11 @@ apply (field manager `fs-operator`):
    - volumes: config Secret at `/etc/fs`, TLS Secret when set, disk PVCs;
    - securityContext: runAsNonRoot 1000, readOnlyRootFilesystem, seccomp
      RuntimeDefault, drop ALL;
-   - config-revision pod annotation (drives §8.2/§8.3 decisions);
+   - `fs.go-faster.org/restart-revision` pod annotation: the fingerprint of
+     the *restart-requiring* part of the config (everything fs does not
+     hot-reload). Changing it is what replaces the pod, so credential
+     changes never roll the cluster (§8.2/§8.3). The full config revision
+     rides on the config Secret as `fs.go-faster.org/config-revision`;
    - per-rack nodeAffinity (zone/nodeSelector) + anti-affinity across the
      cluster's pods per `topology.podAntiAffinity`.
 4. **Services** — `<cluster>-peers` headless (`publishNotReadyAddresses:

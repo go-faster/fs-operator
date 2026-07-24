@@ -52,6 +52,16 @@ const (
 	PprofPort int32 = 9010
 )
 
+// Container port names. Services target ports by name, so these are part of
+// the objects the operator applies and may not change casually.
+const (
+	PortNameS3      = "http"
+	PortNamePeer    = "peer"
+	PortNameAdmin   = "admin"
+	PortNameMetrics = "metrics"
+	PortNamePprof   = "pprof"
+)
+
 // Paths inside the fs container.
 const (
 	// StorageRoot is fs's storage root. In cluster mode object data lives on
@@ -379,5 +389,41 @@ func ConfigRevision(configs map[string][]byte) string {
 		_, _ = digest.Write(configs[name])
 	}
 
-	return revisionPrefix + hex.EncodeToString(digest.Sum(nil))[:revisionDigits]
+	return format(digest.Sum(nil))
+}
+
+// Revision is the fingerprint of one node's rendered configuration.
+func Revision(config []byte) string {
+	digest := sha256.Sum256(config)
+
+	return format(digest[:])
+}
+
+// RestartRevision fingerprints the configuration a node can only pick up by
+// restarting — everything except the credentials and certificate fs reloads on
+// SIGHUP. It rides on the pod template, so a change to it replaces the pod,
+// while a change to the rest is a reload (SPEC §8.2, §8.3).
+func RestartRevision(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) (string, error) {
+	cfg, err := nodeConfig(cluster, node, opts)
+	if err != nil {
+		return "", err
+	}
+
+	// Everything fs re-reads on SIGHUP: the credentials, their grants and the
+	// anonymously readable buckets. The certificate is reloaded from the same
+	// paths, which is why the paths themselves stay in the fingerprint —
+	// turning TLS on or off does need a restart.
+	cfg.Auth = fsconfig.Auth{}
+
+	data, err := fsconfig.Marshal(cfg)
+	if err != nil {
+		return "", errors.Wrapf(err, "marshal config of node %q", node.Name)
+	}
+
+	return Revision(data), nil
+}
+
+// format renders a digest as a revision.
+func format(digest []byte) string {
+	return revisionPrefix + hex.EncodeToString(digest)[:revisionDigits]
 }

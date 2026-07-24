@@ -20,23 +20,23 @@ Done:
   per-node `config.yaml` renderer, configuration revision). Golden tests
   per topology shape; every rendered config is validated the way fs
   validates it at startup
+- **Resource builders** — generated Secrets (`internal/keygen` mints them),
+  per-node config Secrets, per-node single-pod StatefulSets (probes, env,
+  disk PVCs, rack affinity + anti-affinity, unprivileged pods), peers
+  (headless) + client Services, PDB maxUnavailable=1 (SPEC §8.1)
 
 ## Remaining P1 — build order
 
-1. **Resource builders** — generated Secrets (cluster secret, admin token,
-   root credentials), per-node config Secrets, per-node single-pod
-   StatefulSets (probes, env, disk PVCs, rack affinity + anti-affinity),
-   peers (headless) + client Services, PDB maxUnavailable=1 (SPEC §8.1).
-2. **Step-pipeline reconciler** — `internal/controller/step.go`, then the
+1. **Step-pipeline reconciler** — `internal/controller/step.go`, then the
    FSCluster controller wiring builders through server-side apply:
    conditions (SpecValid, NodesHealthy, ClusterSizeAligned,
    ConfigurationInSync, Ready, …), status revisions, controller-side
    cross-field validation (scheme vs failure domains), scale-up path,
    scale-down refusal (`ScaleDownRequiresDrain`) (SPEC §8).
-3. **Basic rolling logic** — sequential per-node StatefulSet updates gated
+2. **Basic rolling logic** — sequential per-node StatefulSet updates gated
    on pod-ready. Repair-queue/convergence gates and hot reload arrive in
    P2 with the upstream fs endpoints (SPEC §8.2, §11).
-4. **Tests + first release** — envtest coverage for 1–3 (idempotency,
+3. **Tests + first release** — envtest coverage for 1–2 (idempotency,
    ownership/GC, refusal paths); kind e2e: operator via `dist/chart`, a
    minimal 3-pod etcd, 3-node FSCluster from `examples/01-minimal.yaml`,
    S3 smoke against real fs v0.5.0. Then tag `v0.1.0` to exercise the
