@@ -1,0 +1,28 @@
+# Erasure-coded cluster: RS(4,2) as the cluster default scheme.
+#
+# ec:4,2 splits each object into 4 data + 2 parity shards across 6 failure
+# domains, so it tolerates any 2 lost while storing 1.5x (versus 2.5x for the
+# default rf2.5). It needs at least 6 nodes — one shard per failure domain.
+# Per-bucket overrides (FSBucket.spec.scheme) can still opt individual buckets
+# into a different scheme.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-ec
+spec:
+  image:
+    tag: v0.7.0
+  scheme: "ec:4,2"
+  topology:
+    nodes: 6
+  storage:
+    disks:
+      - name: d0
+        size: 200Gi
+        storageClass: fast-nvme
+  etcd:
+    external:
+      endpoints:
+        - http://etcd-0.etcd.fs-system:2379
+        - http://etcd-1.etcd.fs-system:2379
+        - http://etcd-2.etcd.fs-system:2379

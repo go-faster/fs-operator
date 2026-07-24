@@ -1,0 +1,53 @@
+# Full production shape: three zonal racks, resource requests/limits, a
+# PodMonitor for Prometheus, a NetworkPolicy locking down the peer and admin
+# ports, and strict anti-affinity so no two fs nodes share a Kubernetes node.
+# Pair it with an external, HA etcd (TLS in a future release).
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-prod
+spec:
+  image:
+    tag: v0.7.0
+  scheme: rf2.5
+  topology:
+    racks:
+      - name: a
+        nodes: 2
+        zone: eu-central-1a
+      - name: b
+        nodes: 2
+        zone: eu-central-1b
+      - name: c
+        nodes: 2
+        zone: eu-central-1c
+    # Strict: refuse to co-locate two fs nodes on one Kubernetes node.
+    podAntiAffinity: Required
+  storage:
+    disks:
+      - name: d0
+        size: 1Ti
+        storageClass: fast-nvme
+  s3:
+    service:
+      type: LoadBalancer
+  # Restrict the peer (7080) and admin (8090) ports to cluster pods and the
+  # operator; S3 stays reachable.
+  networkPolicy: true
+  observability:
+    logLevel: info
+    podMonitor: true
+  podTemplate:
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        memory: 8Gi
+    priorityClassName: high-priority
+  etcd:
+    external:
+      endpoints:
+        - http://etcd-0.etcd.fs-system:2379
+        - http://etcd-1.etcd.fs-system:2379
+        - http://etcd-2.etcd.fs-system:2379

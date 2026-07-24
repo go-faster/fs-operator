@@ -1,0 +1,61 @@
+# Tenancy: an S3 bucket and two access keys in an existing cluster.
+#
+# Apply this after a cluster (e.g. examples/01-minimal.yaml) is Ready. It
+# creates one bucket and two credentials — one the operator mints, one imported
+# from a user-managed Secret — all scoped to the same namespace as the cluster
+# they reference (the namespace is the tenancy boundary).
+---
+# A bucket. bucketName defaults to metadata.name and is immutable. The optional
+# scheme overrides the cluster default for this bucket's objects; omit it to
+# follow the cluster default. reclaimPolicy Retain (the default) leaves the
+# bucket and its data when this resource is deleted.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSBucket
+metadata:
+  name: media
+spec:
+  clusterRef:
+    name: fs-dev
+  scheme: "ec:4,2"        # erasure-code this bucket; needs >= 6 nodes
+  reclaimPolicy: Retain
+---
+# A generated credential: the operator mints the access/secret pair once and
+# writes it to an owned Secret (keys: access-key, secret-key, endpoint) named
+# <metadata.name>-credentials. Grants authorise the key for buckets matching a
+# glob up to a permission level (read | write | admin).
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSAccessKey
+metadata:
+  name: app-writer
+spec:
+  clusterRef:
+    name: fs-dev
+  grants:
+    - bucket: "media"
+      permission: write
+---
+# An imported credential: the operator reads the access/secret from a
+# user-managed Secret (e.g. minted by Vault or ExternalSecrets), renders it into
+# the cluster and hot-reloads, so external rotation propagates automatically.
+# The operator never writes to this Secret. secret-key must be >= 16 characters.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-minted-s3-creds
+type: Opaque
+stringData:
+  access-key: AKIAVAULTEXAMPLE
+  secret-key: an-externally-managed-secret-key
+---
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSAccessKey
+metadata:
+  name: analytics-reader
+spec:
+  clusterRef:
+    name: fs-dev
+  existingSecretRef:
+    name: vault-minted-s3-creds
+  grants:
+    - bucket: "media"
+      permission: read

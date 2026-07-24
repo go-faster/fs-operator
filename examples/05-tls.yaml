@@ -1,0 +1,43 @@
+# S3 over TLS, terminated in fs itself from a kubernetes.io/tls Secret.
+#
+# Point spec.s3.tls.secretName at a Secret with tls.crt/tls.key — here one
+# issued by cert-manager. fs serves HTTPS on the S3 port and hot-reloads the
+# certificate on renewal, so rotations need no restart. Generated FSAccessKey
+# credential Secrets carry an https:// endpoint to match.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: fs-tls
+spec:
+  secretName: fs-tls            # the kubernetes.io/tls Secret cert-manager fills
+  dnsNames:
+    - fs-tls.default.svc
+    - s3.example.com
+  issuerRef:
+    name: letsencrypt
+    kind: ClusterIssuer
+---
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-tls
+spec:
+  image:
+    tag: v0.7.0
+  topology:
+    nodes: 3
+  s3:
+    tls:
+      secretName: fs-tls
+  storage:
+    disks:
+      - name: d0
+        size: 100Gi
+        storageClass: fast-nvme
+  etcd:
+    external:
+      endpoints:
+        - http://etcd-0.etcd.fs-system:2379
+        - http://etcd-1.etcd.fs-system:2379
+        - http://etcd-2.etcd.fs-system:2379

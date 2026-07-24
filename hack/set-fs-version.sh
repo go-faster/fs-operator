@@ -31,6 +31,9 @@ targets=(
 	"test/e2e/e2e_suite_test.go:const fsImage = \"ghcr.io/go-faster/fs:%s\""
 	"examples/02-zonal-racks.yaml:    tag: %s"
 	"examples/03-multi-disk.yaml:    tag: %s"
+	"examples/04-erasure-coding.yaml:    tag: %s"
+	"examples/05-tls.yaml:    tag: %s"
+	"examples/07-production.yaml:    tag: %s"
 	"SPEC.md:    tag: %s"
 	"SPEC.md:    # against (currently %s). Always a pinned version, never a floating"
 )
