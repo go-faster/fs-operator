@@ -137,36 +137,60 @@ type RenderOptions struct {
 	Drained map[string]bool
 }
 
-// RenderNodeConfig renders one node's config.yaml.
+// RenderedConfig is a node's rendered config.yaml and its revision — the
+// opaque marker embedded in the file that fs echoes via the admin API's
+// config_revision. The operator reads that value back to confirm the node has
+// loaded this config, which is how a hot reload is verified (SPEC §8.3).
+type RenderedConfig struct {
+	Data     []byte
+	Revision string
+}
+
+// RenderNodeConfig renders one node's config.yaml and its revision.
 //
 // The cluster's spec must already be defaulted (FSClusterSpec.WithDefaults):
 // the renderer reads spec values as given and never re-applies defaults, so
 // that what a node runs is exactly what the object says.
-func RenderNodeConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) ([]byte, error) {
+//
+// The revision is the fingerprint of the config *without* the marker, so
+// embedding the marker cannot change it (no circular hash). The header comment
+// is excluded from the fingerprint; the identity it names already lives in the
+// config body.
+func RenderNodeConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) (RenderedConfig, error) {
 	cfg, err := nodeConfig(cluster, node, opts)
 	if err != nil {
-		return nil, err
+		return RenderedConfig{}, err
 	}
+
+	base, err := fsconfig.Marshal(cfg)
+	if err != nil {
+		return RenderedConfig{}, errors.Wrapf(err, "marshal config of node %q", node.Name)
+	}
+
+	cfg.Revision = Revision(base)
 
 	data, err := fsconfig.Marshal(cfg)
 	if err != nil {
-		return nil, errors.Wrapf(err, "marshal config of node %q", node.Name)
+		return RenderedConfig{}, errors.Wrapf(err, "marshal config of node %q", node.Name)
 	}
 
-	return append(configHeader(cluster, node), data...), nil
+	return RenderedConfig{
+		Data:     append(configHeader(cluster, node), data...),
+		Revision: cfg.Revision,
+	}, nil
 }
 
 // RenderNodeConfigs renders every node's config.yaml, keyed by node name.
-func RenderNodeConfigs(cluster *fsv1alpha1.FSCluster, nodes []Node, opts RenderOptions) (map[string][]byte, error) {
-	configs := make(map[string][]byte, len(nodes))
+func RenderNodeConfigs(cluster *fsv1alpha1.FSCluster, nodes []Node, opts RenderOptions) (map[string]RenderedConfig, error) {
+	configs := make(map[string]RenderedConfig, len(nodes))
 
 	for _, node := range nodes {
-		data, err := RenderNodeConfig(cluster, node, opts)
+		rendered, err := RenderNodeConfig(cluster, node, opts)
 		if err != nil {
 			return nil, err
 		}
 
-		configs[node.Name] = data
+		configs[node.Name] = rendered
 	}
 
 	return configs, nil
@@ -381,15 +405,16 @@ const revisionDigits = 12
 // (status.configurationRevision). It is stable across reconciles and changes
 // whenever any node's configuration does, which is what the rolling and
 // hot-reload machinery keys off (SPEC §8.2, §8.3).
-func ConfigRevision(configs map[string][]byte) string {
+func ConfigRevision(configs map[string]RenderedConfig) string {
 	digest := sha256.New()
 
 	for _, name := range slices.Sorted(maps.Keys(configs)) {
+		data := configs[name].Data
 		// Length-prefix both halves so that no pair of distinct config sets
 		// can hash alike by shifting bytes between node name and content.
 		// hash.Hash never fails, hence the discarded errors.
-		_, _ = fmt.Fprintf(digest, "%d:%s%d:", len(name), name, len(configs[name]))
-		_, _ = digest.Write(configs[name])
+		_, _ = fmt.Fprintf(digest, "%d:%s%d:", len(name), name, len(data))
+		_, _ = digest.Write(data)
 	}
 
 	return format(revisionPrefix, digest.Sum(nil))
@@ -417,6 +442,11 @@ func RestartRevision(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOption
 	// paths, which is why the paths themselves stay in the fingerprint —
 	// turning TLS on or off does need a restart.
 	cfg.Auth = fsconfig.Auth{}
+
+	// The revision marker moves with every config change, hot-reloadable ones
+	// included; excluding it keeps a credential-only change off the restart
+	// path (SPEC §8.3).
+	cfg.Revision = ""
 
 	data, err := fsconfig.Marshal(cfg)
 	if err != nil {

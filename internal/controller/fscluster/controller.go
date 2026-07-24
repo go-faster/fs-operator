@@ -127,10 +127,10 @@ type pass struct {
 	// nodes is the topology expanded into the cluster's node set.
 	nodes []Node
 
-	// configs holds each node's rendered configuration, and restarts the
-	// fingerprint of its restart-requiring part; both are filled by the
-	// render step.
-	configs  map[string][]byte
+	// configs holds each node's rendered configuration (bytes + revision
+	// marker), and restarts the fingerprint of its restart-requiring part;
+	// both are filled by the render step.
+	configs  map[string]RenderedConfig
 	restarts map[string]string
 
 	// desired holds the node StatefulSets the spec asks for, in node order,

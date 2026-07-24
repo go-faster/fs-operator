@@ -50,6 +50,13 @@ type Config struct {
 	Cluster       Cluster       `yaml:"cluster,omitempty"`
 	Integrity     Integrity     `yaml:"integrity"`
 	Observability Observability `yaml:"observability"`
+
+	// Revision is an opaque marker fs echoes back via the admin API
+	// (InstanceInfo.config_revision and the reload result) and never acts on.
+	// The operator sets it to a node's configuration revision and reads it
+	// back to confirm the node has loaded that config — the reload
+	// verification of SPEC §8.3.
+	Revision string `yaml:"revision,omitempty"`
 }
 
 // Server is the S3 listener.

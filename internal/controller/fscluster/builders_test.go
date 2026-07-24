@@ -29,7 +29,7 @@ import (
 func TestNewNodeConfigSecret(t *testing.T) {
 	cluster := testCluster()
 	node := Nodes(cluster)[0]
-	config := []byte("server:\n  addr: :8080\n")
+	config := RenderedConfig{Data: []byte("server:\n  addr: :8080\n"), Revision: "cfg-abcdef012345"}
 
 	secret := NewNodeConfigSecret(cluster, node, config)
 
@@ -41,11 +41,13 @@ func TestNewNodeConfigSecret(t *testing.T) {
 		t.Errorf("namespace = %q, want %q", got, want)
 	}
 
-	if got, want := string(secret.Data[ConfigFileName]), string(config); got != want {
+	if got, want := string(secret.Data[ConfigFileName]), string(config.Data); got != want {
 		t.Errorf("config = %q, want %q", got, want)
 	}
 
-	if got, want := secret.Annotations[AnnotationConfigRevision], Revision(config); got != want {
+	// The annotation is the config's own revision marker, so it matches what
+	// the node reports back after a reload (SPEC §8.3).
+	if got, want := secret.Annotations[AnnotationConfigRevision], config.Revision; got != want {
 		t.Errorf("config revision = %q, want %q", got, want)
 	}
 

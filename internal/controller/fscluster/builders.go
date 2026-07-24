@@ -207,8 +207,10 @@ func NewRootCredentialsSecret(cluster *fsv1alpha1.FSCluster) (*corev1.Secret, er
 
 // NewNodeConfigSecret builds the Secret holding one node's rendered
 // configuration. Unlike the generated Secrets it is applied on every pass: it
-// is derived from the spec, so the desired content is always known.
-func NewNodeConfigSecret(cluster *fsv1alpha1.FSCluster, node Node, config []byte) *corev1.Secret {
+// is derived from the spec, so the desired content is always known. The
+// revision annotation is the marker embedded in the config, which fs echoes
+// back so the operator can verify a reload landed (SPEC §8.3).
+func NewNodeConfigSecret(cluster *fsv1alpha1.FSCluster, node Node, config RenderedConfig) *corev1.Secret {
 	secret := &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -216,10 +218,10 @@ func NewNodeConfigSecret(cluster *fsv1alpha1.FSCluster, node Node, config []byte
 			Namespace: cluster.Namespace,
 			Labels:    NodeObjectLabels(cluster.Name, node),
 			Annotations: map[string]string{
-				AnnotationConfigRevision: Revision(config),
+				AnnotationConfigRevision: config.Revision,
 			},
 		},
-		Data: map[string][]byte{ConfigFileName: config},
+		Data: map[string][]byte{ConfigFileName: config.Data},
 	}
 
 	return secret

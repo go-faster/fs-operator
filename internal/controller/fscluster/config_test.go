@@ -183,14 +183,14 @@ func TestRenderNodeConfig(t *testing.T) {
 			rendered := make([][]byte, 0, len(nodes))
 
 			for _, node := range nodes {
-				data, err := RenderNodeConfig(cluster, node, tc.opts)
+				rc, err := RenderNodeConfig(cluster, node, tc.opts)
 				if err != nil {
 					t.Fatalf("render node %s: %v", node.Name, err)
 				}
 
-				assertUsable(t, data, node)
+				assertUsable(t, rc, node)
 
-				rendered = append(rendered, data)
+				rendered = append(rendered, rc.Data)
 			}
 
 			// One golden per case, each node a YAML document, so a diff shows
@@ -201,11 +201,11 @@ func TestRenderNodeConfig(t *testing.T) {
 }
 
 // assertUsable checks a rendered config the way fs would on startup, and that
-// it says what the node is.
-func assertUsable(t *testing.T, data []byte, node Node) {
+// it says what the node is and carries its revision marker.
+func assertUsable(t *testing.T, rc RenderedConfig, node Node) {
 	t.Helper()
 
-	cfg, err := fsconfig.Unmarshal(data)
+	cfg, err := fsconfig.Unmarshal(rc.Data)
 	if err != nil {
 		t.Fatalf("rendered config does not parse: %v", err)
 	}
@@ -225,6 +225,16 @@ func assertUsable(t *testing.T, data []byte, node Node) {
 	if want := PodName(node.Name) + "."; !strings.HasPrefix(cfg.Cluster.AdvertiseAddr, want) {
 		t.Errorf("advertise_addr = %q, want it to start with %q", cfg.Cluster.AdvertiseAddr, want)
 	}
+
+	// The config carries the revision the operator reads back to verify a
+	// reload, and it is the value the renderer reports (SPEC §8.3).
+	if cfg.Revision == "" {
+		t.Error("rendered config has no revision marker")
+	}
+
+	if cfg.Revision != rc.Revision {
+		t.Errorf("embedded revision %q does not match the reported %q", cfg.Revision, rc.Revision)
+	}
 }
 
 // TestRenderNodeConfigNoSecretMaterial pins the rule that keeps generated
@@ -237,27 +247,33 @@ func TestRenderNodeConfigNoSecretMaterial(t *testing.T) {
 	cluster := testCluster()
 	cluster.Spec.WithDefaults()
 
-	data, err := RenderNodeConfig(cluster, Nodes(cluster)[0], RenderOptions{
+	rc, err := RenderNodeConfig(cluster, Nodes(cluster)[0], RenderOptions{
 		Keys: []fsconfig.Key{{AccessKey: "AKapp", SecretKey: "app-secret-key-0123456789"}},
 	})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 
-	var raw map[string]map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	var raw map[string]any
+	if err := yaml.Unmarshal(rc.Data, &raw); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 
-	if _, ok := raw["cluster"]["secret"]; ok {
+	section := func(name string) map[string]any {
+		s, _ := raw[name].(map[string]any)
+
+		return s
+	}
+
+	if _, ok := section("cluster")["secret"]; ok {
 		t.Error("cluster.secret is rendered into the config; it must come from FS_CLUSTER_SECRET")
 	}
 
-	if _, ok := raw["admin"]["token"]; ok {
+	if _, ok := section("admin")["token"]; ok {
 		t.Error("admin.token is rendered into the config; it must come from FS_ADMIN_TOKEN")
 	}
 
-	if !strings.Contains(string(data), "app-secret-key-0123456789") {
+	if !strings.Contains(string(rc.Data), "app-secret-key-0123456789") {
 		t.Error("declarative access keys are missing from the config")
 	}
 }
@@ -329,10 +345,10 @@ func TestRenderNodeConfigsIsStable(t *testing.T) {
 }
 
 func TestConfigRevision(t *testing.T) {
-	base := map[string][]byte{
-		node0: []byte("a"),
-		node1: []byte("b"),
-	}
+	// rc wraps content as a rendered config; only the bytes feed the digest.
+	rc := func(s string) RenderedConfig { return RenderedConfig{Data: []byte(s)} }
+
+	base := map[string]RenderedConfig{node0: rc("a"), node1: rc("b")}
 
 	revision := ConfigRevision(base)
 
@@ -346,15 +362,15 @@ func TestConfigRevision(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		configs map[string][]byte
+		configs map[string]RenderedConfig
 	}{
-		{name: "changed config", configs: map[string][]byte{node0: []byte("a"), node1: []byte("c")}},
-		{name: "added node", configs: map[string][]byte{node0: []byte("a"), node1: []byte("b"), node2: []byte("c")}},
-		{name: "removed node", configs: map[string][]byte{node0: []byte("a")}},
-		{name: "renamed node", configs: map[string][]byte{node0: []byte("a"), node2: []byte("b")}},
+		{name: "changed config", configs: map[string]RenderedConfig{node0: rc("a"), node1: rc("c")}},
+		{name: "added node", configs: map[string]RenderedConfig{node0: rc("a"), node1: rc("b"), node2: rc("c")}},
+		{name: "removed node", configs: map[string]RenderedConfig{node0: rc("a")}},
+		{name: "renamed node", configs: map[string]RenderedConfig{node0: rc("a"), node2: rc("b")}},
 		// Without length prefixes these would hash the same as base.
-		{name: "shifted bytes", configs: map[string][]byte{node0: []byte("ab"), node1: []byte("")}},
-		{name: "shifted name", configs: map[string][]byte{"prod-0a": []byte(""), node1: []byte("b")}},
+		{name: "shifted bytes", configs: map[string]RenderedConfig{node0: rc("ab"), node1: rc("")}},
+		{name: "shifted name", configs: map[string]RenderedConfig{"prod-0a": rc(""), node1: rc("b")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ConfigRevision(tc.configs); got == revision {
@@ -362,6 +378,69 @@ func TestConfigRevision(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRestartRevisionSeparatesHotReload is the invariant the §8.3 fast path
+// rests on: a hot-reloadable change (a credential) moves the config revision —
+// so a reload is needed and verifiable — but not the restart revision, so the
+// pod is not replaced. A restart-requiring change (the scheme) moves both.
+func TestRestartRevisionSeparatesHotReload(t *testing.T) {
+	cluster := testCluster()
+	cluster.Spec.WithDefaults()
+	node := Nodes(cluster)[0]
+
+	base := RenderOptions{}
+	withKey := RenderOptions{Keys: []fsconfig.Key{{AccessKey: "AKx", SecretKey: "x-secret-key-0123456789"}}}
+
+	baseCfg := mustRender(t, cluster, node, base)
+	baseRestart := mustRestart(t, cluster, node, base)
+
+	// Credentials-only: config revision moves, restart revision holds.
+	keyCfg := mustRender(t, cluster, node, withKey)
+	keyRestart := mustRestart(t, cluster, node, withKey)
+
+	if keyCfg.Revision == baseCfg.Revision {
+		t.Error("adding a credential did not change the config revision; a reload could not be verified")
+	}
+
+	if keyRestart != baseRestart {
+		t.Error("adding a credential changed the restart revision; it would force a needless pod restart")
+	}
+
+	// The scheme lives in the config and is not hot-reloadable: both move.
+	cluster.Spec.Scheme = SchemeRF3
+	schemeCfg := mustRender(t, cluster, node, base)
+	schemeRestart := mustRestart(t, cluster, node, base)
+
+	if schemeCfg.Revision == baseCfg.Revision {
+		t.Error("changing the scheme did not change the config revision")
+	}
+
+	if schemeRestart == baseRestart {
+		t.Error("changing the scheme did not change the restart revision; the node would not pick it up")
+	}
+}
+
+func mustRender(t *testing.T, cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) RenderedConfig {
+	t.Helper()
+
+	rc, err := RenderNodeConfig(cluster, node, opts)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	return rc
+}
+
+func mustRestart(t *testing.T, cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) string {
+	t.Helper()
+
+	rev, err := RestartRevision(cluster, node, opts)
+	if err != nil {
+		t.Fatalf("restart revision: %v", err)
+	}
+
+	return rev
 }
 
 func TestDiskWeight(t *testing.T) {

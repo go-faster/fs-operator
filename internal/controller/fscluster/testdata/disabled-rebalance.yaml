@@ -38,6 +38,7 @@ observability:
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
+revision: cfg-a01cb63d6036
 ---
 # Rendered by fs-operator for node prod-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -79,6 +80,7 @@ observability:
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
+revision: cfg-a86ef74f409c
 ---
 # Rendered by fs-operator for node prod-2 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -120,3 +122,4 @@ observability:
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
+revision: cfg-236272a2f318
