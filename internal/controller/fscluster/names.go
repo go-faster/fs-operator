@@ -70,6 +70,15 @@ func AdvertiseAddr(cluster, namespace, node string) string {
 	return fmt.Sprintf("%s.%s.%s.svc:%d", PodName(node), PeersServiceName(cluster), namespace, PeerPort)
 }
 
+// AdminURL is the base URL of a node's admin listener, reached over the same
+// headless Service (which publishes the admin port and not-ready addresses),
+// so the operator can query a node that is starting or unhealthy. The listener
+// is plaintext on the pod network; the bearer token authenticates it (SPEC
+// §4.2, §9).
+func AdminURL(cluster, namespace, node string) string {
+	return fmt.Sprintf("http://%s.%s.%s.svc:%d", PodName(node), PeersServiceName(cluster), namespace, AdminPort)
+}
+
 // S3Endpoint is the cluster's in-cluster S3 URL (status.endpoints.s3).
 func S3Endpoint(cluster, namespace string, port int32, tls bool) string {
 	scheme := "http"

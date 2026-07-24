@@ -402,6 +402,15 @@ func TestS3Endpoint(t *testing.T) {
 	}
 }
 
+// TestAdminURL pins the per-node admin endpoint the operator dials: the pod's
+// stable DNS name through the peers Service, on the admin port.
+func TestAdminURL(t *testing.T) {
+	if got, want := AdminURL("prod", "tenant-a", "prod-1"),
+		"http://prod-1-0.prod-peers.tenant-a.svc:8090"; got != want {
+		t.Errorf("AdminURL = %q, want %q", got, want)
+	}
+}
+
 // assertGolden compares against testdata/<name>, rewriting it under -update.
 func assertGolden(t *testing.T, name string, got []byte) {
 	t.Helper()
