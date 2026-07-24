@@ -1,9 +1,10 @@
 # fs-operator — Kubernetes operator for go-faster/fs clusters
 
-Status: **P1 in progress** (§16). The API types, the config renderer, the
-resource builders and the FSCluster reconciler are in; rolling updates, the
-tenancy CRs and day-2 work follow. [PLAN.md](PLAN.md) tracks what is done and
-what is next; this document stays the design of record for all of it.
+Status: **P1 shipped** as `v0.1.0` (§16) — provisioning, per-node configs and
+StatefulSets, conditions/status and basic rolling updates. P2 (day-2) is next,
+now unblocked by fs v0.6.0 (admin reload + config revision, cluster status,
+importable admin client). [PLAN.md](PLAN.md) tracks what is done and what is
+next; this document stays the design of record for all of it.
 
 This document is the specification for `fs-operator`: a Kubernetes operator
 (kubebuilder v4) that provisions and operates **multi-node, clustered**
@@ -206,9 +207,9 @@ spec:
   image:
     repository: ghcr.io/go-faster/fs
     # Defaults to the pinned fs release this operator version is validated
-    # against (currently v0.5.0). Always a pinned version, never a floating
+    # against (currently v0.6.0). Always a pinned version, never a floating
     # tag — cluster upgrades are deliberate, one-node-at-a-time operations.
-    tag: v0.5.0
+    tag: v0.6.0
     pullPolicy: IfNotPresent
     pullSecrets: []
 
