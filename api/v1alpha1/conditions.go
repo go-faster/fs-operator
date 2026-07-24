@@ -75,6 +75,8 @@ const (
 const (
 	ReasonSchemeTopologyMismatch ConditionReason = "SchemeTopologyMismatch"
 	ReasonUnsupportedTopology    ConditionReason = "UnsupportedTopology"
+	ReasonDiskShrinkForbidden    ConditionReason = "DiskShrinkForbidden"
+	ReasonStorageExpanding       ConditionReason = "StorageExpanding"
 	ReasonScaleDownRequiresDrain ConditionReason = "ScaleDownRequiresDrain"
 	ReasonAllNodesReady          ConditionReason = "AllNodesReady"
 	ReasonNodesNotReady          ConditionReason = "NodesNotReady"
