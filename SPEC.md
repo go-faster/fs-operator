@@ -467,20 +467,24 @@ status:
   accessKey: AKprod4f2…     # non-secret half, for reference
 ```
 
-Design decision: declarative keys are rendered into the cluster's **config
-files** (`auth.keys` in every node's config Secret), not created through the
-runtime admin key store. The admin API's runtime keys persist to a
-*node-local* file — per-node state, wrong for a cluster-wide declarative
-credential. Config-defined keys are cluster-wide, survive restarts, and are
-hot-reloadable (SIGHUP refreshes config-defined credentials without touching
-runtime-created ones).
+Design decision: credentials live in the cluster's **etcd control plane**
+(`auth.source: etcd`, fs §6.8), managed through the admin API — not rendered
+into config files. Since fs v0.8.0 the runtime key store is cluster-wide:
+credentials are sealed with a key derived from the cluster secret, persisted in
+etcd and hot-reloaded on every node, so they are cluster-wide, survive restarts
+and are encrypted at rest. (Earlier the runtime store was node-local, which is
+why v0.1–0.3 rendered keys into config; the etcd store removed that reason.) The
+config carries no keys — the root credential seeds etcd via the `FS_ROOT_*` env
+on first boot, and etcd is authoritative thereafter.
 
-Reconcile: resolve the credential (generate once, or read
-`existingSecretRef` — the controller watches referenced Secrets and maps
-them back to their FSAccessKeys), merge all FSAccessKeys of the cluster into
-the rendered configs, bump the config Secrets, trigger a reload on every pod
-(§8.3), and verify via the admin API (`listAccessKeys`) before setting
-`Ready=True`. Deletion reverses it (finalizer, re-render, reload).
+Reconcile: resolve the credential (generate once into an owned Secret, or read
+`existingSecretRef` — the controller watches referenced Secrets and maps them
+back to their FSAccessKeys), then reconcile it into the cluster's key store via
+the admin API: create it, re-create it on a grant change or an imported-Secret
+rotation (detected by a material fingerprint), and set `Ready=True` once the
+cluster accepts it. Deletion revokes the credential (finalizer →
+`deleteAccessKey`). Public-read buckets are reconciled the same way, through
+`GET`/`PUT /api/v1/public-read-buckets`.
 
 ---
 

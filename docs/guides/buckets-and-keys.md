@@ -90,16 +90,18 @@ are mutually exclusive.
 
 ### How keys reach the cluster
 
-Declarative keys are rendered into the cluster's **config files** (`auth.keys`
-in every node's config), not created through the runtime admin key store, so a
-credential is cluster-wide and survives restarts. Adding, changing or removing
-an `FSAccessKey` re-renders the config and triggers a hot reload on every node;
-no pod restarts. A key is `Ready` (reason `KeyAccepted`) once every node reports
-it applied — until then it is `Ready=False` / `ConfigReloadPending` while the
-reload lands. `status.accessKey` shows the non-secret half for reference.
+Credentials live in the cluster's **etcd control plane** (`auth.source: etcd`),
+sealed with a key derived from the cluster secret and hot-reloaded on every node
+— so a credential is cluster-wide, survives restarts and is encrypted at rest.
+The operator sets an `FSAccessKey` through the admin API: creating it, and
+re-creating it when its grants change or an imported Secret rotates. A key is
+`Ready` (reason `KeyAccepted`) once the cluster has accepted it;
+`status.accessKey` shows the non-secret half for reference.
 
-Deleting an `FSAccessKey` re-renders the config without it and reloads, revoking
-the credential cluster-wide.
+Deleting an `FSAccessKey` revokes the credential from the cluster (and
+garbage-collects a generated Secret). Public-read buckets
+(`FSCluster.spec.auth.publicReadBuckets`) are managed the same way — reconciled
+into etcd through the admin API, not the config file.
 
 ## Status at a glance
 
