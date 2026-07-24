@@ -58,9 +58,12 @@ the day-2 choreography.
   cluster's replication scheme; disaster recovery is out of scope for now.
 - **No certificate issuance.** TLS material comes from Secrets (cert-manager
   or hand-made); the operator mounts and hot-reloads it.
-- **No production-grade managed etcd.** External etcd is the supported
-  control plane; a convenience dev-grade managed mode is phased in later
-  (§16).
+- **No production-grade managed etcd — by design, permanently.** External
+  etcd is the only supported control plane for production. A minimal managed
+  mode (`etcd.managed: {}`) exists purely for dev/demo clusters: no backups,
+  no defrag automation, no member replacement, and the operator says so
+  loudly (condition message + event + docs). It will not be hardened into a
+  production offering; etcd lifecycle management is its own discipline.
 - **No cluster-secret rotation.** Peer HMAC auth uses a single shared secret;
   mixed secrets partition the cluster. Rotation is a documented manual
   procedure until fs grows dual-secret support.
@@ -245,8 +248,10 @@ spec:
     reclaimPolicy: Retain         # Retain | Delete
 
   etcd:
-    # v1alpha1: external etcd is required (see go-faster/fs docs/SIZING.md
-    # for etcd sizing). A managed dev-grade mode arrives later (§16).
+    # Exactly one of `external` / `managed`. Production clusters use
+    # `external` (see go-faster/fs docs/SIZING.md for etcd sizing).
+    # `managed: {}` provisions a minimal dev-grade etcd next to the cluster
+    # — permanently non-production (§2); arrives in a later phase (§16).
     external:
       endpoints:
         - http://etcd-0.etcd.fs-system:2379
@@ -433,10 +438,21 @@ metadata:
 spec:
   clusterRef:
     name: prod
-  # Written to this Secret (keys: access-key, secret-key, endpoint).
-  # Defaults to <metadata.name>-credentials; generated once, owned by the
-  # FSAccessKey.
+  # Credential source — exactly one of the two modes:
+  #
+  # 1. Generated (default): the operator mints the credential once
+  #    (crypto/rand) and writes it to this Secret (keys: access-key,
+  #    secret-key, endpoint). Defaults to <metadata.name>-credentials;
+  #    owned by the FSAccessKey.
   secretName: app-writer-credentials
+  # 2. Imported: a user-managed Secret (keys: access-key, secret-key) —
+  #    e.g. minted by Vault / ExternalSecrets. The operator watches it,
+  #    renders it into the cluster config, and hot-reloads on change, so
+  #    external rotation propagates. secret-key must be ≥16 chars
+  #    (refused otherwise: Ready=False/WeakSecretKey). No operator-owned
+  #    Secret is created in this mode.
+  # existingSecretRef:
+  #   name: vault-minted-s3-creds
   grants:
     - bucket: "media-*"     # glob, matches fs GrantConfig
       permission: write     # read | write | admin
@@ -453,10 +469,12 @@ credential. Config-defined keys are cluster-wide, survive restarts, and are
 hot-reloadable (SIGHUP refreshes config-defined credentials without touching
 runtime-created ones).
 
-Reconcile: generate the secret key (once), merge all FSAccessKeys of the
-cluster into the rendered configs, bump the config Secrets, trigger a reload
-on every pod (§8.3), and verify via the admin API (`listAccessKeys`) before
-setting `Ready=True`. Deletion reverses it (finalizer, re-render, reload).
+Reconcile: resolve the credential (generate once, or read
+`existingSecretRef` — the controller watches referenced Secrets and maps
+them back to their FSAccessKeys), merge all FSAccessKeys of the cluster into
+the rendered configs, bump the config Secrets, trigger a reload on every pod
+(§8.3), and verify via the admin API (`listAccessKeys`) before setting
+`Ready=True`. Deletion reverses it (finalizer, re-render, reload).
 
 ---
 
@@ -805,20 +823,28 @@ image tag.
 | **P3 — tenancy** | FSBucket (+ scheme once fs §11.3), FSAccessKey via config rendering + verified reload, examples 04–07. |
 | **P4 — lifecycle** | Decommission/scale-down with drain observability (fs §11.2/6), disk add/remove, etcd TLS (fs §11.4), managed dev-grade etcd, admission webhook (cross-field validation moves out of the controller), Grafana dashboards, CRD-compat CI gate. |
 
-## 17. Open questions
+## 17. Resolved decisions
 
-1. Managed etcd: dev-only convenience forever, or eventually blessed for
-   small production clusters? (Leaning: dev-only; etcd operation is its own
-   discipline.)
-2. Should `FSAccessKey` support user-supplied secret keys (import), or
-   generated-only? (Leaning: generated-only; import invites weak keys.)
-3. Zone-discovery mode (rack derived from the k8s node's zone at pod start)
-   versus explicit `racks` only? (Leaning: explicit only; discovery makes
-   rack membership scheduling-dependent — exactly what a failure model
-   shouldn't be.)
-4. Multi-namespace watch vs. per-namespace operator instances as the
-   recommended multi-tenant deployment (chart supports both; docs need a
-   stance).
-5. Per-node `podTemplate` overrides (heterogeneous hardware) in v1alpha1, or
-   is the per-rack split enough? (Leaning: per rack is enough; weights
-   already absorb heterogeneous disks.)
+1. **Managed etcd is dev-only, permanently** (resolved 2026-07-24). The
+   operator ships `etcd.managed: {}` strictly as a dev/demo convenience and
+   will never harden it for production; `etcd.external` is the production
+   path. See §2.
+2. **FSAccessKey: generated by default, plus `existingSecretRef` import**
+   (resolved 2026-07-24). Imported credentials come from a user-managed
+   Secret (Vault/ExternalSecrets-friendly), are min-length validated, and
+   hot-reload on rotation. See §7.
+3. **Racks are explicit spec, never discovered** (resolved 2026-07-24).
+   Rack membership is declared in `topology.racks[]` and pinned with
+   nodeAffinity; it is never derived from where a pod happens to be
+   scheduled. Failure-domain identity must be stable across rescheduling —
+   discovery would make the failure model advisory. Upstream
+   `FS_CLUSTER_RACK` (§11.5) drops to a pure nice-to-have.
+4. **One cluster-wide operator instance** (resolved 2026-07-24). The
+   documented deployment is a single installation watching all namespaces;
+   tenancy comes from the namespaced CRs and RBAC on them. The chart keeps
+   a `watchNamespaces` value as an escape hatch, documented with the CRD
+   version-skew caveat of running multiple instances.
+5. **Uniform `podTemplate` only** (resolved 2026-07-24). One pod template
+   for the whole cluster; racks carry only scheduling (zone/nodeSelector)
+   and disk weights absorb uneven capacity. Per-rack overrides remain a
+   compatible future extension if a real deployment demands them.
