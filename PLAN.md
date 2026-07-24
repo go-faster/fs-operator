@@ -119,12 +119,13 @@ Now unblocked by fs v0.6.0. Sequenced so each piece builds on the last:
    - ✅ **PodMonitor** — optional `spec.observability.podMonitor`, created
      when `monitoring.coreos.com` is discoverable; unstructured, no
      prometheus-operator dependency
-   - ☐ **Docs guides** — upgrades, scaling, monitoring (§13)
+   - ✅ **Docs guides** — upgrades, scaling, monitoring written from the code
+     (§13)
    - ☐ Release **v0.2.0**
 
-All P2 **functionality** is implemented (fsclient, hot reload, convergence
-gate, migration Job, NetworkPolicy, PVC expansion, PodMonitor). What remains
-is the docs guides and the v0.2.0 release.
+All P2 **functionality and docs** are done (fsclient, hot reload, convergence
+gate, migration Job, NetworkPolicy, PVC expansion, PodMonitor, day-2 guides).
+The only thing left in P2 is cutting the **v0.2.0** release.
 
 ## Definition of done for P1 (met — v0.1.0)
 
