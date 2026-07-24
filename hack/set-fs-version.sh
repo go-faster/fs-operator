@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Pin the go-faster/fs release this operator is validated against.
 #
-# The version is a literal in several places — a Go constant, a kubebuilder
-# default marker, the examples, the e2e suite, the docs — because none of them
-# can read a variable: controller-gen needs a literal to put in the CRD schema,
-# and an example that is not copy-pasteable is not an example. So the pin lives
-# in one place conceptually and is propagated from here.
+# The API default (DefaultImageTag) is the single source of truth: every
+# FSCluster that omits spec.image.tag inherits it, so the examples carry no
+# version at all. A few places still need the literal spelled out — the
+# kubebuilder default marker (controller-gen cannot read a constant), the e2e
+# suite (it pre-loads the concrete image into kind) and the SPEC reference
+# block (it documents the default) — and this script keeps them in lockstep
+# with the source of truth.
 #
 # Usage:
 #   hack/set-fs-version.sh v0.6.0   # rewrite the pin and regenerate
@@ -26,14 +28,14 @@ current() {
 # matches the line it appears on. A new occurrence belongs here — `--check`
 # then keeps it from drifting.
 targets=(
+	# The fs version is spelled out in exactly these places. The API default is
+	# the source of truth; examples omit the image and inherit it, so they are
+	# not listed here. The kubebuilder marker needs a literal (controller-gen
+	# cannot read a constant); the e2e must pre-load the concrete image into
+	# kind; the SPEC reference block documents the default value.
 	"api/v1alpha1/defaults.go:	DefaultImageTag = \"%s\""
 	"api/v1alpha1/fscluster_types.go:	// +kubebuilder:default=\"%s\""
 	"test/e2e/e2e_suite_test.go:const fsImage = \"ghcr.io/go-faster/fs:%s\""
-	"examples/02-zonal-racks.yaml:    tag: %s"
-	"examples/03-multi-disk.yaml:    tag: %s"
-	"examples/04-erasure-coding.yaml:    tag: %s"
-	"examples/05-tls.yaml:    tag: %s"
-	"examples/07-production.yaml:    tag: %s"
 	"SPEC.md:    tag: %s"
 	"SPEC.md:    # against (currently %s). Always a pinned version, never a floating"
 )

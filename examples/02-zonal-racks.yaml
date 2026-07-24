@@ -6,8 +6,8 @@ kind: FSCluster
 metadata:
   name: fs-zonal
 spec:
-  image:
-    tag: v0.7.0
+  # image is omitted: it defaults to the pinned fs release this operator
+  # version is validated against (bump it in one place with `make fs-version`).
   scheme: rf2.5
   topology:
     racks:
