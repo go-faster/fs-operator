@@ -694,11 +694,19 @@ untouched (shared-etcd caution).
 ## 11. Required changes in go-faster/fs
 
 The operator degrades gracefully where these are missing, but each unlocks a
-feature. Each is small and independently useful outside Kubernetes:
+feature. Each is small and independently useful outside Kubernetes.
+
+Items 1, 2 and 7 are **landed upstream** (unblocking P2's core loops); the
+rest remain:
 
 1. **Admin reload endpoint** — `POST /api/v1/reload`, semantically identical
    to SIGHUP (credentials + TLS). Unblocks: hot reload (§8.3) without
-   `pods/exec` RBAC.
+   `pods/exec` RBAC. **DONE** (go-faster/fs `feat(admin): reload endpoint
+   and config revision`): returns what it reloaded plus the config revision
+   now in effect. A top-level `revision` config field is an opaque marker fs
+   echoes via `GET /api/v1/info` (`config_revision`) and the reload result —
+   the operator stamps each rendered config with its configuration revision
+   and reads it back to verify a node applied it.
 2. **Cluster status endpoint** — `GET /api/v1/cluster/status`: schema
    version (binary + cluster-recorded), the applied **config revision**
    (echo of a marker from the config file), topology as this node sees it,
@@ -706,8 +714,13 @@ feature. Each is small and independently useful outside Kubernetes:
    (misplaced-object estimate, as `fs cluster rebalance --dry-run`
    computes), repair queue depth, last scrub summary. Unblocks: the §8.2
    convergence gate, §8.3 reload verification, §8.4 drain-complete
-   detection. (Interim: `repair_queue_depth` from the rebalance endpoint +
-   CLI dry-run via exec — workable but ugly.)
+   detection. **DONE** (go-faster/fs PR #90, passive-state slice): schema
+   versions, per-node/-disk capacity (bytes, fullness), placement skew and
+   rebalance state. Per-node **object count** and an aggregate cluster-wide
+   repair-queue depth are still deferred upstream; until then the operator
+   reads `repair_queue_depth` per node from the rebalance endpoint and
+   infers drain-complete from per-disk bytes. The config-revision echo
+   ships on the per-node admin via item 1 (`GET /api/v1/info`).
 3. **Bucket scheme via admin API** — `GET/PUT /api/v1/buckets/{name}/scheme`
    (today CLI-only `fs cluster scheme`). Unblocks: `FSBucket.spec.scheme`.
 4. **etcd client TLS + auth** — `cluster.etcd.{ca,cert,key,username,
@@ -723,11 +736,23 @@ feature. Each is small and independently useful outside Kubernetes:
    drained, so the documented "weight 0 drains the disk" is only reachable
    through a negative weight today (§8.4).
 7. **Public admin client** — export the ogen-generated admin API client
-   (today `internal/adminapi`) as an importable package so the operator and
-   other tooling don't re-generate from `_oas/admin.yml`.
+   as an importable package so the operator and other tooling don't
+   re-generate from `_oas/admin.yml`. **DONE** (go-faster/fs
+   `refactor(adminapi): export the admin API client`): moved from
+   `internal/adminapi` to the importable `github.com/go-faster/fs/adminapi`.
 
 Sequencing: 1, 2, 7 first (they gate the core loops); 3–5 next; 6 with
 decommission polish.
+
+**Dedicated admin backend (fs PR #90).** fs now ships a headless
+`fs admin --config config.yaml` — a control-plane-only process (no S3 data)
+that reads cluster status from etcd and drives rebalancing through the
+cluster-wide election. In P2 the operator can run it as its own
+Deployment + Service and target that one endpoint for cluster status and
+rebalance control, instead of dialing each pod's admin listener. Per-node
+operations that are inherently local — the reload endpoint (§8.3) and
+runtime credential management — still go to each data node's own admin
+listener; the headless admin returns 501 for them.
 
 ---
 

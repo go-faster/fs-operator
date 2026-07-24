@@ -62,12 +62,28 @@ upstream fs endpoints below.
 
 ## Parallel track — upstream go-faster/fs (unblocks P2)
 
-In `/src/faster/fs`, per SPEC §11 (sequencing: 1, 2, 7 first):
+In `/src/faster/fs`, per SPEC §11 (sequencing: 1, 2, 7 first). **The three
+gating items are up as go-faster/fs PR #91** (CI green, mergeable), plus fs
+PR #90 already shipped cluster status and a headless `fs admin`:
 
-- `POST /api/v1/reload` — admin reload endpoint (SIGHUP equivalent)
-- `GET /api/v1/cluster/status` — schema versions, config revision,
-  occupancy, convergence, repair queue
-- Export the admin API client as a public package
+- ✅ `POST /api/v1/reload` — admin reload endpoint (SIGHUP equivalent),
+  returning what it reloaded + the config revision now in effect
+- ✅ Config revision echo — a top-level `revision` config marker fs reports
+  via `GET /api/v1/info` (`config_revision`) and the reload result, so the
+  operator can verify a node applied a rendered config (§8.3)
+- ✅ `GET /api/v1/cluster/status` (PR #90) — schema versions, per-node/-disk
+  capacity, placement skew, rebalance state. Aggregate repair-queue depth
+  and per-node object count still deferred upstream; interim is the
+  per-node rebalance endpoint's `repair_queue_depth`
+- ✅ Public admin client — `internal/adminapi` → importable
+  `github.com/go-faster/fs/adminapi`
+- ✅ Headless `fs admin` service (PR #90) — a dedicated control-plane-only
+  admin the operator can run as its own Deployment + Service for cluster
+  status / rebalance control (SPEC §11, §4.2). Reload + credential ops stay
+  per-node
+
+Once PR #91 merges and fs cuts a release, P2 can start: hot-reload with
+revision verification, convergence-gated rollouts, and the migration Job.
 
 Observed during e2e (fs-side, not operator): in cluster mode a **multipart**
 part upload returns 500 (`mc pipe` reproduces it) while a single-shot PUT/GET
