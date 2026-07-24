@@ -855,3 +855,12 @@ a chart release always pulls its matching image.
    for the whole cluster; racks carry only scheduling (zone/nodeSelector)
    and disk weights absorb uneven capacity. Per-rack overrides remain a
    compatible future extension if a real deployment demands them.
+6. **The admin listener stays operator-internal** (resolved 2026-07-24).
+   No dedicated admin Service, ever: the admin API is per-node state
+   (rebalance status, repair queue, runtime keys), so a load-balanced
+   endpoint would answer from a different node per request; and it manages
+   credentials, so it gets no stable routable exposure. It is reachable
+   only per pod through the headless peers Service (bearer token required;
+   NetworkPolicy-restrictable via `spec.networkPolicy`); humans use
+   `kubectl port-forward` to a specific pod plus the
+   `<cluster>-admin-token` Secret.
