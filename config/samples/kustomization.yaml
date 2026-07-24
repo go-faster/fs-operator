@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- fs_v1alpha1_fscluster.yaml
+- fs_v1alpha1_fsbucket.yaml
+- fs_v1alpha1_fsaccesskey.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

@@ -1,0 +1,27 @@
+# This rule is not used by the project fs-operator itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants full permissions ('*') over fs.go-faster.org.
+# This role is intended for users authorized to modify roles and bindings within the cluster,
+# enabling them to delegate specific permissions to other users or groups as needed.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: fs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: fsaccesskey-admin-role
+rules:
+- apiGroups:
+  - fs.go-faster.org
+  resources:
+  - fsaccesskeys
+  verbs:
+  - '*'
+- apiGroups:
+  - fs.go-faster.org
+  resources:
+  - fsaccesskeys/status
+  verbs:
+  - get

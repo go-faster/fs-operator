@@ -1,0 +1,44 @@
+apiVersion: rbac.authorization.k8s.io/v1
+{{- if .Values.rbac.namespaced }}
+kind: Role
+{{- else }}
+kind: ClusterRole
+{{- end }}
+metadata:
+{{- if .Values.rbac.namespaced }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+  name: {{ include "fs-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+rules:
+- apiGroups:
+  - fs.go-faster.org
+  resources:
+  - fsaccesskeys
+  - fsbuckets
+  - fsclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - fs.go-faster.org
+  resources:
+  - fsaccesskeys/finalizers
+  - fsbuckets/finalizers
+  - fsclusters/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - fs.go-faster.org
+  resources:
+  - fsaccesskeys/status
+  - fsbuckets/status
+  - fsclusters/status
+  verbs:
+  - get
+  - patch
+  - update

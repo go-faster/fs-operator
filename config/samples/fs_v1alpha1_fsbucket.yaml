@@ -1,0 +1,9 @@
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSBucket
+metadata:
+  labels:
+    app.kubernetes.io/name: fs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: fsbucket-sample
+spec:
+  # TODO(user): Add fields here
