@@ -74,6 +74,7 @@ const (
 // FSCluster condition reasons.
 const (
 	ReasonSchemeTopologyMismatch ConditionReason = "SchemeTopologyMismatch"
+	ReasonUnsupportedTopology    ConditionReason = "UnsupportedTopology"
 	ReasonScaleDownRequiresDrain ConditionReason = "ScaleDownRequiresDrain"
 	ReasonAllNodesReady          ConditionReason = "AllNodesReady"
 	ReasonNodesNotReady          ConditionReason = "NodesNotReady"

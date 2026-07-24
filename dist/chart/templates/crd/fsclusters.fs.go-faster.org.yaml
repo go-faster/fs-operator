@@ -147,7 +147,8 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: etcd.prefix is immutable
-                  rule: self.prefix == oldSelf.prefix
+                  rule: has(self.prefix) == has(oldSelf.prefix) && (!has(self.prefix)
+                    || self.prefix == oldSelf.prefix)
               image:
                 default: {}
                 description: |-
@@ -648,7 +649,9 @@ spec:
                           description: |-
                             size is the capacity requested for each node's PVC of this disk. It
                             may only grow, and growing it requires the StorageClass to allow
-                            volume expansion.
+                            volume expansion. The growth check is the controller's: expressing it
+                            in CEL costs more than the API server's validation budget allows for a
+                            list of this size.
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
                         storageClass:
@@ -790,6 +793,9 @@ spec:
             - storage
             - topology
             type: object
+            x-kubernetes-validations:
+            - message: 'clusterSecretRef is immutable: it cannot be added or removed'
+              rule: has(self.clusterSecretRef) == has(oldSelf.clusterSecretRef)
           status:
             description: status defines the observed state of FSCluster
             properties:

@@ -1,7 +1,9 @@
 # fs-operator — Kubernetes operator for go-faster/fs clusters
 
-Status: **draft for review** — nothing below is implemented yet; the repo only
-contains `kubebuilder init` scaffolding.
+Status: **P1 in progress** (§16). The API types, the config renderer, the
+resource builders and the FSCluster reconciler are in; rolling updates, the
+tenancy CRs and day-2 work follow. [PLAN.md](PLAN.md) tracks what is done and
+what is next; this document stays the design of record for all of it.
 
 This document is the specification for `fs-operator`: a Kubernetes operator
 (kubebuilder v4) that provisions and operates **multi-node, clustered**
@@ -620,7 +622,10 @@ target revision; `ConfigurationInSync` flips True when every node does.
   `allowVolumeExpansion` on the StorageClass), then orphan-recreate that
   node's StatefulSet (delete leaving the pod orphaned, re-apply with the
   new volumeClaimTemplate) so a future pod replacement claims the right
-  size. Shrink is rejected by CEL.
+  size. Shrink is refused by the controller, alongside the other
+  cross-field checks: comparing every disk's old and new size in CEL costs
+  more than the API server's per-schema validation budget allows for a list
+  this long.
 - **Disk added**: per node, one node at a time — orphan-recreate the
   StatefulSet with the extra volumeClaimTemplate and roll the node; the
   restarted pod mounts and registers the new disk, weights drive data onto

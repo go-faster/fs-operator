@@ -24,19 +24,20 @@ Done:
   per-node config Secrets, per-node single-pod StatefulSets (probes, env,
   disk PVCs, rack affinity + anti-affinity, unprivileged pods), peers
   (headless) + client Services, PDB maxUnavailable=1 (SPEC §8.1)
+- **Step pipeline + FSCluster controller** — `internal/controller/step.go`
+  and `internal/controller/fscluster`: server-side apply of every resource,
+  create-once secret material, cross-field validation (scheme vs failure
+  domains, node envelope, scale-down refusal, missing referenced Secrets),
+  status revisions and conditions (SpecValid, ReconcileSucceeded,
+  NodesHealthy, ClusterSizeAligned, ConfigurationInSync, Ready by write
+  quorum). envtest coverage incl. the CRD's own validation rules
 
 ## Remaining P1 — build order
 
-1. **Step-pipeline reconciler** — `internal/controller/step.go`, then the
-   FSCluster controller wiring builders through server-side apply:
-   conditions (SpecValid, NodesHealthy, ClusterSizeAligned,
-   ConfigurationInSync, Ready, …), status revisions, controller-side
-   cross-field validation (scheme vs failure domains), scale-up path,
-   scale-down refusal (`ScaleDownRequiresDrain`) (SPEC §8).
-2. **Basic rolling logic** — sequential per-node StatefulSet updates gated
+1. **Basic rolling logic** — sequential per-node StatefulSet updates gated
    on pod-ready. Repair-queue/convergence gates and hot reload arrive in
    P2 with the upstream fs endpoints (SPEC §8.2, §11).
-3. **Tests + first release** — envtest coverage for 1–2 (idempotency,
+2. **Tests + first release** — remaining envtest coverage (idempotency,
    ownership/GC, refusal paths); kind e2e: operator via `dist/chart`, a
    minimal 3-pod etcd, 3-node FSCluster from `examples/01-minimal.yaml`,
    S3 smoke against real fs v0.5.0. Then tag `v0.1.0` to exercise the

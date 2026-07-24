@@ -37,6 +37,7 @@ import (
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/fscluster"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -178,9 +179,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.FSClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+	if err := (&fscluster.Reconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("fs-operator"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "fscluster")
 		os.Exit(1)

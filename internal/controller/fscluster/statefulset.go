@@ -17,8 +17,13 @@ limitations under the License.
 package fscluster
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"maps"
 	"strings"
+
+	"github.com/go-faster/errors"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -132,6 +137,26 @@ func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision st
 			PersistentVolumeClaimRetentionPolicy: claimRetentionPolicy(cluster),
 		},
 	}
+}
+
+// PodTemplateRevision fingerprints the desired pod templates
+// (status.statefulSetRevision): what a node runs, as opposed to what it reads
+// from its configuration.
+func PodTemplateRevision(sets []*appsv1.StatefulSet) (string, error) {
+	digest := sha256.New()
+
+	for _, set := range sets {
+		template, err := json.Marshal(set.Spec.Template)
+		if err != nil {
+			return "", errors.Wrapf(err, "marshal pod template of node %q", set.Name)
+		}
+
+		// hash.Hash never fails, hence the discarded errors.
+		_, _ = fmt.Fprintf(digest, "%d:%s%d:", len(set.Name), set.Name, len(template))
+		_, _ = digest.Write(template)
+	}
+
+	return format(templatePrefix, digest.Sum(nil)), nil
 }
 
 // podTemplate builds the pod that runs one node.

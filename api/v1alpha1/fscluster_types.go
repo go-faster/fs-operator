@@ -26,6 +26,7 @@ import (
 // FSClusterSpec defines the desired state of a go-faster/fs cluster: a set of
 // storage nodes spread over failure domains (racks), replicating objects at
 // write quorum with an etcd control plane.
+// +kubebuilder:validation:XValidation:rule="has(self.clusterSecretRef) == has(oldSelf.clusterSecretRef)",message="clusterSecretRef is immutable: it cannot be added or removed"
 type FSClusterSpec struct {
 	// image is the fs container image to run on every node. Defaults to the
 	// pinned fs release this operator version is validated against.
@@ -238,7 +239,9 @@ type DiskSpec struct {
 
 	// size is the capacity requested for each node's PVC of this disk. It
 	// may only grow, and growing it requires the StorageClass to allow
-	// volume expansion.
+	// volume expansion. The growth check is the controller's: expressing it
+	// in CEL costs more than the API server's validation budget allows for a
+	// list of this size.
 	// +required
 	Size resource.Quantity `json:"size"`
 
@@ -255,7 +258,11 @@ type DiskSpec struct {
 }
 
 // EtcdSpec configures the etcd control plane connection.
-// +kubebuilder:validation:XValidation:rule="self.prefix == oldSelf.prefix",message="etcd.prefix is immutable"
+// The prefix rule spells out the absent case: a rule that reads self.prefix
+// directly fails evaluation — and rejects every update, including status
+// writes — while the field is unset, and setting it later would move the
+// cluster's keys.
+// +kubebuilder:validation:XValidation:rule="has(self.prefix) == has(oldSelf.prefix) && (!has(self.prefix) || self.prefix == oldSelf.prefix)",message="etcd.prefix is immutable"
 type EtcdSpec struct {
 	// external points the cluster at user-operated etcd endpoints. This is
 	// the production mode.

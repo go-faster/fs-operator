@@ -365,9 +365,12 @@ func quantity(q *resource.Quantity) float64 {
 	return q.AsApproximateFloat64()
 }
 
-// revisionPrefix distinguishes a configuration revision from the pod-template
+// Revision prefixes distinguish a configuration revision from a pod-template
 // revision at a glance in status and events.
-const revisionPrefix = "cfg-"
+const (
+	revisionPrefix = "cfg-"
+	templatePrefix = "sts-"
+)
 
 // revisionDigits is how much of the digest a revision carries: enough to make
 // a collision between the handful of revisions a cluster sees implausible,
@@ -389,14 +392,14 @@ func ConfigRevision(configs map[string][]byte) string {
 		_, _ = digest.Write(configs[name])
 	}
 
-	return format(digest.Sum(nil))
+	return format(revisionPrefix, digest.Sum(nil))
 }
 
 // Revision is the fingerprint of one node's rendered configuration.
 func Revision(config []byte) string {
 	digest := sha256.Sum256(config)
 
-	return format(digest[:])
+	return format(revisionPrefix, digest[:])
 }
 
 // RestartRevision fingerprints the configuration a node can only pick up by
@@ -424,6 +427,6 @@ func RestartRevision(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOption
 }
 
 // format renders a digest as a revision.
-func format(digest []byte) string {
-	return revisionPrefix + hex.EncodeToString(digest)[:revisionDigits]
+func format(prefix string, digest []byte) string {
+	return prefix + hex.EncodeToString(digest)[:revisionDigits]
 }

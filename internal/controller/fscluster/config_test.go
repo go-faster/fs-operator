@@ -46,6 +46,10 @@ const (
 	zoneA   = "eu-central-1a"
 	rackKey = "rack"
 
+	// schemeEC needs six failure domains, one more than any test topology
+	// provides by accident.
+	schemeEC = "ec:4,2"
+
 	storageClass = "fast-nvme"
 	tlsSecret    = "prod-s3-tls"
 	teamValue    = "storage"
@@ -97,7 +101,7 @@ func TestRenderNodeConfig(t *testing.T) {
 				half := resource.MustParse("0.5")
 				watermark := resource.MustParse("0.85")
 
-				c.Spec.Scheme = "ec:4,2"
+				c.Spec.Scheme = schemeEC
 				c.Spec.Topology = fsv1alpha1.TopologySpec{
 					Racks: []fsv1alpha1.RackSpec{
 						{Name: "a", Nodes: 2, Zone: zoneA},
