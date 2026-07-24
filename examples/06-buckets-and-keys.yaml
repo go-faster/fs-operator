@@ -44,8 +44,8 @@ metadata:
   name: vault-minted-s3-creds
 type: Opaque
 stringData:
-  access-key: AKIAVAULTEXAMPLE
-  secret-key: an-externally-managed-secret-key
+  access-key: "AKIAVAULTEXAMPLE"
+  secret-key: "an-externally-managed-secret-key"
 ---
 apiVersion: fs.go-faster.org/v1alpha1
 kind: FSAccessKey

@@ -148,6 +148,57 @@ var _ = Describe("FSCluster", Ordered, func() {
 		Expect(got).To(Equal(payload), "the object came back different")
 	})
 
+	It("serves a bucket and a generated access key", func() {
+		By("applying an FSBucket and a generated FSAccessKey")
+		apply := exec.Command("kubectl", "apply", "-n", clusterNamespace, "-f", "-")
+		apply.Stdin = strings.NewReader(tenancyManifest())
+
+		_, err := utils.Run(apply)
+		Expect(err).NotTo(HaveOccurred(), "Failed to apply the tenancy resources")
+
+		By("waiting for the bucket to be Ready with its scheme override")
+		Eventually(func(g Gomega) {
+			g.Expect(resourceCondition("fsbucket", "e2e-media", "Ready")).To(Equal("True"))
+		}).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+
+		Expect(resourceField("fsbucket", "e2e-media", "{.status.scheme}")).To(Equal("rf3"),
+			"the per-bucket scheme override did not take effect")
+
+		By("waiting for the access key to be accepted by the cluster")
+		Eventually(func(g Gomega) {
+			g.Expect(resourceCondition("fsaccesskey", "e2e-writer", "Ready")).To(Equal("True"))
+		}).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+
+		By("putting and getting an object with the minted credential")
+		stop := forwardS3()
+		defer stop()
+
+		access := secretValue("e2e-writer-credentials", "access-key")
+		secret := secretValue("e2e-writer-credentials", "secret-key")
+
+		client, err := minio.New("localhost:"+forwardPort, &minio.Options{
+			Creds: credentials.NewStaticV4(access, secret, ""),
+		})
+		Expect(err).NotTo(HaveOccurred(), "Failed to build the tenant S3 client")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		payload := []byte("fs-operator tenant object")
+		_, err = client.PutObject(ctx, "e2e-media", "tenant.txt",
+			bytes.NewReader(payload), int64(len(payload)), minio.PutObjectOptions{})
+		Expect(err).NotTo(HaveOccurred(), "the minted credential could not put an object")
+
+		object, err := client.GetObject(ctx, "e2e-media", "tenant.txt", minio.GetObjectOptions{})
+		Expect(err).NotTo(HaveOccurred(), "the minted credential could not get the object")
+
+		defer func() { _ = object.Close() }()
+
+		got, err := io.ReadAll(object)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(Equal(payload), "the tenant object came back different")
+	})
+
 	It("refuses to shrink the cluster", func() {
 		By("asking for one node fewer")
 		_, err := utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
@@ -178,6 +229,52 @@ func minimalExample() string {
 	return strings.ReplaceAll(example,
 		"http://etcd.default.svc:2379",
 		fmt.Sprintf("http://etcd.%s.svc:2379", clusterNamespace))
+}
+
+// tenancyManifest is an FSBucket and a generated FSAccessKey for the e2e
+// cluster: rf3 (hostable on three nodes) as a per-bucket scheme override, and a
+// write grant so the minted credential can round-trip an object.
+func tenancyManifest() string {
+	return fmt.Sprintf(`apiVersion: fs.go-faster.org/v1alpha1
+kind: FSBucket
+metadata:
+  name: e2e-media
+spec:
+  clusterRef:
+    name: %[1]s
+  scheme: rf3
+---
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSAccessKey
+metadata:
+  name: e2e-writer
+spec:
+  clusterRef:
+    name: %[1]s
+  grants:
+    - bucket: "e2e-media"
+      permission: write
+`, clusterName)
+}
+
+// resourceCondition reads one status condition of a namespaced resource.
+func resourceCondition(kind, name, conditionType string) string {
+	out, err := utils.Run(exec.Command("kubectl", "get", kind, name, "-n", clusterNamespace,
+		"-o", fmt.Sprintf("jsonpath={.status.conditions[?(@.type==%q)].status}", conditionType)))
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(out)
+}
+
+// resourceField reads a jsonpath field of a namespaced resource.
+func resourceField(kind, name, jsonpath string) string {
+	out, err := utils.Run(exec.Command("kubectl", "get", kind, name, "-n", clusterNamespace,
+		"-o", "jsonpath="+jsonpath))
+	Expect(err).NotTo(HaveOccurred())
+
+	return strings.TrimSpace(out)
 }
 
 // clusterCondition reads one condition of the cluster.
