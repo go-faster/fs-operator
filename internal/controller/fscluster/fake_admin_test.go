@@ -44,6 +44,11 @@ type fakeAdmin struct {
 	// API error, modelling a node that is not up.
 	reloads     map[string]int
 	unreachable map[string]bool
+
+	// rebalanceRunning and repairQueue drive the cluster's convergence: the
+	// cluster is converged only with no rebalance running and an empty queue.
+	rebalanceRunning bool
+	repairQueue      map[string]int
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -52,6 +57,7 @@ func newFakeAdmin() *fakeAdmin {
 		mounted:     map[string]string{},
 		reloads:     map[string]int{},
 		unreachable: map[string]bool{},
+		repairQueue: map[string]int{},
 	}
 }
 
@@ -90,6 +96,22 @@ func (f *fakeAdmin) reloadCount(url string) int {
 	defer f.mu.Unlock()
 
 	return f.reloads[url]
+}
+
+// setRebalanceRunning toggles whether a rebalance is moving data cluster-wide.
+func (f *fakeAdmin) setRebalanceRunning(running bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.rebalanceRunning = running
+}
+
+// setRepairQueue sets a node's pending repair-queue depth.
+func (f *fakeAdmin) setRepairQueue(url string, depth int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.repairQueue[url] = depth
 }
 
 // fakeClient is one node's view of the fake admin.
@@ -136,9 +158,27 @@ func (c *fakeClient) Reload(context.Context) (fsclient.ReloadResult, error) {
 }
 
 func (c *fakeClient) ClusterStatus(context.Context) (fsclient.ClusterStatus, error) {
-	return fsclient.ClusterStatus{}, nil
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.unreachable[c.url] {
+		return fsclient.ClusterStatus{}, errors.New("node admin unreachable")
+	}
+
+	return fsclient.ClusterStatus{RebalanceRunning: f.rebalanceRunning}, nil
 }
 
 func (c *fakeClient) Rebalance(context.Context) (fsclient.Rebalance, error) {
-	return fsclient.Rebalance{}, nil
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.unreachable[c.url] {
+		return fsclient.Rebalance{}, errors.New("node admin unreachable")
+	}
+
+	return fsclient.Rebalance{RepairQueueDepth: f.repairQueue[c.url]}, nil
 }

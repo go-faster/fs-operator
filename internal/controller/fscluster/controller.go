@@ -131,6 +131,7 @@ func (r *Reconciler) pipeline() controller.Pipeline[*pass] {
 		{Name: "secrets", Run: r.reconcileSecrets},
 		{Name: "services", Run: r.reconcileServices},
 		{Name: "configs", Run: r.reconcileNodeConfigs},
+		{Name: "convergence", Run: r.gatherConvergence},
 		{Name: "nodes", Run: r.reconcileNodes},
 		{Name: "reload", Run: r.reconcileReload},
 		{Name: "budget", Run: r.reconcileBudget},
@@ -165,6 +166,10 @@ type pass struct {
 	// about the running cluster.
 	live   map[string]*appsv1.StatefulSet
 	health health
+
+	// convergence is what the admin API reports about reconvergence; the
+	// rollout gates on it and the status reports Converged from it.
+	convergence convergence
 
 	// update is the rolling change in flight, if any.
 	update *fsv1alpha1.UpdateStatus
@@ -205,6 +210,14 @@ func (p *pass) setCondition(conditionType string, status metav1.ConditionStatus,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: p.object.Generation,
+	})
+}
+
+// hasCondition reports whether a condition of the given type is already queued,
+// so a later step can defer to an earlier, more specific one.
+func (p *pass) hasCondition(conditionType string) bool {
+	return slices.ContainsFunc(p.conditions, func(c metav1.Condition) bool {
+		return c.Type == conditionType
 	})
 }
 

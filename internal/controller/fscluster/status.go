@@ -188,6 +188,29 @@ func (r *Reconciler) summarize(p *pass) {
 
 	r.summarizeReadiness(p)
 	r.summarizeAlignment(p)
+	r.summarizeConvergence(p)
+}
+
+// summarizeConvergence reports the Converged condition from what the admin API
+// observed, unless the rollout already set it (its convergence-timeout
+// condition, raised while a roll is stuck, is more specific and wins).
+func (r *Reconciler) summarizeConvergence(p *pass) {
+	if p.hasCondition(fsv1alpha1.ConditionConverged) || !p.convergence.known {
+		return
+	}
+
+	switch {
+	case p.convergence.converged:
+		p.setCondition(fsv1alpha1.ConditionConverged, metav1.ConditionTrue,
+			fsv1alpha1.ReasonConverged, "Repair queue empty and placement settled")
+	case p.convergence.repairQueue > 0:
+		p.setCondition(fsv1alpha1.ConditionConverged, metav1.ConditionFalse,
+			fsv1alpha1.ReasonRepairQueueBacklog,
+			fmt.Sprintf("%d repair tasks pending across the cluster", p.convergence.repairQueue))
+	default:
+		p.setCondition(fsv1alpha1.ConditionConverged, metav1.ConditionFalse,
+			fsv1alpha1.ReasonRebalancing, "A rebalance is moving data")
+	}
 }
 
 // summarizeReadiness reports whether the cluster can acknowledge a write.

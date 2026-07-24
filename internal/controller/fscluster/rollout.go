@@ -104,19 +104,27 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 		return controller.Continue()
 	}
 
-	// Preflight: a node whose pod is not ready is a failure domain already
-	// missing. Taking a second one down is what the upgrade contract forbids.
-	if waiting := p.health.notReady; len(waiting) > 0 {
-		// A node that is not serving is a failure domain already missing, and
-		// it may well be the one just replaced. Which of the two it is shows
-		// in the phase: a rollout that has touched a node is still rolling it.
-		phase, node := fsv1alpha1.UpdatePhasePreflight, ""
-		if update := p.object.Status.Update; update != nil && update.Phase == fsv1alpha1.UpdatePhaseRollingNodes {
-			phase, node = update.Phase, update.Node
-		}
+	// The phase a hold reports: a rollout that has already touched a node is
+	// still RollingNodes; one that has not is in Preflight.
+	phase, holdNode := fsv1alpha1.UpdatePhasePreflight, ""
+	if update := p.object.Status.Update; update != nil && update.Phase == fsv1alpha1.UpdatePhaseRollingNodes {
+		phase, holdNode = update.Phase, update.Node
+	}
 
-		return r.hold(p, phase, node, fmt.Sprintf(
+	// A node whose pod is not ready is a failure domain already missing.
+	// Taking a second one down is what the upgrade contract forbids.
+	if waiting := p.health.notReady; len(waiting) > 0 {
+		return r.hold(p, phase, holdNode, fmt.Sprintf(
 			"waiting for node(s) %v to become ready before replacing another", waiting))
+	}
+
+	// Every pod is up, but the cluster must also have reconverged — the repair
+	// queue drained and no rebalance moving data — before another node's
+	// failure domain is taken down (SPEC §8.2). Unknown convergence (no node
+	// answered) holds too, rather than proceed blind.
+	if !p.convergence.known || !p.convergence.converged {
+		return r.hold(p, phase, holdNode,
+			"waiting for the cluster to reconverge (repair queue / rebalance) before replacing another node")
 	}
 
 	next := stale[0]

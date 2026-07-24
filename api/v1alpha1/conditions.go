@@ -85,6 +85,8 @@ const (
 	ReasonDraining               ConditionReason = "Draining"
 	ReasonRollingNodes           ConditionReason = "RollingNodes"
 	ReasonConfigReloadPending    ConditionReason = "ConfigReloadPending"
+	ReasonConverged              ConditionReason = "Converged"
+	ReasonRebalancing            ConditionReason = "Rebalancing"
 	ReasonRepairQueueBacklog     ConditionReason = "RepairQueueBacklog"
 	ReasonConvergenceTimeout     ConditionReason = "ConvergenceTimeout"
 	ReasonMigrationPending       ConditionReason = "MigrationPending"
