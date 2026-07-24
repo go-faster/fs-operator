@@ -121,11 +121,16 @@ Now unblocked by fs v0.6.0. Sequenced so each piece builds on the last:
      prometheus-operator dependency
    - ✅ **Docs guides** — upgrades, scaling, monitoring written from the code
      (§13)
-   - ☐ Release **v0.2.0**
+   - ✅ Release **v0.2.0**
 
-All P2 **functionality and docs** are done (fsclient, hot reload, convergence
-gate, migration Job, NetworkPolicy, PVC expansion, PodMonitor, day-2 guides).
-The only thing left in P2 is cutting the **v0.2.0** release.
+**P2 (day-2) is complete and released as `v0.2.0` (2026-07-24).** Shipped:
+fsclient, hot reload with revision verification, convergence-gated rollouts,
+schema migration Job, NetworkPolicy, PVC expansion, PodMonitor, day-2 guides.
+Multi-arch operator image `ghcr.io/go-faster/fs-operator:v0.2.0`
+(`linux/amd64` + `linux/arm64`) and chart
+`oci://ghcr.io/go-faster/charts/fs-operator` (chart `0.2.0`, appVersion
+`v0.2.0`). All CI green on the released commit `004c0e6`; Release workflow
+published both artifacts. Next focus is P3 (see SPEC.md §16).
 
 ## Definition of done for P1 (met — v0.1.0)
 
