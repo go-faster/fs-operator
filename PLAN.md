@@ -130,7 +130,40 @@ Multi-arch operator image `ghcr.io/go-faster/fs-operator:v0.2.0`
 (`linux/amd64` + `linux/arm64`) and chart
 `oci://ghcr.io/go-faster/charts/fs-operator` (chart `0.2.0`, appVersion
 `v0.2.0`). All CI green on the released commit `004c0e6`; Release workflow
-published both artifacts. Next focus is P3 (see SPEC.md §16).
+published both artifacts.
+
+## P3 (tenancy) — complete, released as `v0.3.0` (2026-07-24)
+
+Delivered SPEC §6/§7 tenancy on top of fs **v0.7.0** (which added the §11.3
+bucket-scheme admin endpoints — go-faster/fs PR #95):
+
+- ✅ **FSAccessKey controller** — generated credential minted once into an
+  owned Secret, or imported via `existingSecretRef` (weak-key refusal, external
+  rotation propagated by a hot reload); Ready verified via the admin API's
+  `listAccessKeys`. Stamps a credential fingerprint that drives the cluster.
+- ✅ **fscluster render merge** — every FSAccessKey of a cluster rendered into
+  each node's config as a declarative `auth.keys` entry, applied and verified by
+  the existing hot-reload machinery; the cluster watches FSAccessKeys.
+- ✅ **FSBucket controller** — S3 `CreateBucket` via minio over the client
+  Service + root credentials, per-bucket `scheme` override through the new admin
+  endpoint (`status.scheme` = effective), reclaim policy (Retain / Delete with
+  non-empty refusal). `FSBucket.spec.scheme` added.
+- ✅ **fsclient** — `ListAccessKeys`, `Get/SetBucketScheme` with typed errors
+  (`ErrSchemeRejected`, `ErrBucketNotFound`).
+- ✅ **Refactor** — step-pipeline framework moved to
+  `internal/controller/pipeline` to break the import cycle the tenancy
+  controllers would create.
+- ✅ **Examples 04–07** and the buckets-and-keys guide; RBAC/CRDs/chart synced.
+- ✅ **e2e** — kind bucket + generated access-key round-trip (rf3 override,
+  put/get with the minted credential).
+- ✅ Release **v0.3.0**.
+
+**P3 (tenancy) is complete and released as `v0.3.0` (2026-07-24).** Multi-arch
+image `ghcr.io/go-faster/fs-operator:v0.3.0` and chart
+`oci://ghcr.io/go-faster/charts/fs-operator` (chart `0.3.0`, appVersion
+`v0.3.0`); operator pinned to fs `v0.7.0`. All CI green on `a767707`. Next focus
+is P4 (lifecycle: decommission/drain, disk add/remove, etcd TLS, managed
+dev-etcd, admission webhook, Grafana dashboards — SPEC §16).
 
 ## Definition of done for P1 (met — v0.1.0)
 
