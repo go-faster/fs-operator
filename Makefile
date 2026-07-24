@@ -278,6 +278,14 @@ install-helm: ## Install the latest version of Helm.
 		curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash; \
 	}
 
+.PHONY: helm-sync-crds
+helm-sync-crds: manifests ## Sync the owned chart's CRD templates from config/crd (run after changing the API types).
+	./hack/sync-chart-crds.sh
+
+.PHONY: helm-lint
+helm-lint: install-helm ## Lint the Helm chart.
+	$(HELM) lint $(HELM_CHART_DIR)
+
 .PHONY: helm-deploy
 helm-deploy: install-helm ## Deploy manager to the K8s cluster via Helm. Specify an image with IMG.
 	$(HELM) upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) \

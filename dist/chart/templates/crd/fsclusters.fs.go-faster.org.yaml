@@ -14,13 +14,31 @@ spec:
     kind: FSCluster
     listKind: FSClusterList
     plural: fsclusters
+    shortNames:
+    - fsc
     singular: fscluster
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.nodes
+      name: Nodes
+      type: integer
+    - jsonPath: .status.readyNodes
+      name: ReadyNodes
+      type: integer
+    - jsonPath: .spec.scheme
+      name: Scheme
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: FSCluster is the Schema for the fsclusters API
+        description: FSCluster is the Schema for the fsclusters API.
         properties:
           apiVersion:
             description: |-
@@ -42,25 +60,742 @@ spec:
           spec:
             description: spec defines the desired state of FSCluster
             properties:
-              foo:
-                description: foo is an example field of FSCluster. Edit fscluster_types.go
-                  to remove/update
+              auth:
+                description: auth configures S3 authentication.
+                properties:
+                  publicReadBuckets:
+                    description: publicReadBuckets may be read anonymously.
+                    items:
+                      type: string
+                    type: array
+                  rootCredentialsSecretRef:
+                    description: |-
+                      rootCredentialsSecretRef references a Secret with keys "access-key"
+                      and "secret-key", granted admin on all buckets. Generated if omitted.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
+              clusterSecretRef:
+                description: |-
+                  clusterSecretRef references a Secret with key "secret" holding the
+                  shared cluster secret (HMAC peer auth, min 16 characters). Generated
+                  if omitted. Immutable: fs has no secret rotation; mixed secrets
+                  partition the cluster.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: clusterSecretRef is immutable
+                  rule: self == oldSelf
+              etcd:
+                description: etcd configures the control plane the cluster registers
+                  in.
+                properties:
+                  cleanupOnDelete:
+                    description: |-
+                      cleanupOnDelete deletes the cluster's keys under prefix when the
+                      FSCluster is deleted. Off by default: with a shared etcd, prefer
+                      leaving state over destroying a neighbour's.
+                    type: boolean
+                  external:
+                    description: |-
+                      external points the cluster at user-operated etcd endpoints. This is
+                      the production mode.
+                    properties:
+                      endpoints:
+                        description: endpoints are the etcd client URLs.
+                        items:
+                          minLength: 1
+                          type: string
+                        minItems: 1
+                        type: array
+                    required:
+                    - endpoints
+                    type: object
+                  prefix:
+                    description: |-
+                      prefix namespaces this cluster's keys in etcd. Defaults to
+                      /fs/<namespace>/<name>. Immutable.
+                    maxLength: 250
+                    type: string
+                  ttl:
+                    description: |-
+                      ttl is the node registration lease: how long a dead node lingers in
+                      the topology. Zero defers to the fs default (10s); minimum 1s.
+                    type: string
+                required:
+                - external
+                type: object
+                x-kubernetes-validations:
+                - message: etcd.prefix is immutable
+                  rule: self.prefix == oldSelf.prefix
+              image:
+                description: image is the fs container image to run on every node.
+                properties:
+                  pullPolicy:
+                    default: IfNotPresent
+                    description: pullPolicy is the image pull policy.
+                    enum:
+                    - Always
+                    - IfNotPresent
+                    - Never
+                    type: string
+                  pullSecrets:
+                    description: pullSecrets are image pull secrets for the fs pods.
+                    items:
+                      description: |-
+                        LocalObjectReference contains enough information to let you locate the
+                        referenced object inside the same namespace.
+                      properties:
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    type: array
+                  repository:
+                    default: ghcr.io/go-faster/fs
+                    description: repository is the image repository.
+                    type: string
+                  tag:
+                    description: |-
+                      tag is the image tag. Required: cluster upgrades are deliberate,
+                      one-node-at-a-time operations, so a floating tag is never safe.
+                    minLength: 1
+                    type: string
+                required:
+                - tag
+                type: object
+              integrity:
+                description: integrity configures object integrity checking (scrub).
+                properties:
+                  scrubInterval:
+                    description: |-
+                      scrubInterval, if positive, runs a background scrubber walking all
+                      objects on this cadence. Zero disables it.
+                    type: string
+                  scrubQuarantine:
+                    description: |-
+                      scrubQuarantine moves corrupt objects aside instead of only reporting
+                      them.
+                    type: boolean
+                  verifyOnRead:
+                    description: |-
+                      verifyOnRead recomputes and checks each object's checksum before
+                      serving it (costs a full extra read per GET).
+                    type: boolean
+                type: object
+              networkPolicy:
+                description: |-
+                  networkPolicy, when true, creates a NetworkPolicy restricting the peer
+                  (7080) and admin (8090) ports to cluster pods and the operator. S3
+                  stays unrestricted.
+                type: boolean
+              observability:
+                description: observability configures telemetry of the fs pods.
+                properties:
+                  logLevel:
+                    default: info
+                    description: logLevel sets the fs log level.
+                    enum:
+                    - debug
+                    - info
+                    - warn
+                    - error
+                    type: string
+                  otlp:
+                    description: otlp configures the OpenTelemetry exporter env of
+                      the fs pods.
+                    properties:
+                      endpoint:
+                        description: endpoint is the OTLP endpoint URL; empty disables
+                          the OTLP exporters.
+                        type: string
+                      protocol:
+                        default: grpc
+                        description: protocol is the OTLP transport.
+                        enum:
+                        - grpc
+                        - http/protobuf
+                        type: string
+                    type: object
+                  podMonitor:
+                    description: |-
+                      podMonitor creates a PodMonitor for the fs pods' Prometheus metrics
+                      (requires the monitoring.coreos.com API group).
+                    type: boolean
+                type: object
+              podTemplate:
+                description: |-
+                  podTemplate carries pod-level knobs applied uniformly to every node's
+                  StatefulSet.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: annotations are added to every node's pod.
+                    type: object
+                  extraEnv:
+                    description: extraEnv appends environment variables to the fs
+                      container.
+                    items:
+                      description: EnvVar represents an environment variable present
+                        in a Container.
+                      properties:
+                        name:
+                          description: |-
+                            Name of the environment variable.
+                            May consist of any printable ASCII characters except '='.
+                          type: string
+                        value:
+                          description: |-
+                            Variable references $(VAR_NAME) are expanded
+                            using the previously defined environment variables in the container and
+                            any service environment variables. If a variable cannot be resolved,
+                            the reference in the input string will be unchanged. Double $$ are reduced
+                            to a single $, which allows for escaping the $(VAR_NAME) syntax: i.e.
+                            "$$(VAR_NAME)" will produce the string literal "$(VAR_NAME)".
+                            Escaped references will never be expanded, regardless of whether the variable
+                            exists or not.
+                            Defaults to "".
+                          type: string
+                        valueFrom:
+                          description: Source for the environment variable's value.
+                            Cannot be used if value is not empty.
+                          properties:
+                            configMapKeyRef:
+                              description: Selects a key of a ConfigMap.
+                              properties:
+                                key:
+                                  description: The key to select.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the ConfigMap or its
+                                    key must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            fieldRef:
+                              description: |-
+                                Selects a field of the pod: supports metadata.name, metadata.namespace, `metadata.labels['<KEY>']`, `metadata.annotations['<KEY>']`,
+                                spec.nodeName, spec.serviceAccountName, status.hostIP, status.podIP, status.podIPs.
+                              properties:
+                                apiVersion:
+                                  description: Version of the schema the FieldPath
+                                    is written in terms of, defaults to "v1".
+                                  type: string
+                                fieldPath:
+                                  description: Path of the field to select in the
+                                    specified API version.
+                                  type: string
+                              required:
+                              - fieldPath
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            fileKeyRef:
+                              description: |-
+                                FileKeyRef selects a key of the env file.
+                                Requires the EnvFiles feature gate to be enabled.
+                              properties:
+                                key:
+                                  description: |-
+                                    The key within the env file. An invalid key will prevent the pod from starting.
+                                    The keys defined within a source may consist of any printable ASCII characters except '='.
+                                    During Alpha stage of the EnvFiles feature gate, the key size is limited to 128 characters.
+                                  type: string
+                                optional:
+                                  default: false
+                                  description: |-
+                                    Specify whether the file or its key must be defined. If the file or key
+                                    does not exist, then the env var is not published.
+                                    If optional is set to true and the specified key does not exist,
+                                    the environment variable will not be set in the Pod's containers.
+
+                                    If optional is set to false and the specified key does not exist,
+                                    an error will be returned during Pod creation.
+                                  type: boolean
+                                path:
+                                  description: |-
+                                    The path within the volume from which to select the file.
+                                    Must be relative and may not contain the '..' path or start with '..'.
+                                  type: string
+                                volumeName:
+                                  description: The name of the volume mount containing
+                                    the env file.
+                                  type: string
+                              required:
+                              - key
+                              - path
+                              - volumeName
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            resourceFieldRef:
+                              description: |-
+                                Selects a resource of the container: only resources limits and requests
+                                (limits.cpu, limits.memory, limits.ephemeral-storage, requests.cpu, requests.memory and requests.ephemeral-storage) are currently supported.
+                              properties:
+                                containerName:
+                                  description: 'Container name: required for volumes,
+                                    optional for env vars'
+                                  type: string
+                                divisor:
+                                  anyOf:
+                                  - type: integer
+                                  - type: string
+                                  description: Specifies the output format of the
+                                    exposed resources, defaults to "1"
+                                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                                  x-kubernetes-int-or-string: true
+                                resource:
+                                  description: 'Required: resource to select'
+                                  type: string
+                              required:
+                              - resource
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            secretKeyRef:
+                              description: Selects a key of a secret in the pod's
+                                namespace
+                              properties:
+                                key:
+                                  description: The key of the secret to select from.  Must
+                                    be a valid secret key.
+                                  type: string
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                                optional:
+                                  description: Specify whether the Secret or its key
+                                    must be defined
+                                  type: boolean
+                              required:
+                              - key
+                              type: object
+                              x-kubernetes-map-type: atomic
+                          type: object
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: labels are added to every node's pod.
+                    type: object
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      nodeSelector applies to every node's pod (racks add their own on
+                      top).
+                    type: object
+                  priorityClassName:
+                    description: priorityClassName applies to every node's pod.
+                    type: string
+                  resources:
+                    description: resources are the fs container's resource requirements.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  tolerations:
+                    description: tolerations apply to every node's pod.
+                    items:
+                      description: |-
+                        The pod this Toleration is attached to tolerates any taint that matches
+                        the triple <key,value,effect> using the matching operator <operator>.
+                      properties:
+                        effect:
+                          description: |-
+                            Effect indicates the taint effect to match. Empty means match all taint effects.
+                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                          type: string
+                        key:
+                          description: |-
+                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                          type: string
+                        operator:
+                          description: |-
+                            Operator represents a key's relationship to the value.
+                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
+                            Exists is equivalent to wildcard for value, so that a pod can
+                            tolerate all taints of a particular category.
+                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                          type: string
+                        tolerationSeconds:
+                          description: |-
+                            TolerationSeconds represents the period of time the toleration (which must be
+                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                            it is not set, which means tolerate the taint forever (do not evict). Zero and
+                            negative values will be treated as 0 (evict immediately) by the system.
+                          format: int64
+                          type: integer
+                        value:
+                          description: |-
+                            Value is the taint value the toleration matches to.
+                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          type: string
+                      type: object
+                    type: array
+                type: object
+              rebalance:
+                description: |-
+                  rebalance tunes the automatic rebalancer. Zero values defer to the fs
+                  defaults.
+                properties:
+                  autoDisabled:
+                    description: |-
+                      autoDisabled turns automatic rebalancing off; relocation then happens
+                      only via periodic scrubs and manual runs.
+                    type: boolean
+                  cooldown:
+                    description: |-
+                      cooldown is the minimum gap between a node's automatic trigger
+                      attempts (fs default 15m).
+                    type: string
+                  fullWatermark:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      fullWatermark is the disk-fullness fraction (0,1] beyond which a node
+                      warns that the disk should be drained (fs default 0.9).
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  settle:
+                    description: |-
+                      settle is how long the membership must be stable before data moves
+                      (fs default 1m).
+                    type: string
+                type: object
+              s3:
+                description: s3 configures how the S3 endpoint is exposed.
+                properties:
+                  service:
+                    description: service shapes the client Service in front of the
+                      S3 listeners.
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          annotations are added to the Service (e.g. for load-balancer
+                          controllers).
+                        type: object
+                      port:
+                        default: 8080
+                        description: port is the S3 port.
+                        format: int32
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      type:
+                        default: ClusterIP
+                        description: type is the Service type.
+                        enum:
+                        - ClusterIP
+                        - NodePort
+                        - LoadBalancer
+                        type: string
+                    type: object
+                  tls:
+                    description: |-
+                      tls terminates TLS in fs itself using a kubernetes.io/tls Secret.
+                      Certificate renewals hot-reload without restarts.
+                    properties:
+                      secretName:
+                        description: |-
+                          secretName names a kubernetes.io/tls Secret with the serving
+                          certificate. Empty serves plaintext.
+                        type: string
+                    type: object
+                type: object
+              scheme:
+                default: rf2.5
+                description: |-
+                  scheme is the default replication scheme for all buckets: "rf2.5"
+                  (2 replicas + half parity), "rf3" (3 replicas) or "ec:k,m"
+                  (Reed-Solomon). Changeable at runtime: new writes use it immediately
+                  and existing objects converge via repair/rebalance. The controller
+                  refuses a scheme the topology cannot host (distinct failure domains
+                  below the scheme requirement).
+                pattern: ^(rf2\.5|rf3|ec:[1-9][0-9]*,[1-9][0-9]*)$
                 type: string
+              storage:
+                description: |-
+                  storage declares each node's disks. Every disk becomes one
+                  PersistentVolumeClaim per node.
+                properties:
+                  disks:
+                    description: |-
+                      disks are this cluster's per-node storage devices: every entry becomes
+                      one PersistentVolumeClaim on every node, mounted at
+                      /var/lib/fs/disks/<name>. Entries may be added; they may not be
+                      removed or renamed, and sizes may only grow.
+                    items:
+                      description: DiskSpec is one per-node disk.
+                      properties:
+                        name:
+                          description: name identifies the disk within each node (the
+                            fs disk id). Immutable.
+                          maxLength: 15
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        size:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          description: |-
+                            size is the capacity requested for each node's PVC of this disk. It
+                            may only grow, and growing it requires the StorageClass to allow
+                            volume expansion.
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        storageClass:
+                          description: |-
+                            storageClass selects the StorageClass for this disk's PVCs; empty uses
+                            the cluster default.
+                          type: string
+                        weight:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          description: |-
+                            weight is the disk's relative capacity weight for placement (fs
+                            semantics; default 1). Expressed as a quantity so fractional weights
+                            like "0.5" are possible. Changing weights rolls the cluster.
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                      required:
+                      - name
+                      - size
+                      type: object
+                    maxItems: 32
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  reclaimPolicy:
+                    default: Retain
+                    description: |-
+                      reclaimPolicy controls what happens to a node's PVCs when the node is
+                      removed or the cluster is deleted.
+                    enum:
+                    - Retain
+                    - Delete
+                    type: string
+                required:
+                - disks
+                type: object
+                x-kubernetes-validations:
+                - message: disks may not be removed or renamed
+                  rule: oldSelf.disks.all(d, self.disks.exists(n, n.name == d.name))
+              topology:
+                description: topology declares the cluster's nodes and failure domains.
+                properties:
+                  nodes:
+                    description: 'nodes is the flat topology: N nodes, each its own
+                      failure domain.'
+                    format: int32
+                    maximum: 16
+                    minimum: 1
+                    type: integer
+                  podAntiAffinity:
+                    default: Required
+                    description: |-
+                      podAntiAffinity spreads fs nodes over distinct Kubernetes nodes.
+                      Required (the default) keeps the failure model honest; use Preferred
+                      or None only for dev clusters.
+                    enum:
+                    - Required
+                    - Preferred
+                    - None
+                    type: string
+                  racks:
+                    description: |-
+                      racks are explicit failure domains; placement spreads object copies
+                      across racks first. Rack membership is declared here and pinned with
+                      node affinity — it is never derived from where a pod happens to be
+                      scheduled.
+                    items:
+                      description: RackSpec is one failure domain and its scheduling
+                        constraints.
+                      properties:
+                        name:
+                          description: |-
+                            name identifies the rack; it becomes the fs rack label and part of
+                            node names. Immutable per entry (renaming a rack is a decommission
+                            plus a new rack).
+                          maxLength: 15
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        nodeSelector:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            nodeSelector pins the rack's nodes to matching Kubernetes nodes.
+                            Merged over zone.
+                          type: object
+                        nodes:
+                          description: nodes is the number of fs nodes in this rack.
+                          format: int32
+                          maximum: 16
+                          minimum: 1
+                          type: integer
+                        zone:
+                          description: |-
+                            zone pins the rack's nodes to a topology.kubernetes.io/zone value
+                            (sugar for nodeSelector).
+                          type: string
+                      required:
+                      - name
+                      - nodes
+                      type: object
+                    maxItems: 16
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
+                x-kubernetes-validations:
+                - message: exactly one of nodes or racks must be set
+                  rule: has(self.nodes) != has(self.racks)
+              updatePolicy:
+                description: updatePolicy tunes rolling changes.
+                properties:
+                  convergenceTimeout:
+                    default: 30m
+                    description: |-
+                      convergenceTimeout bounds how long the operator waits, between node
+                      restarts, for the cluster to reconverge (pod ready, node registered,
+                      repair queue drained). On timeout the rollout halts — it never
+                      proceeds to another node while the cluster is unconverged — and
+                      resumes automatically when the gate passes.
+                    type: string
+                  schemaMigration:
+                    default: Auto
+                    description: |-
+                      schemaMigration selects whether the operator runs `fs cluster migrate`
+                      automatically after a successful full rollout (Auto) or only surfaces
+                      the pending migration via the SchemaCurrent condition (Manual).
+                    enum:
+                    - Auto
+                    - Manual
+                    type: string
+                type: object
+            required:
+            - etcd
+            - image
+            - storage
+            - topology
             type: object
           status:
             description: status defines the observed state of FSCluster
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the FSCluster resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                  conditions represent the current state of the FSCluster. See the
+                  documented condition types (SpecValid, ReconcileSucceeded, Ready,
+                  NodesHealthy, ClusterSizeAligned, ConfigurationInSync, Converged,
+                  SchemaCurrent).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -119,6 +854,88 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              configurationRevision:
+                description: configurationRevision is the hash of the desired rendered
+                  configs.
+                type: string
+              currentRevision:
+                description: currentRevision is the revision every node has converged
+                  to.
+                type: string
+              endpoints:
+                description: endpoints are the cluster's client endpoints.
+                properties:
+                  s3:
+                    description: s3 is the in-cluster S3 endpoint URL.
+                    type: string
+                type: object
+              nodes:
+                description: nodes is the desired node count.
+                format: int32
+                type: integer
+              observedGeneration:
+                description: |-
+                  observedGeneration is the last spec generation the controller acted
+                  on.
+                format: int64
+                type: integer
+              readyNodes:
+                description: readyNodes is the number of node pods that are Ready.
+                format: int32
+                type: integer
+              rebalance:
+                description: rebalance summarizes rebalance/repair across nodes.
+                properties:
+                  repairQueueDepth:
+                    description: repairQueueDepth is the summed pending repair tasks
+                      across nodes.
+                    format: int64
+                    type: integer
+                  state:
+                    description: state is the worst rebalance state across nodes.
+                    type: string
+                type: object
+              registeredNodes:
+                description: registeredNodes is the number of nodes present in the
+                  etcd topology.
+                format: int32
+                type: integer
+              schemaVersion:
+                description: schemaVersion reports the fs schema versions in play.
+                properties:
+                  binary:
+                    description: binary is the schema version the deployed image implements.
+                    format: int64
+                    type: integer
+                  cluster:
+                    description: cluster is the schema version recorded in etcd.
+                    format: int64
+                    type: integer
+                type: object
+              statefulSetRevision:
+                description: statefulSetRevision is the hash of the desired pod templates.
+                type: string
+              update:
+                description: update is present while a rolling change is in flight.
+                properties:
+                  node:
+                    description: node is the node currently being replaced.
+                    type: string
+                  phase:
+                    description: phase is the state-machine phase.
+                    enum:
+                    - Preflight
+                    - RollingNodes
+                    - Migrating
+                    type: string
+                  startedAt:
+                    description: startedAt is when the rolling change started.
+                    format: date-time
+                    type: string
+                type: object
+              updateRevision:
+                description: updateRevision is the revision being rolled out.
+                type: string
             type: object
         required:
         - spec

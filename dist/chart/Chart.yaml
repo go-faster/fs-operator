@@ -1,6 +1,6 @@
 apiVersion: v2
 name: fs-operator
-description: A Helm chart to distribute fs-operator
+description: Kubernetes operator for clustered go-faster/fs (S3-compatible object storage)
 type: application
 
 version: 0.1.0

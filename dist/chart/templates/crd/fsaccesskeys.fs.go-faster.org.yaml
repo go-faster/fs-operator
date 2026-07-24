@@ -17,10 +17,23 @@ spec:
     singular: fsaccesskey
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .spec.clusterRef.name
+      name: Cluster
+      type: string
+    - jsonPath: .status.accessKey
+      name: AccessKey
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: FSAccessKey is the Schema for the fsaccesskeys API
+        description: FSAccessKey is the Schema for the fsaccesskeys API.
         properties:
           apiVersion:
             description: |-
@@ -42,25 +55,94 @@ spec:
           spec:
             description: spec defines the desired state of FSAccessKey
             properties:
-              foo:
-                description: foo is an example field of FSAccessKey. Edit fsaccesskey_types.go
-                  to remove/update
+              clusterRef:
+                description: clusterRef is the FSCluster this credential belongs to.
+                  Immutable.
+                properties:
+                  name:
+                    description: name of the FSCluster.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: clusterRef is immutable
+                  rule: self == oldSelf
+              existingSecretRef:
+                description: |-
+                  existingSecretRef imports a credential from a user-managed Secret
+                  with keys "access-key" and "secret-key" (secret-key must be at least
+                  16 characters, refused otherwise). The operator never writes to this
+                  Secret; external rotation propagates to the cluster via hot reload.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              grants:
+                description: |-
+                  grants authorize the key for buckets matching a glob, up to a
+                  permission level.
+                items:
+                  description: |-
+                    GrantSpec authorizes an access key for buckets matching Bucket (a glob) up
+                    to Permission.
+                  properties:
+                    bucket:
+                      description: bucket is a glob matched against bucket names (fs
+                        grant semantics).
+                      minLength: 1
+                      type: string
+                    permission:
+                      description: permission is the maximum permitted operation class.
+                      enum:
+                      - read
+                      - write
+                      - admin
+                      type: string
+                  required:
+                  - bucket
+                  - permission
+                  type: object
+                minItems: 1
+                type: array
+              secretName:
+                description: |-
+                  secretName names the operator-owned Secret the generated credential
+                  is written to (keys: access-key, secret-key, endpoint). Defaults to
+                  <metadata.name>-credentials. Immutable; not allowed together with
+                  existingSecretRef.
+                maxLength: 253
                 type: string
+                x-kubernetes-validations:
+                - message: secretName is immutable
+                  rule: self == oldSelf
+            required:
+            - clusterRef
+            - grants
             type: object
+            x-kubernetes-validations:
+            - message: secretName and existingSecretRef are mutually exclusive
+              rule: '!(has(self.existingSecretRef) && has(self.secretName))'
           status:
             description: status defines the observed state of FSAccessKey
             properties:
+              accessKey:
+                description: accessKey is the non-secret half of the credential, for
+                  reference.
+                type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the FSAccessKey resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: conditions represent the current state of the FSAccessKey
+                  (Ready).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -119,6 +201,12 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  observedGeneration is the last spec generation the controller acted
+                  on.
+                format: int64
+                type: integer
             type: object
         required:
         - spec
