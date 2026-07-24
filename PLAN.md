@@ -87,16 +87,19 @@ worth filing upstream.
 
 Now unblocked by fs v0.6.0. Sequenced so each piece builds on the last:
 
-1. **fs admin client** — `internal/fsclient`: a thin wrapper over
-   `github.com/go-faster/fs/adminapi` (reload, cluster status, info +
-   config-revision) with a connection cache keyed by cluster, dialing the
-   per-pod admin over the headless Service (SPEC §4.2, §12). Foundation for
-   2–4.
-2. **Hot reload with revision verification** — the config step splits a
-   node's diff into hot-reloadable (auth keys/grants, public-read, TLS) vs
-   restart-requiring; on a hot-only diff, bump the config Secret and
-   `POST /api/v1/reload` per pod, then poll `config_revision` until every
-   node reports the target — `ConfigurationInSync` flips True (SPEC §8.3).
+1. ✅ **fs admin client** — `internal/fsclient`: a thin wrapper over
+   `github.com/go-faster/fs/adminapi` (info + config-revision, reload,
+   cluster status, rebalance) returning plain structs, with a connection
+   pool keyed by endpoint + token; `fscluster.AdminURL` dials the per-pod
+   admin over the headless Service (SPEC §4.2, §12).
+2. ✅ **Hot reload with revision verification** — the config carries an
+   opaque `revision` marker fs echoes; `RestartRevision` excludes the
+   hot-reloadable auth section (and the marker), so a credentials/public-
+   read/TLS-only change bumps the config Secret and reloads in place instead
+   of rolling. The reload step POSTs `/api/v1/reload` per serving node and
+   polls `config_revision` until every node reports the target;
+   `ConfigurationInSync` reflects what nodes have actually applied (SPEC
+   §8.3).
 3. **Convergence-gated rollouts** — the rollout gate also waits on
    `cluster/status` convergence (placement skew ≈ 0) and a drained repair
    queue (per-node rebalance endpoint) before the next node, to
