@@ -8,7 +8,8 @@ server:
 storage:
   root: /var/lib/fs
   type: cluster
-auth: {}
+auth:
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -38,7 +39,7 @@ observability:
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
-revision: cfg-a01cb63d6036
+revision: cfg-cf5c2ec8a05b
 ---
 # Rendered by fs-operator for node prod-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -50,7 +51,8 @@ server:
 storage:
   root: /var/lib/fs
   type: cluster
-auth: {}
+auth:
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -80,7 +82,7 @@ observability:
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
-revision: cfg-a86ef74f409c
+revision: cfg-699dfa446206
 ---
 # Rendered by fs-operator for node prod-2 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -92,7 +94,8 @@ server:
 storage:
   root: /var/lib/fs
   type: cluster
-auth: {}
+auth:
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -122,4 +125,4 @@ observability:
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
-revision: cfg-236272a2f318
+revision: cfg-2caabfdafaf5

@@ -87,12 +87,24 @@ type Rebalance struct {
 	RepairQueueDepth int
 }
 
+// Grant authorises a key for buckets matching Bucket (a glob) up to Permission
+// ("read", "write" or "admin").
+type Grant struct {
+	Bucket     string
+	Permission string
+}
+
 // AccessKey is one credential the cluster accepts (GET /api/v1/access-keys),
-// secret omitted. The operator lists these to confirm a declarative
-// FSAccessKey has been applied cluster-wide (SPEC §7).
+// secret omitted. The operator lists these to reconcile the declarative
+// FSAccessKeys against the cluster's etcd-backed key store (SPEC §7).
 type AccessKey struct {
 	AccessKey string
+	Grants    []Grant
 }
+
+// ErrKeyExists is returned by CreateAccessKey when the access key already
+// exists (HTTP 409).
+var ErrKeyExists = errors.New("access key already exists")
 
 // BucketScheme is a bucket's effective replication scheme and whether it
 // overrides the cluster default (GET/PUT /api/v1/buckets/{bucket}/scheme).
@@ -222,7 +234,7 @@ func (c *Client) Rebalance(ctx context.Context) (Rebalance, error) {
 	}, nil
 }
 
-// ListAccessKeys returns every credential the node accepts, secrets omitted.
+// ListAccessKeys returns every credential the cluster accepts, secrets omitted.
 func (c *Client) ListAccessKeys(ctx context.Context) ([]AccessKey, error) {
 	list, err := c.api.ListAccessKeys(ctx)
 	if err != nil {
@@ -231,10 +243,92 @@ func (c *Client) ListAccessKeys(ctx context.Context) ([]AccessKey, error) {
 
 	out := make([]AccessKey, 0, len(list.Keys))
 	for _, k := range list.Keys {
-		out = append(out, AccessKey{AccessKey: k.AccessKey})
+		out = append(out, AccessKey{AccessKey: k.AccessKey, Grants: grantsFromAPI(k.Grants)})
 	}
 
 	return out, nil
+}
+
+// CreateAccessKey adds a credential to the cluster's key store with the given
+// material and grants (POST /api/v1/access-keys). With auth.source: etcd it is
+// cluster-wide and hot-reloaded on every node. Returns ErrKeyExists on 409.
+func (c *Client) CreateAccessKey(ctx context.Context, access, secret string, grants []Grant) error {
+	_, err := c.api.CreateAccessKey(ctx, &adminapi.CreateAccessKeyRequest{
+		AccessKey: adminapi.NewOptString(access),
+		SecretKey: adminapi.NewOptString(secret),
+		Grants:    grantsToAPI(grants),
+	})
+	if err != nil {
+		var status *adminapi.ErrorStatusCode
+		if errors.As(err, &status) && status.StatusCode == http.StatusConflict {
+			return errors.Wrap(ErrKeyExists, access)
+		}
+
+		return errors.Wrap(err, "create access key")
+	}
+
+	return nil
+}
+
+// DeleteAccessKey removes a credential from the cluster's key store. A missing
+// key is treated as already deleted (idempotent).
+func (c *Client) DeleteAccessKey(ctx context.Context, access string) error {
+	err := c.api.DeleteAccessKey(ctx, adminapi.DeleteAccessKeyParams{AccessKey: access})
+	if err != nil {
+		var status *adminapi.ErrorStatusCode
+		if errors.As(err, &status) && status.StatusCode == http.StatusNotFound {
+			return nil
+		}
+
+		return errors.Wrap(err, "delete access key")
+	}
+
+	return nil
+}
+
+// GetPublicReadBuckets returns the cluster-wide anonymously-readable bucket
+// list.
+func (c *Client) GetPublicReadBuckets(ctx context.Context) ([]string, error) {
+	res, err := c.api.GetPublicReadBuckets(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "get public-read buckets")
+	}
+
+	return res.Buckets, nil
+}
+
+// SetPublicReadBuckets replaces the cluster-wide public-read list (an empty
+// slice clears it).
+func (c *Client) SetPublicReadBuckets(ctx context.Context, buckets []string) error {
+	if buckets == nil {
+		buckets = []string{}
+	}
+
+	_, err := c.api.SetPublicReadBuckets(ctx, &adminapi.SetPublicReadBucketsRequest{Buckets: buckets})
+	if err != nil {
+		return errors.Wrap(err, "set public-read buckets")
+	}
+
+	return nil
+}
+
+// grantsToAPI/grantsFromAPI convert between the plain and generated grant types.
+func grantsToAPI(grants []Grant) []adminapi.Grant {
+	out := make([]adminapi.Grant, 0, len(grants))
+	for _, g := range grants {
+		out = append(out, adminapi.Grant{Bucket: g.Bucket, Permission: adminapi.Permission(g.Permission)})
+	}
+
+	return out
+}
+
+func grantsFromAPI(grants []adminapi.Grant) []Grant {
+	out := make([]Grant, 0, len(grants))
+	for _, g := range grants {
+		out = append(out, Grant{Bucket: g.Bucket, Permission: string(g.Permission)})
+	}
+
+	return out
 }
 
 // GetBucketScheme reads a bucket's effective replication scheme and override.

@@ -26,13 +26,15 @@ import (
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 )
 
-// TestReconcileHotReload is the §8.3 fast path end to end: a change touching
-// only hot-reloadable material updates the config Secret and is applied by a
-// reload — no pod restart — and ConfigurationInSync flips True only once every
-// node reports the target config revision.
-func TestReconcileHotReload(t *testing.T) {
+// TestReconcileConfigurationInSync checks the config-revision verification the
+// reload step performs: ConfigurationInSync flips True only once every node
+// reports the config revision it was given. Credentials and public-read are no
+// longer rendered into the config (they are cluster-wide in etcd, fs §6.8), so
+// what the step guards now is that a node is actually running the intended
+// config after a change was applied.
+func TestReconcileConfigurationInSync(t *testing.T) {
 	r, _, admin := reconcilerWithAdmin(t)
-	key := createCluster(t, r, "hot-reload", nil)
+	key := createCluster(t, r, "config-insync", nil)
 
 	reconcile(t, r, key)
 
@@ -40,11 +42,22 @@ func TestReconcileHotReload(t *testing.T) {
 	get(t, r, key.Namespace, key.Name, &cluster)
 
 	nodes := Nodes(&cluster)
-
-	// Bring every node up and have it report the configuration it was given,
-	// so the cluster starts in sync.
 	for _, node := range nodes {
 		serving(t, r, key, node)
+	}
+
+	// Only the first node reports the config revision it was given; the rest
+	// have not applied it yet.
+	admin.setApplied(nodeAdminURL(key, nodes[0]), configRevision(t, r, key, nodes[0]))
+
+	reconcile(t, r, key)
+
+	if c := condition(t, r, key, fsv1alpha1.ConditionConfigurationInSync); c == nil || c.Status != metav1.ConditionFalse {
+		t.Fatalf("ConfigurationInSync = %v, want False while some nodes have not applied the config", c)
+	}
+
+	// Every node now reports the target revision.
+	for _, node := range nodes {
 		admin.setApplied(nodeAdminURL(key, node), configRevision(t, r, key, node))
 	}
 
@@ -52,51 +65,6 @@ func TestReconcileHotReload(t *testing.T) {
 
 	if c := condition(t, r, key, fsv1alpha1.ConditionConfigurationInSync); c == nil || c.Status != metav1.ConditionTrue {
 		t.Fatalf("ConfigurationInSync = %v, want True once every node reports its config", c)
-	}
-
-	templatesBefore := templateRevisions(t, r, key, nodes)
-
-	// A public-read bucket is hot-reloadable (it lives in the auth section), so
-	// it must not roll the pods.
-	get(t, r, key.Namespace, key.Name, &cluster)
-	cluster.Spec.Auth.PublicReadBuckets = []string{publicBucket}
-
-	if err := r.Update(t.Context(), &cluster); err != nil {
-		t.Fatalf("add a public-read bucket: %v", err)
-	}
-
-	// Propagation lag: the config Secret is bumped, but the kubelet has not yet
-	// surfaced it on the nodes' volumes, so a reload re-reads the old config.
-	reconcile(t, r, key)
-
-	if templatesNow := templateRevisions(t, r, key, nodes); changedKeys(templatesBefore, templatesNow) {
-		t.Error("a hot-reloadable change rolled the pods; it should reload in place")
-	}
-
-	if c := condition(t, r, key, fsv1alpha1.ConditionConfigurationInSync); c == nil || c.Status != metav1.ConditionFalse {
-		t.Errorf("ConfigurationInSync = %v, want False while the reload has not landed", c)
-	}
-
-	for _, node := range nodes {
-		if admin.reloadCount(nodeAdminURL(key, node)) == 0 {
-			t.Errorf("node %q was never asked to reload", node.Name)
-		}
-	}
-
-	// The kubelet propagates the new Secret; the next reload picks it up.
-	for _, node := range nodes {
-		admin.setMounted(nodeAdminURL(key, node), configRevision(t, r, key, node))
-	}
-
-	reconcile(t, r, key)
-
-	if c := condition(t, r, key, fsv1alpha1.ConditionConfigurationInSync); c == nil || c.Status != metav1.ConditionTrue {
-		t.Fatalf("ConfigurationInSync = %v, want True once every node reloaded to the target", c)
-	}
-
-	// The whole change happened without a restart.
-	if changedKeys(templatesBefore, templateRevisions(t, r, key, nodes)) {
-		t.Error("the pods were rolled after all; a hot change must not restart them")
 	}
 }
 

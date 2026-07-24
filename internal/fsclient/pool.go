@@ -31,6 +31,10 @@ type Interface interface {
 	ClusterStatus(ctx context.Context) (ClusterStatus, error)
 	Rebalance(ctx context.Context) (Rebalance, error)
 	ListAccessKeys(ctx context.Context) ([]AccessKey, error)
+	CreateAccessKey(ctx context.Context, access, secret string, grants []Grant) error
+	DeleteAccessKey(ctx context.Context, access string) error
+	GetPublicReadBuckets(ctx context.Context) ([]string, error)
+	SetPublicReadBuckets(ctx context.Context, buckets []string) error
 	GetBucketScheme(ctx context.Context, bucket string) (BucketScheme, error)
 	SetBucketScheme(ctx context.Context, bucket, scheme string) (BucketScheme, error)
 }

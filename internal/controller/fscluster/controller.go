@@ -36,7 +36,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller/pipeline"
@@ -97,7 +96,6 @@ func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, err
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsaccesskeys,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets;services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -146,6 +144,7 @@ func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
 		{Name: "storage", Run: r.reconcileStorage},
 		{Name: "nodes", Run: r.reconcileNodes},
 		{Name: "reload", Run: r.reconcileReload},
+		{Name: "publicread", Run: r.reconcilePublicRead},
 		{Name: migrateName, Run: r.reconcileMigration},
 		{Name: "budget", Run: r.reconcileBudget},
 		{Name: "networkpolicy", Run: r.reconcileNetworkPolicy},
@@ -429,16 +428,11 @@ func (r *Reconciler) reconcileServices(ctx context.Context, p *pass) (pipeline.O
 // configuration, the fingerprint of the part only a restart can apply, and its
 // StatefulSet. Nothing here touches the API server, so the steps that observe
 // and the steps that write both work from the same desired state.
-func (r *Reconciler) render(ctx context.Context, p *pass) (pipeline.Outcome, error) {
-	// The cluster's FSAccessKeys are the declarative credentials rendered into
-	// every node's config (SPEC §7). A credential change bumps the config
-	// revision, which the reload step then applies and verifies.
-	keys, err := r.collectAccessKeys(ctx, p.cluster)
-	if err != nil {
-		return pipeline.Outcome{}, err
-	}
-
-	opts := RenderOptions{Keys: keys}
+func (r *Reconciler) render(_ context.Context, p *pass) (pipeline.Outcome, error) {
+	// Credentials are cluster-wide in etcd (fs §6.8), managed through the admin
+	// API by the FSAccessKey controller and the public-read step — none are
+	// rendered into the config here (SPEC §7).
+	opts := RenderOptions{}
 
 	configs, err := RenderNodeConfigs(p.cluster, p.nodes, opts)
 	if err != nil {
@@ -562,25 +556,6 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.Service{}).
 		Owns(&batchv1.Job{}).
-		// An FSAccessKey change (add, remove, grant edit, credential rotate)
-		// re-renders the cluster's config so the declarative credential set
-		// stays in sync (SPEC §7). The FSAccessKey controller stamps a
-		// credential fingerprint on the key when its Secret changes, so a
-		// rotation of an imported Secret surfaces here as a key update.
-		Watches(&fsv1alpha1.FSAccessKey{}, handler.EnqueueRequestsFromMapFunc(r.accessKeyToCluster)).
 		Named("fscluster").
 		Complete(r)
-}
-
-// accessKeyToCluster maps an FSAccessKey to a reconcile request for the
-// FSCluster it belongs to (same namespace).
-func (r *Reconciler) accessKeyToCluster(_ context.Context, obj client.Object) []ctrl.Request {
-	key, ok := obj.(*fsv1alpha1.FSAccessKey)
-	if !ok || key.Spec.ClusterRef.Name == "" {
-		return nil
-	}
-
-	return []ctrl.Request{{
-		NamespacedName: types.NamespacedName{Namespace: key.Namespace, Name: key.Spec.ClusterRef.Name},
-	}}
 }

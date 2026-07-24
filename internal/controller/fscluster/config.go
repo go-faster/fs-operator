@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/go-faster/errors"
@@ -127,11 +126,6 @@ const debugLogLevel = "debug"
 // RenderOptions carries the inputs a rendered config needs beyond the
 // FSCluster itself.
 type RenderOptions struct {
-	// Keys are the declarative S3 credentials merged from the cluster's
-	// FSAccessKeys. They are rendered into every node's config, so that a
-	// credential is cluster-wide and survives restarts (SPEC §7).
-	Keys []fsconfig.Key
-
 	// Drained holds the names of nodes being decommissioned: their disks are
 	// rendered at DrainWeight (SPEC §8.4).
 	Drained map[string]bool
@@ -224,7 +218,7 @@ func nodeConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) (f
 			Root: StorageRoot,
 			Type: fsconfig.StorageTypeCluster,
 		},
-		Auth: authConfig(spec, opts.Keys),
+		Auth: authConfig(spec),
 		Admin: fsconfig.Admin{
 			Enabled: true,
 			Addr:    listenAddr(AdminPort),
@@ -256,19 +250,14 @@ func serverConfig(spec *fsv1alpha1.FSClusterSpec) fsconfig.Server {
 	return server
 }
 
-// authConfig renders the declarative credentials. Keys are sorted so that the
-// same set always renders the same bytes — the configuration revision must not
-// change because a map was iterated in a different order.
-func authConfig(spec *fsv1alpha1.FSClusterSpec, keys []fsconfig.Key) fsconfig.Auth {
-	sorted := slices.Clone(keys)
-	slices.SortFunc(sorted, func(a, b fsconfig.Key) int {
-		return strings.Compare(a.AccessKey, b.AccessKey)
-	})
-
-	return fsconfig.Auth{
-		Keys:              sorted,
-		PublicReadBuckets: spec.Auth.PublicReadBuckets,
-	}
+// authConfig selects the cluster-wide etcd credential store (fs §6.8): runtime
+// credentials live in etcd, sealed by the cluster secret and hot-reloaded on
+// every node. The operator manages them through the admin API — the FSAccessKey
+// controller for keys, the public-read step for anonymous buckets — so no keys
+// or public-read list are rendered into the config. The root credential reaches
+// the cluster through the FS_ROOT_* env, which seeds etcd on first boot.
+func authConfig(_ *fsv1alpha1.FSClusterSpec) fsconfig.Auth {
+	return fsconfig.Auth{Source: fsconfig.AuthSourceEtcd}
 }
 
 // clusterConfig renders the node's identity, disks and control plane. The

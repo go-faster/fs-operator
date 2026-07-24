@@ -12,22 +12,7 @@ storage:
   root: /var/lib/fs
   type: cluster
 auth:
-  keys:
-    - access_key: AKbackup
-      secret_key: backup-secret-key-0123456789
-      grants:
-        - bucket: backups
-          permission: admin
-        - bucket: public
-          permission: read
-    - access_key: AKmedia
-      secret_key: media-secret-key-0123456789
-      grants:
-        - bucket: media-*
-          permission: write
-  public_read_buckets:
-    - public
-    - assets
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -64,7 +49,7 @@ observability:
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-bb341f60a4c1
+revision: cfg-4f950bd865a6
 ---
 # Rendered by fs-operator for node prod-a-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -80,22 +65,7 @@ storage:
   root: /var/lib/fs
   type: cluster
 auth:
-  keys:
-    - access_key: AKbackup
-      secret_key: backup-secret-key-0123456789
-      grants:
-        - bucket: backups
-          permission: admin
-        - bucket: public
-          permission: read
-    - access_key: AKmedia
-      secret_key: media-secret-key-0123456789
-      grants:
-        - bucket: media-*
-          permission: write
-  public_read_buckets:
-    - public
-    - assets
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -132,7 +102,7 @@ observability:
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-e593bf55d98f
+revision: cfg-b081d751639a
 ---
 # Rendered by fs-operator for node prod-b-0 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -148,22 +118,7 @@ storage:
   root: /var/lib/fs
   type: cluster
 auth:
-  keys:
-    - access_key: AKbackup
-      secret_key: backup-secret-key-0123456789
-      grants:
-        - bucket: backups
-          permission: admin
-        - bucket: public
-          permission: read
-    - access_key: AKmedia
-      secret_key: media-secret-key-0123456789
-      grants:
-        - bucket: media-*
-          permission: write
-  public_read_buckets:
-    - public
-    - assets
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -200,7 +155,7 @@ observability:
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-067e85516e51
+revision: cfg-5818ef2af72b
 ---
 # Rendered by fs-operator for node prod-b-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -216,22 +171,7 @@ storage:
   root: /var/lib/fs
   type: cluster
 auth:
-  keys:
-    - access_key: AKbackup
-      secret_key: backup-secret-key-0123456789
-      grants:
-        - bucket: backups
-          permission: admin
-        - bucket: public
-          permission: read
-    - access_key: AKmedia
-      secret_key: media-secret-key-0123456789
-      grants:
-        - bucket: media-*
-          permission: write
-  public_read_buckets:
-    - public
-    - assets
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -268,7 +208,7 @@ observability:
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-2894d6f6d9e3
+revision: cfg-a42483a0f81c
 ---
 # Rendered by fs-operator for node prod-c-0 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -284,22 +224,7 @@ storage:
   root: /var/lib/fs
   type: cluster
 auth:
-  keys:
-    - access_key: AKbackup
-      secret_key: backup-secret-key-0123456789
-      grants:
-        - bucket: backups
-          permission: admin
-        - bucket: public
-          permission: read
-    - access_key: AKmedia
-      secret_key: media-secret-key-0123456789
-      grants:
-        - bucket: media-*
-          permission: write
-  public_read_buckets:
-    - public
-    - assets
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -336,7 +261,7 @@ observability:
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-a5306a594f52
+revision: cfg-25c25e895333
 ---
 # Rendered by fs-operator for node prod-c-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -352,22 +277,7 @@ storage:
   root: /var/lib/fs
   type: cluster
 auth:
-  keys:
-    - access_key: AKbackup
-      secret_key: backup-secret-key-0123456789
-      grants:
-        - bucket: backups
-          permission: admin
-        - bucket: public
-          permission: read
-    - access_key: AKmedia
-      secret_key: media-secret-key-0123456789
-      grants:
-        - bucket: media-*
-          permission: write
-  public_read_buckets:
-    - public
-    - assets
+  source: etcd
 admin:
   enabled: true
   addr: :8090
@@ -404,4 +314,4 @@ observability:
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-ffcdb12dde1c
+revision: cfg-75c0de5e703f

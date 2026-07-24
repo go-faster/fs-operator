@@ -116,7 +116,6 @@ func TestRenderNodeConfig(t *testing.T) {
 				}
 				c.Spec.Etcd.Prefix = "/fs/prod"
 				c.Spec.Etcd.TTL = &metav1.Duration{Duration: 15 * time.Second}
-				c.Spec.Auth.PublicReadBuckets = []string{publicBucket, "assets"}
 				c.Spec.S3.TLS.SecretName = tlsSecret
 				c.Spec.Rebalance = fsv1alpha1.RebalanceSpec{
 					Settle:        &metav1.Duration{Duration: 2 * time.Minute},
@@ -130,25 +129,6 @@ func TestRenderNodeConfig(t *testing.T) {
 				}
 				c.Spec.Observability.LogLevel = "debug"
 				c.Spec.Observability.OTLP.Endpoint = "http://otel-collector.observability:4317"
-			},
-			opts: RenderOptions{
-				Keys: []fsconfig.Key{
-					// Deliberately out of order: the renderer sorts them so
-					// that the configuration revision is stable.
-					{
-						AccessKey: "AKmedia",
-						SecretKey: "media-secret-key-0123456789",
-						Grants:    []fsconfig.Grant{{Bucket: "media-*", Permission: "write"}},
-					},
-					{
-						AccessKey: "AKbackup",
-						SecretKey: "backup-secret-key-0123456789",
-						Grants: []fsconfig.Grant{
-							{Bucket: "backups", Permission: "admin"},
-							{Bucket: "public", Permission: "read"},
-						},
-					},
-				},
 			},
 		},
 		{
@@ -241,16 +221,13 @@ func assertUsable(t *testing.T, rc RenderedConfig, node Node) {
 // TestRenderNodeConfigNoSecretMaterial pins the rule that keeps generated
 // Secrets from leaking into places they are not expected: fs takes the peer
 // secret and the admin token from the environment, so neither may ever appear
-// in a rendered file. Declarative S3 credentials are the exception — they only
-// exist as config (SPEC §7) — and the config Secret is why the rendered file
-// is a Secret and not a ConfigMap.
+// in a rendered file. Credentials are cluster-wide in etcd (fs §6.8), so the
+// config selects that source and carries no keys at all.
 func TestRenderNodeConfigNoSecretMaterial(t *testing.T) {
 	cluster := testCluster()
 	cluster.Spec.WithDefaults()
 
-	rc, err := RenderNodeConfig(cluster, Nodes(cluster)[0], RenderOptions{
-		Keys: []fsconfig.Key{{AccessKey: "AKapp", SecretKey: "app-secret-key-0123456789"}},
-	})
+	rc, err := RenderNodeConfig(cluster, Nodes(cluster)[0], RenderOptions{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -274,8 +251,13 @@ func TestRenderNodeConfigNoSecretMaterial(t *testing.T) {
 		t.Error("admin.token is rendered into the config; it must come from FS_ADMIN_TOKEN")
 	}
 
-	if !strings.Contains(string(rc.Data), "app-secret-key-0123456789") {
-		t.Error("declarative access keys are missing from the config")
+	auth := section("auth")
+	if auth["source"] != fsconfig.AuthSourceEtcd {
+		t.Errorf("auth.source = %v, want %q (credentials are cluster-wide)", auth["source"], fsconfig.AuthSourceEtcd)
+	}
+
+	if _, ok := auth["keys"]; ok {
+		t.Error("auth.keys is rendered into the config; credentials live in etcd, not the config file")
 	}
 }
 
@@ -316,22 +298,14 @@ func TestRenderNodeConfigsIsStable(t *testing.T) {
 	cluster := testCluster()
 	cluster.Spec.WithDefaults()
 
-	opts := RenderOptions{
-		Keys: []fsconfig.Key{
-			{AccessKey: "AKb", SecretKey: "b-secret-key-0123456789"},
-			{AccessKey: "AKa", SecretKey: "a-secret-key-0123456789"},
-		},
-	}
+	nodes := Nodes(cluster)
 
-	first, err := RenderNodeConfigs(cluster, Nodes(cluster), opts)
+	first, err := RenderNodeConfigs(cluster, nodes, RenderOptions{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
 
-	// The same keys in the other order are the same configuration.
-	opts.Keys = []fsconfig.Key{opts.Keys[1], opts.Keys[0]}
-
-	second, err := RenderNodeConfigs(cluster, Nodes(cluster), opts)
+	second, err := RenderNodeConfigs(cluster, nodes, RenderOptions{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -381,34 +355,32 @@ func TestConfigRevision(t *testing.T) {
 	}
 }
 
-// TestRestartRevisionSeparatesHotReload is the invariant the §8.3 fast path
-// rests on: a hot-reloadable change (a credential) moves the config revision —
-// so a reload is needed and verifiable — but not the restart revision, so the
-// pod is not replaced. A restart-requiring change (the scheme) moves both.
-func TestRestartRevisionSeparatesHotReload(t *testing.T) {
+// TestRestartRevisionTracksConfig checks that a restart-requiring config change
+// (the scheme) moves both the config revision — so the change is verifiable —
+// and the restart revision — so the node is actually replaced to pick it up —
+// while re-rendering an unchanged spec moves neither. Credentials and
+// public-read are no longer in the config (they are cluster-wide in etcd,
+// fs §6.8), so the config's remaining fields are all restart-requiring.
+func TestRestartRevisionTracksConfig(t *testing.T) {
 	cluster := testCluster()
 	cluster.Spec.WithDefaults()
 	node := Nodes(cluster)[0]
 
 	base := RenderOptions{}
-	withKey := RenderOptions{Keys: []fsconfig.Key{{AccessKey: "AKx", SecretKey: "x-secret-key-0123456789"}}}
 
 	baseCfg := mustRender(t, cluster, node, base)
 	baseRestart := mustRestart(t, cluster, node, base)
 
-	// Credentials-only: config revision moves, restart revision holds.
-	keyCfg := mustRender(t, cluster, node, withKey)
-	keyRestart := mustRestart(t, cluster, node, withKey)
-
-	if keyCfg.Revision == baseCfg.Revision {
-		t.Error("adding a credential did not change the config revision; a reload could not be verified")
+	// Re-rendering the same spec is stable: no phantom change.
+	if again := mustRender(t, cluster, node, base); again.Revision != baseCfg.Revision {
+		t.Error("re-rendering an unchanged spec moved the config revision")
 	}
 
-	if keyRestart != baseRestart {
-		t.Error("adding a credential changed the restart revision; it would force a needless pod restart")
+	if again := mustRestart(t, cluster, node, base); again != baseRestart {
+		t.Error("re-rendering an unchanged spec moved the restart revision")
 	}
 
-	// The scheme lives in the config and is not hot-reloadable: both move.
+	// The scheme lives in the config and is restart-requiring: both move.
 	cluster.Spec.Scheme = SchemeRF3
 	schemeCfg := mustRender(t, cluster, node, base)
 	schemeRestart := mustRestart(t, cluster, node, base)

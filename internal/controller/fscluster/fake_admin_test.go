@@ -57,6 +57,9 @@ type fakeAdmin struct {
 
 	// accessKeys are the access-key IDs every node's ListAccessKeys reports.
 	accessKeys []string
+
+	// publicRead is the cluster-wide public-read bucket list the admin serves.
+	publicRead []string
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -82,28 +85,12 @@ func (f *fakeAdmin) setApplied(url, revision string) {
 	f.applied[url] = revision
 }
 
-// setMounted makes a Reload on url adopt revision (the propagated config).
-func (f *fakeAdmin) setMounted(url, revision string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.mounted[url] = revision
-}
-
 // setUnreachable toggles whether url's admin API errors.
 func (f *fakeAdmin) setUnreachable(url string, down bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.unreachable[url] = down
-}
-
-// reloadCount reports how many reloads a node has seen.
-func (f *fakeAdmin) reloadCount(url string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.reloads[url]
 }
 
 // setRebalanceRunning toggles whether a rebalance is moving data cluster-wide.
@@ -221,6 +208,58 @@ func (c *fakeClient) ListAccessKeys(context.Context) ([]fsclient.AccessKey, erro
 	}
 
 	return keys, nil
+}
+
+func (c *fakeClient) CreateAccessKey(_ context.Context, access, _ string, _ []fsclient.Grant) error {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.accessKeys = append(f.accessKeys, access)
+
+	return nil
+}
+
+func (c *fakeClient) DeleteAccessKey(_ context.Context, access string) error {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	kept := f.accessKeys[:0]
+	for _, k := range f.accessKeys {
+		if k != access {
+			kept = append(kept, k)
+		}
+	}
+
+	f.accessKeys = kept
+
+	return nil
+}
+
+func (c *fakeClient) GetPublicReadBuckets(context.Context) ([]string, error) {
+	return c.admin.publicReadOf(), nil
+}
+
+// publicReadOf returns the public-read list the admin currently serves.
+func (f *fakeAdmin) publicReadOf() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), f.publicRead...)
+}
+
+func (c *fakeClient) SetPublicReadBuckets(_ context.Context, buckets []string) error {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.publicRead = append([]string(nil), buckets...)
+
+	return nil
 }
 
 func (c *fakeClient) GetBucketScheme(_ context.Context, _ string) (fsclient.BucketScheme, error) {

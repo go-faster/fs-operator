@@ -27,18 +27,20 @@ import (
 	"github.com/go-faster/fs-operator/internal/fsclient"
 )
 
-// fakeAdmin is a shared in-memory admin API for the controller tests. It tracks
-// the access keys the cluster accepts and the per-bucket scheme overrides.
+// fakeAdmin is a shared in-memory admin API for the controller tests. It models
+// the cluster's etcd-backed key store (access key -> grants), the per-bucket
+// scheme overrides and the public-read list.
 type fakeAdmin struct {
 	mu         sync.Mutex
-	accessKeys map[string]bool
+	keys       map[string][]fsclient.Grant
 	schemes    map[string]string
+	publicRead []string
 	// rejectScheme, when set, makes SetBucketScheme reject that scheme value.
 	rejectScheme string
 }
 
 func newFakeAdmin() *fakeAdmin {
-	return &fakeAdmin{accessKeys: map[string]bool{}, schemes: map[string]string{}}
+	return &fakeAdmin{keys: map[string][]fsclient.Grant{}, schemes: map[string]string{}}
 }
 
 // client returns an fsclient.Interface backed by this admin, ignoring the
@@ -47,11 +49,22 @@ func (f *fakeAdmin) client(_, _ string) (fsclient.Interface, error) {
 	return &fakeAdminClient{admin: f}, nil
 }
 
-func (f *fakeAdmin) addKey(access string) {
+// hasKey reports whether the store holds the access key.
+func (f *fakeAdmin) hasKey(access string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.accessKeys[access] = true
+	_, ok := f.keys[access]
+
+	return ok
+}
+
+// grantsOf returns the grants recorded for an access key.
+func (f *fakeAdmin) grantsOf(access string) []fsclient.Grant {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return f.keys[access]
 }
 
 type fakeAdminClient struct{ admin *fakeAdmin }
@@ -78,12 +91,58 @@ func (c *fakeAdminClient) ListAccessKeys(context.Context) ([]fsclient.AccessKey,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	keys := make([]fsclient.AccessKey, 0, len(f.accessKeys))
-	for k := range f.accessKeys {
-		keys = append(keys, fsclient.AccessKey{AccessKey: k})
+	keys := make([]fsclient.AccessKey, 0, len(f.keys))
+	for k, grants := range f.keys {
+		keys = append(keys, fsclient.AccessKey{AccessKey: k, Grants: grants})
 	}
 
 	return keys, nil
+}
+
+func (c *fakeAdminClient) CreateAccessKey(_ context.Context, access, _ string, grants []fsclient.Grant) error {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if _, ok := f.keys[access]; ok {
+		return errors.Wrap(fsclient.ErrKeyExists, access)
+	}
+
+	f.keys[access] = grants
+
+	return nil
+}
+
+func (c *fakeAdminClient) DeleteAccessKey(_ context.Context, access string) error {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	delete(f.keys, access)
+
+	return nil
+}
+
+func (c *fakeAdminClient) GetPublicReadBuckets(context.Context) ([]string, error) {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return append([]string(nil), f.publicRead...), nil
+}
+
+func (c *fakeAdminClient) SetPublicReadBuckets(_ context.Context, buckets []string) error {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.publicRead = append([]string(nil), buckets...)
+
+	return nil
 }
 
 func (c *fakeAdminClient) GetBucketScheme(_ context.Context, bucket string) (fsclient.BucketScheme, error) {

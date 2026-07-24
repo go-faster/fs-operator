@@ -91,9 +91,20 @@ type Storage struct {
 // Auth is S3 authentication: the credentials fs accepts and the buckets that
 // need none.
 type Auth struct {
+	// Source selects where runtime credentials live: "file" (config/env, the
+	// default) or "etcd" (cluster-wide, sealed by the cluster secret and
+	// hot-reloaded on every node). With "etcd" the config keys seed an empty
+	// namespace once and etcd is authoritative thereafter (fs §6.8).
+	Source            string   `yaml:"source,omitempty"`
 	Keys              []Key    `yaml:"keys,omitempty"`
 	PublicReadBuckets []string `yaml:"public_read_buckets,omitempty"`
 }
+
+// Auth source values.
+const (
+	AuthSourceFile = "file"
+	AuthSourceEtcd = "etcd"
+)
 
 // Key is one credential and its grants. Config-defined keys are cluster-wide
 // and hot-reloadable, unlike the node-local keys the admin API creates at
