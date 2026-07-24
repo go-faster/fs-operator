@@ -49,6 +49,11 @@ type fakeAdmin struct {
 	// cluster is converged only with no rebalance running and an empty queue.
 	rebalanceRunning bool
 	repairQueue      map[string]int
+
+	// schemaVersion is what the cluster reports as agreed in etcd; binarySchema
+	// is what the deployed binary implements. binarySchema > schemaVersion is a
+	// pending migration.
+	schemaVersion, binarySchema int
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -114,6 +119,16 @@ func (f *fakeAdmin) setRepairQueue(url string, depth int) {
 	f.repairQueue[url] = depth
 }
 
+// setSchema sets the cluster-recorded and binary schema versions.
+//
+//nolint:unparam // binary is a meaningful axis even if the current tests all use 5.
+func (f *fakeAdmin) setSchema(cluster, binary int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.schemaVersion, f.binarySchema = cluster, binary
+}
+
 // fakeClient is one node's view of the fake admin.
 type fakeClient struct {
 	admin *fakeAdmin
@@ -167,7 +182,11 @@ func (c *fakeClient) ClusterStatus(context.Context) (fsclient.ClusterStatus, err
 		return fsclient.ClusterStatus{}, errors.New("node admin unreachable")
 	}
 
-	return fsclient.ClusterStatus{RebalanceRunning: f.rebalanceRunning}, nil
+	return fsclient.ClusterStatus{
+		RebalanceRunning: f.rebalanceRunning,
+		SchemaVersion:    f.schemaVersion,
+		BinarySchema:     f.binarySchema,
+	}, nil
 }
 
 func (c *fakeClient) Rebalance(context.Context) (fsclient.Rebalance, error) {

@@ -47,6 +47,11 @@ type convergence struct {
 	// skew is the placement skew (max minus min disk fullness) — informational,
 	// surfaced in events, not a hard gate.
 	skew float64
+
+	// schemaVersion is what the cluster has agreed on in etcd; binarySchema is
+	// what the deployed image implements. binarySchema > schemaVersion means a
+	// migration is pending (SPEC §8.2 Migrating).
+	schemaVersion, binarySchema int
 }
 
 // gatherConvergence reads the cluster's reconvergence state from the admin
@@ -82,6 +87,8 @@ func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (controller
 		repairQueue:      repairQueue,
 		rebalanceRunning: status.RebalanceRunning,
 		skew:             status.PlacementSkew,
+		schemaVersion:    status.SchemaVersion,
+		binarySchema:     status.BinarySchema,
 		// Converged when the repair queue has drained and no rebalance is
 		// moving data — placement has settled (SPEC §8.2, §11.2).
 		converged: repairQueue == 0 && !status.RebalanceRunning,

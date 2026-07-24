@@ -136,6 +136,7 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (controller.O
 	status.Nodes = int32(len(p.nodes)) //nolint:gosec // the topology is bounded at 16 nodes
 	status.ReadyNodes = p.health.ready
 	status.Update = p.update
+	status.SchemaVersion = p.schema
 	status.Endpoints = &fsv1alpha1.EndpointsStatus{
 		S3: S3Endpoint(p.cluster.Name, p.cluster.Namespace,
 			p.cluster.Spec.S3.Service.Port, p.cluster.Spec.S3.TLS.SecretName != ""),

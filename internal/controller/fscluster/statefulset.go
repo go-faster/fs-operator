@@ -218,7 +218,7 @@ func fsContainer(cluster *fsv1alpha1.FSCluster, node Node) corev1.Container {
 		Name:            ContainerName,
 		Image:           Image(cluster),
 		ImagePullPolicy: spec.Image.PullPolicy,
-		Args:            []string{"s3", "--config", ConfigPath},
+		Args:            []string{"s3", flagConfig, ConfigPath},
 		Ports: []corev1.ContainerPort{
 			containerPort(PortNameS3, S3Port),
 			containerPort(PortNamePeer, PeerPort),
@@ -235,7 +235,7 @@ func fsContainer(cluster *fsv1alpha1.FSCluster, node Node) corev1.Container {
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
 			ReadOnlyRootFilesystem:   ptr.To(true),
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{capAll}},
 		},
 	}
 }
@@ -243,6 +243,12 @@ func fsContainer(cluster *fsv1alpha1.FSCluster, node Node) corev1.Container {
 // readyPath is fs's readiness endpoint: it probes the storage backend, so it
 // reports 503 while a node cannot serve.
 const readyPath = "/ready"
+
+// flagConfig points fs at its configuration file; capAll is the capability set
+// dropped from every fs container.
+const flagConfig = "--config"
+
+const capAll corev1.Capability = "ALL"
 
 // Image is the image reference a cluster's nodes run.
 func Image(cluster *fsv1alpha1.FSCluster) string {

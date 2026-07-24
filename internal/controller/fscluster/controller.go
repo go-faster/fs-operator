@@ -25,6 +25,7 @@ import (
 
 	"github.com/go-faster/errors"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -96,6 +97,7 @@ func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, err
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
 // Reconcile brings one FSCluster's resources in line with its spec.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -134,6 +136,7 @@ func (r *Reconciler) pipeline() controller.Pipeline[*pass] {
 		{Name: "convergence", Run: r.gatherConvergence},
 		{Name: "nodes", Run: r.reconcileNodes},
 		{Name: "reload", Run: r.reconcileReload},
+		{Name: migrateName, Run: r.reconcileMigration},
 		{Name: "budget", Run: r.reconcileBudget},
 		{Name: "status", AlwaysRun: true, Run: r.reconcileStatus},
 	}
@@ -170,6 +173,10 @@ type pass struct {
 	// convergence is what the admin API reports about reconvergence; the
 	// rollout gates on it and the status reports Converged from it.
 	convergence convergence
+
+	// schema is the cluster's observed schema versions, filled by the
+	// migration step for the status.
+	schema *fsv1alpha1.SchemaVersionStatus
 
 	// update is the rolling change in flight, if any.
 	update *fsv1alpha1.UpdateStatus
@@ -535,6 +542,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.Service{}).
+		Owns(&batchv1.Job{}).
 		Named("fscluster").
 		Complete(r)
 }
