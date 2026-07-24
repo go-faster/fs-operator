@@ -139,6 +139,18 @@ func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision st
 	}
 }
 
+// TemplateRevision fingerprints one node's desired pod template.
+func TemplateRevision(set *appsv1.StatefulSet) (string, error) {
+	template, err := json.Marshal(set.Spec.Template)
+	if err != nil {
+		return "", errors.Wrapf(err, "marshal pod template of node %q", set.Name)
+	}
+
+	digest := sha256.Sum256(template)
+
+	return format(templatePrefix, digest[:]), nil
+}
+
 // PodTemplateRevision fingerprints the desired pod templates
 // (status.statefulSetRevision): what a node runs, as opposed to what it reads
 // from its configuration.

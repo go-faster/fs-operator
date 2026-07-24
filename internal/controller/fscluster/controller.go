@@ -104,6 +104,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) pipeline() controller.Pipeline[*pass] {
 	return controller.Pipeline[*pass]{
 		{Name: "validate", Run: r.validate},
+		{Name: "render", Run: r.render},
+		{Name: "observe", AlwaysRun: true, Run: r.observe},
 		{Name: "secrets", Run: r.reconcileSecrets},
 		{Name: "services", Run: r.reconcileServices},
 		{Name: "configs", Run: r.reconcileNodeConfigs},
@@ -125,13 +127,24 @@ type pass struct {
 	// nodes is the topology expanded into the cluster's node set.
 	nodes []Node
 
-	// configs holds each node's rendered configuration once the config step
-	// has run, and restarts the fingerprint of its restart-requiring part.
+	// configs holds each node's rendered configuration, and restarts the
+	// fingerprint of its restart-requiring part; both are filled by the
+	// render step.
 	configs  map[string][]byte
 	restarts map[string]string
 
-	// templateRevision fingerprints the desired pod templates.
+	// desired holds the node StatefulSets the spec asks for, in node order,
+	// and templateRevision fingerprints them together for the status.
+	desired          []*appsv1.StatefulSet
 	templateRevision string
+
+	// live holds the node StatefulSets that exist, and health what they say
+	// about the running cluster.
+	live   map[string]*appsv1.StatefulSet
+	health health
+
+	// update is the rolling change in flight, if any.
+	update *fsv1alpha1.UpdateStatus
 
 	// conditions accumulate through the pass and are written by the status
 	// step, so that a refusal and its explanation reach the object together.
@@ -357,8 +370,11 @@ func (r *Reconciler) reconcileServices(ctx context.Context, p *pass) (controller
 	return controller.Continue()
 }
 
-// reconcileNodeConfigs renders and applies every node's configuration.
-func (r *Reconciler) reconcileNodeConfigs(ctx context.Context, p *pass) (controller.Outcome, error) {
+// render turns the spec into what every node should be running: its
+// configuration, the fingerprint of the part only a restart can apply, and its
+// StatefulSet. Nothing here touches the API server, so the steps that observe
+// and the steps that write both work from the same desired state.
+func (r *Reconciler) render(_ context.Context, p *pass) (controller.Outcome, error) {
 	// Declarative credentials merge in here once FSAccessKey lands (SPEC §7).
 	opts := RenderOptions{}
 
@@ -368,6 +384,7 @@ func (r *Reconciler) reconcileNodeConfigs(ctx context.Context, p *pass) (control
 	}
 
 	restarts := make(map[string]string, len(p.nodes))
+	desired := make([]*appsv1.StatefulSet, 0, len(p.nodes))
 
 	for _, node := range p.nodes {
 		revision, err := RestartRevision(p.cluster, node, opts)
@@ -377,38 +394,31 @@ func (r *Reconciler) reconcileNodeConfigs(ctx context.Context, p *pass) (control
 
 		restarts[node.Name] = revision
 
-		if err := r.apply(ctx, p.cluster, NewNodeConfigSecret(p.cluster, node, configs[node.Name])); err != nil {
+		set := NewStatefulSet(p.cluster, node, revision)
+		if err := stampTemplateRevision(set); err != nil {
 			return controller.Outcome{}, err
 		}
+
+		desired = append(desired, set)
 	}
 
-	p.configs = configs
-	p.restarts = restarts
-
-	return controller.Continue()
-}
-
-// reconcileNodes applies one StatefulSet per node.
-//
-// Creating nodes is additive — new nodes join and the rebalancer converges, so
-// they may all appear at once (SPEC §8.4). Replacing an existing node's pod is
-// the sequenced part, and that is the rolling state machine's job.
-func (r *Reconciler) reconcileNodes(ctx context.Context, p *pass) (controller.Outcome, error) {
-	sets := make([]*appsv1.StatefulSet, 0, len(p.nodes))
-
-	for _, node := range p.nodes {
-		sets = append(sets, NewStatefulSet(p.cluster, node, p.restarts[node.Name]))
-	}
-
-	revision, err := PodTemplateRevision(sets)
+	templateRevision, err := PodTemplateRevision(desired)
 	if err != nil {
 		return controller.Outcome{}, err
 	}
 
-	p.templateRevision = revision
+	p.configs = configs
+	p.restarts = restarts
+	p.desired = desired
+	p.templateRevision = templateRevision
 
-	for _, set := range sets {
-		if err := r.apply(ctx, p.cluster, set); err != nil {
+	return controller.Continue()
+}
+
+// reconcileNodeConfigs applies every node's configuration.
+func (r *Reconciler) reconcileNodeConfigs(ctx context.Context, p *pass) (controller.Outcome, error) {
+	for _, node := range p.nodes {
+		if err := r.apply(ctx, p.cluster, NewNodeConfigSecret(p.cluster, node, p.configs[node.Name])); err != nil {
 			return controller.Outcome{}, err
 		}
 	}

@@ -31,13 +31,16 @@ Done:
   status revisions and conditions (SpecValid, ReconcileSucceeded,
   NodesHealthy, ClusterSizeAligned, ConfigurationInSync, Ready by write
   quorum). envtest coverage incl. the CRD's own validation rules
+- **Rolling updates** — per-node pod-template fingerprint on the
+  StatefulSet, one node replaced per pass, racks interleaved, gated on the
+  node's own StatefulSet reporting its pod up and current; new nodes are
+  created all at once (joining is additive). Repair-queue/convergence
+  gates and hot reload arrive in P2 with the upstream fs endpoints
+  (SPEC §8.2, §11)
 
 ## Remaining P1 — build order
 
-1. **Basic rolling logic** — sequential per-node StatefulSet updates gated
-   on pod-ready. Repair-queue/convergence gates and hot reload arrive in
-   P2 with the upstream fs endpoints (SPEC §8.2, §11).
-2. **Tests + first release** — remaining envtest coverage (idempotency,
+1. **Tests + first release** — remaining envtest coverage (idempotency,
    ownership/GC, refusal paths); kind e2e: operator via `dist/chart`, a
    minimal 3-pod etcd, 3-node FSCluster from `examples/01-minimal.yaml`,
    S3 smoke against real fs v0.5.0. Then tag `v0.1.0` to exercise the

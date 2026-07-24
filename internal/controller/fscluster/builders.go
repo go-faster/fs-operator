@@ -72,6 +72,12 @@ const (
 	// lives on the config Secret and is what reload verification compares
 	// against (SPEC §8.3).
 	AnnotationConfigRevision = "fs.go-faster.org/config-revision"
+
+	// AnnotationTemplateRevision fingerprints a node's desired pod template.
+	// It lives on the StatefulSet, where the next pass reads it to tell a
+	// node that needs replacing from one that is already current — including
+	// changes, like an image bump, that the configuration knows nothing of.
+	AnnotationTemplateRevision = "fs.go-faster.org/template-revision"
 )
 
 // Keys within the Secrets the operator reads and writes. The generated and the

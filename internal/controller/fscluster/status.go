@@ -21,7 +21,7 @@ import (
 	"fmt"
 
 	"github.com/go-faster/errors"
-	corev1 "k8s.io/api/core/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,21 +32,95 @@ import (
 
 // health is what one pass observed of the running cluster.
 //
-// In P1 it is read from Kubernetes alone. Registration in etcd, the repair
+// In P1 it is read from Kubernetes alone: a node's own StatefulSet already
+// knows whether its pod is up and whether that pod is the current one, which
+// is exactly what the rollout gate needs. Registration in etcd, the repair
 // queue and placement convergence need the cluster status endpoint fs does not
-// have yet (SPEC §11.2), so the conditions that depend on them — Converged,
-// SchemaCurrent — are left unset rather than guessed at.
+// have yet (SPEC §11.2), so the conditions that depend on them — the fuller
+// meaning of Converged, and SchemaCurrent — are left for the phase that lands
+// it.
 type health struct {
-	// ready is the number of node pods that are Ready.
+	// ready is the number of nodes whose pod is up and current.
 	ready int32
 
-	// readyDomains is how many distinct failure domains have a ready node. It,
-	// not the node count, is what decides whether writes can be acknowledged.
+	// readyDomains is how many distinct failure domains have a ready node.
+	// It, not the node count, is what decides whether writes can be
+	// acknowledged.
 	readyDomains int
 
-	// current is the number of nodes whose pod is Ready and already running
-	// the desired configuration.
+	// current is the number of ready nodes already running the desired
+	// StatefulSet.
 	current int32
+
+	// notReady names the declared nodes that are not serving, in declaration
+	// order. A rollout will not touch a second node while it is non-empty.
+	notReady []string
+}
+
+// observe reads the cluster's own StatefulSets and matches them against the
+// node set. It runs even when the pass was refused: a spec the operator will
+// not apply says nothing about the cluster that is already running.
+func (r *Reconciler) observe(ctx context.Context, p *pass) (controller.Outcome, error) {
+	sets, err := r.nodeSets(ctx, p.cluster)
+	if err != nil {
+		return controller.Outcome{}, err
+	}
+
+	p.live = make(map[string]*appsv1.StatefulSet, len(sets))
+	for i := range sets {
+		p.live[sets[i].Name] = &sets[i]
+	}
+
+	desired := make(map[string]string, len(p.desired))
+	for _, set := range p.desired {
+		desired[set.Name] = set.Annotations[AnnotationTemplateRevision]
+	}
+
+	domains := make(map[string]bool)
+
+	for _, node := range p.nodes {
+		set, running := p.live[node.Name]
+		if !running || !nodeServing(set) {
+			p.health.notReady = append(p.health.notReady, node.Name)
+
+			continue
+		}
+
+		p.health.ready++
+		domains[domainOf(node)] = true
+
+		if revision, ok := desired[node.Name]; ok && set.Annotations[AnnotationTemplateRevision] == revision {
+			p.health.current++
+		}
+	}
+
+	p.health.readyDomains = len(domains)
+
+	return controller.Continue()
+}
+
+// nodeServing reports whether a node's single pod is up and is the one the
+// current template describes.
+//
+// It reads the StatefulSet's own status rather than the pod's: the workload
+// controller already tracks which revision a pod belongs to, and trusting it
+// keeps the operator from racing the machinery it delegates pod replacement
+// to. A stale observedGeneration means the answer is about the previous
+// template, so it does not count.
+func nodeServing(set *appsv1.StatefulSet) bool {
+	return set.Status.ObservedGeneration >= set.Generation &&
+		set.Status.ReadyReplicas == 1 &&
+		set.Status.UpdatedReplicas == 1
+}
+
+// domainOf is the failure domain a node belongs to. In the flat topology every
+// node is its own domain, which is what fs does with an empty rack.
+func domainOf(node Node) string {
+	if node.Rack == "" {
+		return node.Name
+	}
+
+	return node.Rack
 }
 
 // reconcileStatus writes what the pass observed and decided.
@@ -54,17 +128,13 @@ type health struct {
 // It is the always-run step: a pass that refused a spec or failed halfway
 // still has to say so, and this is where that reaches the object.
 func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (controller.Outcome, error) {
-	observed, err := r.observe(ctx, p)
-	if err != nil {
-		return controller.Outcome{}, err
-	}
-
 	base := p.object.DeepCopy()
 	status := &p.object.Status
 
 	status.ObservedGeneration = p.object.Generation
 	status.Nodes = int32(len(p.nodes)) //nolint:gosec // the topology is bounded at 16 nodes
-	status.ReadyNodes = observed.ready
+	status.ReadyNodes = p.health.ready
+	status.Update = p.update
 	status.Endpoints = &fsv1alpha1.EndpointsStatus{
 		S3: S3Endpoint(p.cluster.Name, p.cluster.Namespace,
 			p.cluster.Spec.S3.Service.Port, p.cluster.Spec.S3.TLS.SecretName != ""),
@@ -75,12 +145,12 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (controller.O
 		status.StatefulSetRevision = p.templateRevision
 		status.UpdateRevision = status.ConfigurationRevision
 
-		if observed.current == status.Nodes {
+		if p.health.current == status.Nodes {
 			status.CurrentRevision = status.ConfigurationRevision
 		}
 	}
 
-	r.summarize(p, observed)
+	r.summarize(p)
 
 	for _, condition := range p.conditions {
 		meta.SetStatusCondition(&status.Conditions, condition)
@@ -94,7 +164,7 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (controller.O
 }
 
 // summarize turns the observation into the conditions a user reads.
-func (r *Reconciler) summarize(p *pass, observed health) {
+func (r *Reconciler) summarize(p *pass) {
 	if p.failure != nil {
 		p.setCondition(fsv1alpha1.ConditionReconcileSucceeded, metav1.ConditionFalse,
 			fsv1alpha1.ReasonReconcileError, p.failure.Error())
@@ -103,22 +173,20 @@ func (r *Reconciler) summarize(p *pass, observed health) {
 			fsv1alpha1.ReasonReconcileFinished, "Reconcile pass completed")
 	}
 
-	// A refused spec says nothing about the running cluster: the nodes that
-	// were there before are still there, and the health conditions below still
-	// describe them.
 	desired := p.object.Status.Nodes
 
-	if observed.ready == desired {
+	if len(p.health.notReady) == 0 {
 		p.setCondition(fsv1alpha1.ConditionNodesHealthy, metav1.ConditionTrue,
 			fsv1alpha1.ReasonAllNodesReady, fmt.Sprintf("All %d nodes are ready", desired))
 	} else {
 		p.setCondition(fsv1alpha1.ConditionNodesHealthy, metav1.ConditionFalse,
 			fsv1alpha1.ReasonNodesNotReady,
-			fmt.Sprintf("%d of %d nodes are ready", observed.ready, desired))
+			fmt.Sprintf("%d of %d nodes are ready; waiting for %v",
+				p.health.ready, desired, p.health.notReady))
 	}
 
-	r.summarizeReadiness(p, observed)
-	r.summarizeAlignment(p, observed)
+	r.summarizeReadiness(p)
+	r.summarizeAlignment(p)
 }
 
 // summarizeReadiness reports whether the cluster can acknowledge a write.
@@ -127,7 +195,7 @@ func (r *Reconciler) summarize(p *pass, observed health) {
 // failure domains — two full replicas for the replicated schemes, all k+m
 // shards for erasure coding — so the question is how many domains are serving,
 // not how many pods are up.
-func (r *Reconciler) summarizeReadiness(p *pass, observed health) {
+func (r *Reconciler) summarizeReadiness(p *pass) {
 	scheme, err := ParseScheme(p.cluster.Spec.Scheme)
 	if err != nil {
 		// An unparseable scheme was already refused by validation.
@@ -135,25 +203,33 @@ func (r *Reconciler) summarizeReadiness(p *pass, observed health) {
 	}
 
 	quorum := scheme.WriteQuorumDomains()
-	if observed.readyDomains >= quorum {
+	message := fmt.Sprintf("%d failure domains are serving, %d needed to acknowledge a write",
+		p.health.readyDomains, quorum)
+
+	if p.health.readyDomains >= quorum {
 		p.setCondition(fsv1alpha1.ConditionReady, metav1.ConditionTrue,
-			fsv1alpha1.ReasonQuorumAvailable,
-			fmt.Sprintf("%d failure domains are serving, %d needed for a write", observed.readyDomains, quorum))
+			fsv1alpha1.ReasonQuorumAvailable, message)
 
 		return
 	}
 
 	p.setCondition(fsv1alpha1.ConditionReady, metav1.ConditionFalse,
-		fsv1alpha1.ReasonQuorumUnavailable,
-		fmt.Sprintf("%d failure domains are serving, %d needed for a write", observed.readyDomains, quorum))
+		fsv1alpha1.ReasonQuorumUnavailable, message)
 }
 
 // summarizeAlignment reports whether the running cluster is the declared one:
 // the right number of nodes, each carrying the configuration it should.
-func (r *Reconciler) summarizeAlignment(p *pass, observed health) {
+//
+// A refused spec leaves both conditions alone. They describe the cluster that
+// is running, and refusing a change does not alter it.
+func (r *Reconciler) summarizeAlignment(p *pass) {
+	if p.desired == nil {
+		return
+	}
+
 	desired := p.object.Status.Nodes
 
-	if observed.current == desired {
+	if p.health.current == desired {
 		p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionTrue,
 			fsv1alpha1.ReasonUpToDate, fmt.Sprintf("All %d declared nodes are running", desired))
 		p.setCondition(fsv1alpha1.ConditionConfigurationInSync, metav1.ConditionTrue,
@@ -162,78 +238,16 @@ func (r *Reconciler) summarizeAlignment(p *pass, observed health) {
 		return
 	}
 
-	p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
-		fsv1alpha1.ReasonScalingUp,
-		fmt.Sprintf("%d of %d declared nodes are running", observed.current, desired))
+	if int32(len(p.live)) < desired { //nolint:gosec // the topology is bounded at 16 nodes
+		p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
+			fsv1alpha1.ReasonScalingUp,
+			fmt.Sprintf("%d of %d declared nodes exist", len(p.live), desired))
+	} else {
+		p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionTrue,
+			fsv1alpha1.ReasonUpToDate, fmt.Sprintf("All %d declared nodes are running", desired))
+	}
+
 	p.setCondition(fsv1alpha1.ConditionConfigurationInSync, metav1.ConditionFalse,
 		fsv1alpha1.ReasonRollingNodes,
-		fmt.Sprintf("%d of %d nodes run the desired configuration", observed.current, desired))
-}
-
-// observe reads the cluster's pods and matches them against the node set.
-func (r *Reconciler) observe(ctx context.Context, p *pass) (health, error) {
-	var pods corev1.PodList
-
-	if err := r.List(ctx, &pods,
-		client.InNamespace(p.cluster.Namespace),
-		client.MatchingLabels(SelectorLabels(p.cluster.Name)),
-	); err != nil {
-		return health{}, errors.Wrap(err, "list node pods")
-	}
-
-	byNode := make(map[string]*corev1.Pod, len(pods.Items))
-
-	for i, pod := range pods.Items {
-		byNode[pod.Labels[LabelNode]] = &pods.Items[i]
-	}
-
-	var (
-		observed health
-		domains  = make(map[string]bool)
-	)
-
-	for _, node := range p.nodes {
-		pod, ok := byNode[node.Name]
-		if !ok || !podReady(pod) {
-			continue
-		}
-
-		observed.ready++
-
-		// In the flat topology every node is its own failure domain, which is
-		// what fs does with an empty rack.
-		domains[domainOf(node)] = true
-
-		if p.restarts != nil && pod.Annotations[AnnotationRestartRevision] == p.restarts[node.Name] {
-			observed.current++
-		}
-	}
-
-	observed.readyDomains = len(domains)
-
-	return observed, nil
-}
-
-// domainOf is the failure domain a node belongs to.
-func domainOf(node Node) string {
-	if node.Rack == "" {
-		return node.Name
-	}
-
-	return node.Rack
-}
-
-// podReady reports whether a pod is serving.
-func podReady(pod *corev1.Pod) bool {
-	if pod.DeletionTimestamp != nil {
-		return false
-	}
-
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == corev1.PodReady {
-			return condition.Status == corev1.ConditionTrue
-		}
-	}
-
-	return false
+		fmt.Sprintf("%d of %d nodes run the desired configuration", p.health.current, desired))
 }

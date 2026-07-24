@@ -336,14 +336,14 @@ func TestReconcileReportsQuorum(t *testing.T) {
 
 	// One ready node is a single failure domain: rf2.5 acknowledges a write
 	// only once two of them hold a full replica.
-	readyPod(t, r, &cluster, nodes[0])
+	serving(t, r, key, nodes[0])
 	reconcile(t, r, key)
 
 	if c := condition(t, r, key, fsv1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionFalse {
 		t.Errorf("Ready = %v, want False with one node up", c)
 	}
 
-	readyPod(t, r, &cluster, nodes[1])
+	serving(t, r, key, nodes[1])
 	reconcile(t, r, key)
 
 	if c := condition(t, r, key, fsv1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionTrue {
@@ -361,42 +361,22 @@ func TestReconcileReportsQuorum(t *testing.T) {
 	}
 }
 
-// readyPod stands in for the pod a StatefulSet controller would create: same
-// labels, same restart-revision annotation, and Ready.
-func readyPod(t *testing.T, r *Reconciler, cluster *fsv1alpha1.FSCluster, node Node) {
+// serving stands in for the StatefulSet controller: it reports the node's
+// single pod as up and current, which is what the operator reads.
+func serving(t *testing.T, r *Reconciler, key types.NamespacedName, node Node) {
 	t.Helper()
 
-	ctx := t.Context()
+	var set appsv1.StatefulSet
+	get(t, r, key.Namespace, node.Name, &set)
 
-	defaulted := cluster.DeepCopy()
-	defaulted.Spec.WithDefaults()
+	set.Status.ObservedGeneration = set.Generation
+	set.Status.Replicas = 1
+	set.Status.ReadyReplicas = 1
+	set.Status.UpdatedReplicas = 1
+	set.Status.AvailableReplicas = 1
 
-	revision, err := RestartRevision(defaulted, node, RenderOptions{})
-	if err != nil {
-		t.Fatalf("restart revision: %v", err)
-	}
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        PodName(node.Name),
-			Namespace:   cluster.Namespace,
-			Labels:      NodeSelectorLabels(cluster.Name, node.Name),
-			Annotations: map[string]string{AnnotationRestartRevision: revision},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: ContainerName, Image: Image(defaulted)}},
-		},
-	}
-
-	if err := r.Create(ctx, pod); err != nil {
-		t.Fatalf("create pod: %v", err)
-	}
-
-	pod.Status.Phase = corev1.PodRunning
-	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-
-	if err := r.Status().Update(ctx, pod); err != nil {
-		t.Fatalf("mark pod ready: %v", err)
+	if err := r.Status().Update(t.Context(), &set); err != nil {
+		t.Fatalf("mark node %q serving: %v", node.Name, err)
 	}
 }
 
