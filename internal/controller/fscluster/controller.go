@@ -73,6 +73,10 @@ type Reconciler struct {
 	// tests inject a fake to stand in for unreachable pods.
 	Admin func(baseURL, token string) (fsclient.Interface, error)
 
+	// OperatorNamespace is where the operator runs, so a cluster's opt-in
+	// NetworkPolicy can allow the admin and peer ports from it (SPEC §9).
+	OperatorNamespace string
+
 	poolOnce sync.Once
 	pool     *fsclient.Pool
 }
@@ -98,6 +102,7 @@ func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, err
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile brings one FSCluster's resources in line with its spec.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -138,6 +143,7 @@ func (r *Reconciler) pipeline() controller.Pipeline[*pass] {
 		{Name: "reload", Run: r.reconcileReload},
 		{Name: migrateName, Run: r.reconcileMigration},
 		{Name: "budget", Run: r.reconcileBudget},
+		{Name: "networkpolicy", Run: r.reconcileNetworkPolicy},
 		{Name: "status", AlwaysRun: true, Run: r.reconcileStatus},
 	}
 }

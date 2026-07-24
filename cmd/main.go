@@ -188,6 +188,9 @@ func main() {
 		// reconciler reports refusals and rollout steps. The deprecation is a
 		// future-major signal; controller-runtime still ships it.
 		Recorder: mgr.GetEventRecorderFor("fs-operator"), //nolint:staticcheck // see comment
+		// The operator's own namespace, so a cluster's NetworkPolicy can allow
+		// the admin/peer ports from it (POD_NAMESPACE via the downward API).
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "fscluster")
 		os.Exit(1)
