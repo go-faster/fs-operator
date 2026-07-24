@@ -104,6 +104,7 @@ func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, err
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile brings one FSCluster's resources in line with its spec.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -146,6 +147,7 @@ func (r *Reconciler) pipeline() controller.Pipeline[*pass] {
 		{Name: migrateName, Run: r.reconcileMigration},
 		{Name: "budget", Run: r.reconcileBudget},
 		{Name: "networkpolicy", Run: r.reconcileNetworkPolicy},
+		{Name: "podmonitor", Run: r.reconcilePodMonitor},
 		{Name: "status", AlwaysRun: true, Run: r.reconcileStatus},
 	}
 }
