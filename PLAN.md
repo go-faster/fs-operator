@@ -100,13 +100,17 @@ Now unblocked by fs v0.6.0. Sequenced so each piece builds on the last:
    polls `config_revision` until every node reports the target;
    `ConfigurationInSync` reflects what nodes have actually applied (SPEC
    §8.3).
-3. **Convergence-gated rollouts** — the rollout gate also waits on
-   `cluster/status` convergence (placement skew ≈ 0) and a drained repair
-   queue (per-node rebalance endpoint) before the next node, to
-   `convergenceTimeout`; `Converged` condition (SPEC §8.2).
-4. **Schema migration Job** — after a full rollout with binary schema >
-   cluster schema, run `fs cluster migrate` as a Job (Auto policy);
-   `SchemaCurrent` condition (SPEC §8.2 Migrating).
+3. ✅ **Convergence-gated rollouts** — a convergence step reads
+   `cluster/status` (rebalance running?) and the per-node rebalance endpoint
+   (repair-queue depth, summed); the rollout will not replace another node
+   until the queue is empty and no rebalance is moving data, and holds
+   past `convergenceTimeout`. `Converged` condition (SPEC §8.2).
+4. ✅ **Schema migration Job** — the convergence step also reads schema
+   versions; once every node is config-current and converged and the binary
+   schema is ahead, the Auto policy runs `fs cluster migrate` as a
+   create-once Job keyed by target schema. `SchemaCurrent` condition, the
+   `Migrating` phase, and `status.schemaVersion`; Manual only surfaces the
+   pending migration (SPEC §8.2).
 5. **Day-2 extras** — scale-up alignment from registered nodes, PVC
    expansion (§8.5), optional PodMonitor, NetworkPolicy (§9); docs guides
    (upgrades, scaling, monitoring) complete (§13). Then release **v0.2.0**.
