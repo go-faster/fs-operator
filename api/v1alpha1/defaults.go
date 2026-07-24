@@ -34,7 +34,7 @@ const (
 
 	// DefaultImageTag is the pinned fs release this operator version is
 	// validated against; used when spec.image.tag is empty.
-	DefaultImageTag = "v0.6.0"
+	DefaultImageTag = "v0.7.0"
 
 	// DefaultScheme is the default replication scheme.
 	DefaultScheme = "rf2.5"

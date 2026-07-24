@@ -8,7 +8,7 @@ metadata:
   name: fs-jbod
 spec:
   image:
-    tag: v0.6.0
+    tag: v0.7.0
   topology:
     nodes: 4
   storage:
