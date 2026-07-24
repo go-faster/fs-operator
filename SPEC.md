@@ -1,0 +1,824 @@
+# fs-operator — Kubernetes operator for go-faster/fs clusters
+
+Status: **draft for review** — nothing below is implemented yet; the repo only
+contains `kubebuilder init` scaffolding.
+
+This document is the specification for `fs-operator`: a Kubernetes operator
+(kubebuilder v4) that provisions and operates **multi-node, clustered**
+[go-faster/fs](https://github.com/go-faster/fs) deployments — an S3-compatible
+object store with quorum replication (`rf2.5`, `rf3`, `ec:k,m`), an etcd
+control plane, failure-domain-aware placement, automatic rebalancing and
+scrub/repair.
+
+The operator exists because a clustered fs deployment is not "a StatefulSet
+with N replicas": it has per-node identity, disks and weights, failure-domain
+(rack) assignment, a strict *one-node-at-a-time with reconvergence* upgrade
+contract, explicit schema migrations, and drain-before-remove
+decommissioning. The existing Helm chart in `go-faster/fs`
+(`helm/go-faster-fs`) can only template the static shape; the operator owns
+the day-2 choreography.
+
+---
+
+## 1. Goals
+
+- **Provision** a complete fs cluster from one custom resource: per-node
+  StatefulSets, PVC-backed disks, headless + client Services, rendered
+  per-node config, generated secrets (cluster secret, admin token, root S3
+  credentials), PDB.
+- **Topology-aware**: map fs *racks* (failure domains) onto Kubernetes zones
+  or arbitrary node sets; keep placement guarantees honest with required pod
+  anti-affinity.
+- **Safe day-2 operations**, encoding `docs/UPGRADE.md` and
+  `docs/FAILURE-MODEL.md` of go-faster/fs as controller logic:
+  - rolling image/config updates one node at a time, gated on cluster
+    reconvergence between nodes;
+  - explicit schema migration (`fs cluster migrate`) after a full rollout;
+  - scale-up (join + auto-rebalance) and drain-based decommission on
+    scale-down;
+  - hot reload (credentials, TLS certs) without restarts where fs supports
+    it, with per-node verification that the reload actually applied.
+- **Declarative tenancy primitives**: buckets (`FSBucket`) and S3 credentials
+  (`FSAccessKey`) as CRs, reconciled against the cluster's admin/S3 APIs.
+- **Own the Helm chart from day one**: the operator's chart lives in
+  `dist/chart`, is committed and hand-maintained (scaffolded once by the
+  kubebuilder `helm/v2-alpha` plugin, then owned), with CRDs synced from
+  `config/crd` by a hack script so the chart can never drift.
+- **Documentation as a deliverable** (§13): task-oriented guides, a numbered
+  example gallery, and an API reference generated from the Go types.
+
+## 2. Non-goals (v1alpha1)
+
+- **No autoscaling.** Cluster membership changes are deliberate,
+  capacity-planned operations (fs docs are explicit about this). No HPA,
+  ever, for the data plane.
+- **No Ingress/HTTPRoute/Gateway management** for S3 traffic. The operator
+  exposes a Service; routing is composed by the user.
+- **No backup/restore or cross-cluster replication.** Durability is the
+  cluster's replication scheme; disaster recovery is out of scope for now.
+- **No certificate issuance.** TLS material comes from Secrets (cert-manager
+  or hand-made); the operator mounts and hot-reloads it.
+- **No production-grade managed etcd.** External etcd is the supported
+  control plane; a convenience dev-grade managed mode is phased in later
+  (§16).
+- **No cluster-secret rotation.** Peer HMAC auth uses a single shared secret;
+  mixed secrets partition the cluster. Rotation is a documented manual
+  procedure until fs grows dual-secret support.
+
+---
+
+## 3. Background: what fs cluster mode requires from an orchestrator
+
+Facts about go-faster/fs that drive the design (source: `cmd/fs/config.go`,
+`clusterstore/`, `docs/{UPGRADE,FAILURE-MODEL,SIZING,DEPLOYMENT}.md`):
+
+- Every node runs the same `fs s3` binary with a YAML config. Cluster mode is
+  `storage.type: cluster` plus a `cluster:` section: `node_id`, `rack`,
+  peer listener `addr`/`advertise_addr` (default `:7080`), shared `secret`
+  (HMAC peer auth, min 16 chars), `scheme`, per-node `disks`
+  (id/path/weight), `etcd` (endpoints/prefix/ttl) and `rebalance` tuning.
+- Per-instance identity is injectable via env — `FS_CLUSTER_NODE_ID`,
+  `FS_CLUSTER_ADVERTISE_ADDR`, `FS_CLUSTER_SECRET`.
+- Racks are failure domains: placement spreads copies across racks first.
+  Empty rack = the node is its own domain.
+- Disk **weights** drive placement; weight 0 drains a disk (no new data, and
+  the auto-rebalancer moves existing data off it). Weights live in the
+  node's config and are registered in etcd at startup.
+- Supported envelope: 3–16 nodes. `rf2.5`/`rf3` need ≥3 distinct failure
+  domains; `ec:k,m` needs ≥ k+m.
+- Health endpoints: `/health` (liveness) and `/ready` (readiness, probes
+  storage → 200/503) on the S3 listener.
+- Admin API (separate listener, bearer token, default `localhost:8090`):
+  `/api/v1/info`, `/api/v1/access-keys` CRUD, `/api/v1/cluster/rebalance`
+  (status incl. `repair_queue_depth`, pause/resume control).
+- `SIGHUP` hot-reloads credentials/grants and the TLS certificate — nothing
+  else. All other config changes need a process restart.
+- **Upgrade contract**: one node at a time; wait for the cluster to
+  reconverge before touching the next node (a second missing domain can make
+  EC objects unrecoverable). A node never joins a cluster whose schema is
+  newer than itself; schema migrations are explicit (`fs cluster migrate`,
+  etcd-elected, resumable) and run only after *all* nodes run the new
+  binary.
+- **Decommission contract**: drain first (weight 0 → data moves off), then
+  remove. Killing a node without draining leaves the cluster to repair from
+  surviving copies — allowed but degraded.
+- Observability: OTEL SDK via standard env vars (traces/metrics/logs),
+  Prometheus metrics exporter, pprof via `PPROF_ADDR`. Rich cluster metrics
+  (disk fullness, placement skew, repair queue, rebalance/scrub counters).
+
+Some orchestration needs are **not yet satisfiable** with today's fs; §11
+lists the required upstream changes and which operator feature depends on
+each.
+
+---
+
+## 4. Architecture
+
+One controller-manager (Deployment, leader-elected) with three controllers:
+
+```
+                      ┌────────────────────────────┐
+                      │  fs-operator (Deployment)  │
+                      │  FSCluster  controller     │
+                      │  FSBucket   controller     │
+                      │  FSAccessKey controller    │
+                      └──────────┬─────────────────┘
+                                 │ owns / reconciles
+     ┌───────────────┬───────────┼──────────────┬───────────────┐
+     ▼               ▼           ▼              ▼               ▼
+ Secrets        per-node      per-node      Services         PDB
+ (cluster secret, config       StatefulSet   peers (headless,  maxUnavailable=1
+  admin token,    Secrets      (1 pod each)  per-pod DNS)
+  root S3 creds)                             client (S3)
+```
+
+### 4.1 One StatefulSet per node
+
+The operator manages **one single-pod StatefulSet per fs node**, not one
+StatefulSet with N replicas. This is the load-bearing decision; it buys:
+
+- **Per-node configuration.** Each node gets its own rendered `config.yaml`
+  (Secret): its rack, its disks *with per-node weights*. Draining a node for
+  decommission (all weights → 0) is a config change to one node — impossible
+  with a shared pod template.
+- **Exact rollout control.** A rolling change is "update node i's
+  StatefulSet, let the StatefulSet controller replace the pod, gate on
+  reconvergence, proceed to node i+1" — the native workload machinery does
+  pod replacement; the operator only sequences. No `OnDelete` + manual pod
+  deletion choreography.
+- **Per-node storage surgery.** PVC expansion and disk-set changes are
+  per-node orphan-recreate operations touching exactly one node at a time
+  (§8.5).
+- **Independent scheduling.** Rack→zone pinning is per-node nodeAffinity;
+  scale-down removes a specific chosen node, not "the highest ordinal".
+
+Cost: more API objects (≤16 nodes ⇒ ≤16 StatefulSets — trivial) and the
+operator must aggregate readiness itself (it does anyway for convergence
+gating).
+
+All pods share one headless Service (`serviceName`) so every pod has stable
+DNS for the peer advertise address.
+
+### 4.2 Identity scheme
+
+| Thing | Value |
+|---|---|
+| API group | `fs.go-faster.org/v1alpha1` |
+| Kinds | `FSCluster`, `FSBucket`, `FSAccessKey` |
+| Go module | `github.com/go-faster/fs-operator` |
+| Node name / fs `node_id` | `<cluster>-<rack>-<n>` (flat: `<cluster>-<n>`) |
+| StatefulSet (per node) | `<node>` → pod `<node>-0` |
+| Advertise address | `<node>-0.<cluster>-peers.<ns>.svc:7080` |
+| Headless service | `<cluster>-peers` (publishNotReadyAddresses) |
+| Client service | `<cluster>` (S3 port) |
+| Per-node config Secret | `<node>-config` |
+| Cluster secret / admin token / root creds | `<cluster>-{cluster-secret,admin-token,root-credentials}` |
+
+- The operator talks to fs over two client channels: the **admin API**
+  (bearer token, per-pod DNS via the headless service) for health,
+  convergence gating and access-key verification; and the **S3 API** (root
+  credentials, client Service) for bucket CRUD. Connections are cached per
+  cluster and invalidated on secret rotation or endpoint change.
+- `FSBucket` and `FSAccessKey` reference an `FSCluster` in the same
+  namespace (namespace = tenancy boundary; no cross-namespace refs).
+- All managed resources carry `app.kubernetes.io/managed-by: fs-operator`
+  and `fs.go-faster.org/cluster: <name>` labels plus an ownerReference; the
+  node StatefulSets also carry `fs.go-faster.org/node: <node>` and
+  `fs.go-faster.org/rack: <rack>`.
+
+---
+
+## 5. `FSCluster` API
+
+Annotated example (defaults spelled out where interesting):
+
+```yaml
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: prod
+spec:
+  image:
+    repository: ghcr.io/go-faster/fs
+    tag: v0.34.0                 # required; no floating "latest"
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+
+  # Default replication scheme for all buckets: rf2.5 | rf3 | ec:k,m.
+  # Changeable at runtime (affects new writes; existing objects converge via
+  # repair/rebalance) — but never below what the topology can host.
+  scheme: rf2.5
+
+  topology:
+    # Exactly one of `nodes` (flat) or `racks` (failure domains).
+    #
+    # Flat: N nodes, each its own failure domain (fs rack = "").
+    # nodes: 3
+    #
+    # Racks: placement spreads copies across racks first.
+    racks:
+      - name: a
+        nodes: 2
+        # Sugar for nodeAffinity on topology.kubernetes.io/zone.
+        zone: eu-central-1a
+        # Or full scheduling control per rack:
+        # nodeSelector: {...}
+      - name: b
+        nodes: 2
+        zone: eu-central-1b
+      - name: c
+        nodes: 2
+        zone: eu-central-1c
+    # One fs node per k8s node. Required (default) keeps the failure model
+    # honest; Preferred/None for dev clusters.
+    podAntiAffinity: Required     # Required | Preferred | None
+
+  storage:
+    # Each disk is one PVC on every node, mounted at
+    # /var/lib/fs/disks/<name> and listed in cluster.disks with its weight.
+    disks:
+      - name: d0
+        size: 200Gi
+        storageClass: fast-nvme   # optional; cluster default otherwise
+        weight: 1                 # optional; relative capacity
+    # PVC handling when nodes are removed / the cluster is deleted.
+    reclaimPolicy: Retain         # Retain | Delete
+
+  etcd:
+    # v1alpha1: external etcd is required (see go-faster/fs docs/SIZING.md
+    # for etcd sizing). A managed dev-grade mode arrives later (§16).
+    external:
+      endpoints:
+        - http://etcd-0.etcd.fs-system:2379
+        - http://etcd-1.etcd.fs-system:2379
+        - http://etcd-2.etcd.fs-system:2379
+      # TLS/auth — requires upstream fs support (§11.4); until then http only.
+      # tlsSecretName: etcd-client-tls
+    prefix: /fs/prod              # defaulted to /fs/<namespace>/<name>; immutable
+    ttl: 10s
+    # Delete this cluster's keys under `prefix` when the FSCluster is deleted.
+    cleanupOnDelete: false
+
+  # Secret with key `secret` (min 16 chars). Generated if omitted. Immutable
+  # (no rotation in v1alpha1 — see non-goals).
+  clusterSecretRef: null
+
+  auth:
+    # Secret with keys `access-key` / `secret-key`, granted admin on all
+    # buckets (FS_ROOT_ACCESS_KEY / FS_ROOT_SECRET_KEY). Generated if
+    # omitted.
+    rootCredentialsSecretRef: null
+    # Buckets readable anonymously.
+    publicReadBuckets: []
+
+  s3:
+    service:
+      type: ClusterIP             # ClusterIP | NodePort | LoadBalancer
+      port: 8080
+      annotations: {}
+    # TLS termination in fs itself; Secret of type kubernetes.io/tls.
+    # Certificate renewals hot-reload without restarts.
+    tls:
+      secretName: ""              # empty = plaintext
+
+  # Passthrough tuning; defaults mirror fs defaults.
+  rebalance:
+    autoDisabled: false
+    settle: 1m
+    cooldown: 15m
+    fullWatermark: 0.9
+  integrity:
+    verifyOnRead: false
+    scrubInterval: 24h
+    scrubQuarantine: false
+
+  updatePolicy:
+    # Gate between node restarts during rolling changes: wait for /ready +
+    # node registered + repair queue drained + placement converged, up to
+    # convergenceTimeout, before touching the next node.
+    convergenceTimeout: 30m
+    # Auto: run `fs cluster migrate` (Job) after a successful full rollout.
+    # Manual: only surface the SchemaCurrent=False condition.
+    schemaMigration: Auto         # Auto | Manual
+
+  observability:
+    # Standard OTEL env passthrough.
+    otlp:
+      endpoint: ""
+      protocol: grpc
+    logLevel: info
+    # Create a PodMonitor for the fs pods' Prometheus metrics.
+    podMonitor: false
+
+  # Opt-in NetworkPolicy: peer (7080) and admin (8090) ports only from
+  # cluster pods + the operator; S3 unrestricted by default.
+  networkPolicy: false
+
+  # Pod-level knobs applied to every node's StatefulSet.
+  podTemplate:
+    resources:
+      requests: {cpu: "1", memory: 2Gi}
+    nodeSelector: {}
+    tolerations: []
+    priorityClassName: ""
+    annotations: {}
+    labels: {}
+    extraEnv: []
+```
+
+### 5.1 Field semantics and validation
+
+- `topology`: exactly one of `nodes`/`racks` (CEL). Total nodes must be
+  within the supported envelope (3–16); 1–2 nodes are admitted only for dev
+  (with a warning event) and only when the scheme's domain requirement
+  allows. Rack names are DNS-label and immutable per entry; removing a rack
+  or lowering a node count is a decommission (§8.4).
+- `scheme`: pattern-validated by CEL (`rf2.5|rf3|ec:<k>,<m>`); the
+  controller cross-checks it against the topology (distinct failure domains
+  ≥ scheme requirement: 3 for rf2.5/rf3, k+m for EC) and refuses to apply a
+  violating change: `SpecValid=False`, reason `SchemeTopologyMismatch`, no
+  resource mutation. Cross-field checks live in the controller in v1alpha1
+  (no admission webhook; §16 adds one).
+- Immutable (CEL `self == oldSelf`): `etcd.prefix`, `storage.disks[].name`,
+  `clusterSecretRef`, rack `name`s.
+- `storage.disks`: entries may be **added** (§8.5); entries may not be
+  removed in v1alpha1 (needs per-disk drain observability, §11.6). `size`
+  may only grow (PVC expansion, §8.5). `weight` is mutable (rolls the
+  cluster, §8.2).
+- Defaults are applied by the controller through a single `WithDefaults()`
+  method on the spec type (unit-testable and fuzzable); static defaults also
+  carry `+kubebuilder:default` markers so `kubectl explain` and the CRD
+  schema tell the truth.
+
+### 5.2 Status
+
+```yaml
+status:
+  observedGeneration: 7
+  nodes: 6                 # desired
+  readyNodes: 6
+  registeredNodes: 6       # nodes present in the etcd topology
+  configurationRevision: cfg-6b9f7c   # hash of desired rendered configs
+  statefulSetRevision: sts-4c11ab     # hash of desired pod templates
+  currentRevision: 6b9f7c  # revision all nodes have converged to
+  updateRevision: 6b9f7c   # revision being rolled out
+  schemaVersion:
+    cluster: 4             # etcd-recorded schema version
+    binary: 4              # version the deployed image implements
+  rebalance:
+    state: idle            # worst state across nodes
+    repairQueueDepth: 0    # summed
+  update:                  # present while a rolling change is in flight
+    phase: RollingNodes    # Preflight | RollingNodes | Migrating
+    node: prod-b-1         # node currently being replaced
+    startedAt: "..."
+  endpoints:
+    s3: http://prod.tenant-a.svc:8080
+  conditions: [...]
+```
+
+Conditions (all standard `metav1.Condition`, with documented reasons — the
+condition and event vocabulary is API surface, §13):
+
+| Type | Meaning |
+|---|---|
+| `SpecValid` | Spec passes controller-side cross-field validation. |
+| `ReconcileSucceeded` | The last reconcile pass completed without error. |
+| `Ready` | The cluster serves S3 at write quorum. |
+| `NodesHealthy` | Every node pod is Ready and registered in etcd. |
+| `ClusterSizeAligned` | Actual node set matches the topology (False while scaling, reason `ScalingUp`/`Draining`/…). |
+| `ConfigurationInSync` | Every node runs the desired configuration revision (hot reload verified per node). |
+| `Converged` | Repair queue empty and placement converged (gates rollouts). |
+| `SchemaCurrent` | Cluster schema version matches the binary's (False = migration pending). |
+
+Per-node detail lives in events and metrics, not status, to keep the object
+bounded.
+
+---
+
+## 6. `FSBucket` API
+
+```yaml
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSBucket
+metadata:
+  name: media
+spec:
+  clusterRef:
+    name: prod
+  bucketName: media           # defaults to metadata.name; immutable
+  # Per-bucket scheme override; empty = cluster default. Requires the
+  # upstream admin endpoint (§11.3); ships in the phase that lands it.
+  scheme: ""
+  reclaimPolicy: Retain       # Retain | Delete
+status:
+  conditions: [ ... Ready ... ]
+  scheme: rf2.5               # effective scheme
+```
+
+Reconcile: ensure the bucket exists (S3 `CreateBucket` with root credentials
+via the client Service); apply the scheme override; add a finalizer. On
+delete with `reclaimPolicy: Delete`, issue S3 `DeleteBucket` — which fails
+while the bucket is non-empty; the controller retries with backoff and
+surfaces `Ready=False`, reason `BucketNotEmpty` (no force-wipe in v1alpha1).
+`Retain` drops the finalizer without touching data.
+
+## 7. `FSAccessKey` API
+
+```yaml
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSAccessKey
+metadata:
+  name: app-writer
+spec:
+  clusterRef:
+    name: prod
+  # Written to this Secret (keys: access-key, secret-key, endpoint).
+  # Defaults to <metadata.name>-credentials; generated once, owned by the
+  # FSAccessKey.
+  secretName: app-writer-credentials
+  grants:
+    - bucket: "media-*"     # glob, matches fs GrantConfig
+      permission: write     # read | write | admin
+status:
+  conditions: [ ... Ready ... ]
+  accessKey: AKprod4f2…     # non-secret half, for reference
+```
+
+Design decision: declarative keys are rendered into the cluster's **config
+files** (`auth.keys` in every node's config Secret), not created through the
+runtime admin key store. The admin API's runtime keys persist to a
+*node-local* file — per-node state, wrong for a cluster-wide declarative
+credential. Config-defined keys are cluster-wide, survive restarts, and are
+hot-reloadable (SIGHUP refreshes config-defined credentials without touching
+runtime-created ones).
+
+Reconcile: generate the secret key (once), merge all FSAccessKeys of the
+cluster into the rendered configs, bump the config Secrets, trigger a reload
+on every pod (§8.3), and verify via the admin API (`listAccessKeys`) before
+setting `Ready=True`. Deletion reverses it (finalizer, re-render, reload).
+
+---
+
+## 8. FSCluster reconciliation
+
+The reconciler is a sequential **step pipeline**; each step returns
+continue / requeue-after / blocked (blocked skips the remaining mutating
+steps, while status-refreshing steps marked *always-run* still execute).
+Steps: Secrets → Services → NodeConfigs → NodeSets (the rolling state
+machine, §8.2) → Migration → PDB → Status. Every pass is idempotent and each
+step is unit-testable in isolation.
+
+### 8.1 Resource graph
+
+Rendered per reconcile, compared semantically, applied with server-side
+apply (field manager `fs-operator`):
+
+1. **Secrets** — cluster secret / admin token / root credentials: generated
+   once if no `*Ref` is given (crypto/rand, 32 bytes), never regenerated.
+2. **Per-node config Secret** — full `config.yaml` (it embeds credential
+   material, so a Secret, not a ConfigMap):
+   - `server`: addr `:8080`, health `/health`, timeouts; `tls` pointing at
+     the mounted certificate when `s3.tls.secretName` is set;
+   - `storage`: `type: cluster`, root `/var/lib/fs`;
+   - `cluster`: `node_id: <node>`, `rack: <rack>`, `addr: :7080`,
+     `advertise_addr: <node>-0.<cluster>-peers…:7080`, `scheme`, `disks`
+     (one per `storage.disks` entry at `/var/lib/fs/disks/<name>`, with
+     *this node's* weights — 0 while draining), `etcd`, `rebalance`;
+   - `auth`: keys merged from all FSAccessKeys + `publicReadBuckets`;
+   - `admin`: enabled, `addr: :8090` (pod network; bearer token via env);
+   - `integrity`, `observability` passthrough.
+   The cluster secret is env-injected (`FS_CLUSTER_SECRET`), never written
+   into the file.
+3. **Per-node StatefulSet** — one replica, `serviceName: <cluster>-peers`,
+   `persistentVolumeClaimRetentionPolicy` from `storage.reclaimPolicy`,
+   one volumeClaimTemplate per disk. Pod template:
+   - env: `FS_CLUSTER_SECRET` / `FS_ADMIN_TOKEN` / root creds via
+     secretKeyRef, OTEL env, `PPROF_ADDR`;
+   - ports: http 8080, peer 7080, admin 8090, metrics 9464, pprof 9010;
+   - probes: liveness `/health`, readiness `/ready`, generous startup probe;
+   - volumes: config Secret at `/etc/fs`, TLS Secret when set, disk PVCs;
+   - securityContext: runAsNonRoot 1000, readOnlyRootFilesystem, seccomp
+     RuntimeDefault, drop ALL;
+   - config-revision pod annotation (drives §8.2/§8.3 decisions);
+   - per-rack nodeAffinity (zone/nodeSelector) + anti-affinity across the
+     cluster's pods per `topology.podAntiAffinity`.
+4. **Services** — `<cluster>-peers` headless (`publishNotReadyAddresses:
+   true`; 7080/8090/9464) and `<cluster>` client (S3 port).
+5. **PodDisruptionBudget** — `maxUnavailable: 1` over all cluster pods.
+   Voluntary evictions can never take two failure domains down;
+   non-negotiable, always created.
+6. **PodMonitor** — optional, created only if the `monitoring.coreos.com`
+   API group is discoverable.
+
+### 8.2 Rolling changes (image, restart-required config)
+
+Two desired-state revisions are computed each pass: the **configuration
+revision** (hash of rendered configs) and the **pod-template revision**.
+A node needs a *restart* when its StatefulSet template is stale or its
+config diff touches non-hot-reloadable fields; it needs a *reload* (§8.3)
+otherwise.
+
+State machine, persisted in `status.update`:
+
+```
+Idle
+ └─ restart-requiring diff detected
+Preflight        all pods Ready ∧ all nodes registered ∧ Converged
+                 — else hold (Ready stays, conditions report why)
+RollingNodes     for one node at a time (racks round-robin, so two nodes of
+                 one rack are never adjacent in the order):
+                   apply node's config Secret + StatefulSet template →
+                   StatefulSet controller replaces the pod →
+                   wait pod Ready → wait node registered in topology →
+                   wait Converged (repair queue empty on all nodes,
+                   placement convergence — §11.2) → next node
+                 gate timeout (updatePolicy.convergenceTimeout) ⇒
+                 Converged=False + event; HALT — never touch a second node
+                 while the cluster is unconverged; resumes automatically
+                 when the gate passes
+Migrating        schemaVersion.binary > schemaVersion.cluster ∧ Auto ⇒
+                 Job `<cluster>-migrate-<rev>` runs `fs cluster migrate`
+                 (etcd-elected, resumable; safe to re-run)
+Idle             currentRevision = updateRevision
+```
+
+Rollback = the user reverting `spec`; the same machinery rolls back
+node-by-node. fs's schema rules protect the edges: an old binary refuses to
+join a schema-migrated cluster — the operator surfaces the CrashLoop with
+the upstream explanation (post-migration binary rollback is unsupported, per
+fs UPGRADE.md).
+
+### 8.3 Hot config changes
+
+If a config diff touches only hot-reloadable material (auth keys/grants,
+public-read buckets, TLS certificate), the operator updates the config
+Secrets and triggers a reload on every pod instead of restarting: preferred
+via the admin reload endpoint (§11.1), fallback `pods/exec` → `kill -HUP 1`.
+
+Verification is per node and revision-based: the rendered config embeds its
+own revision, and the node reports the revision it has applied (§11.2;
+until then, fallback to probing observable effects — `listAccessKeys` for
+credentials, the served certificate's serial for TLS). Kubelet Secret
+propagation can lag (~1m), so reload is retried until the node reports the
+target revision; `ConfigurationInSync` flips True when every node does.
+
+### 8.4 Scale-up and decommission
+
+- **Scale-up** (`nodes` increased or a rack added): create the new nodes'
+  Secrets + StatefulSets; they register and the auto-rebalancer converges.
+  `ClusterSizeAligned=False/ScalingUp` until registered + converged.
+  Multiple new nodes may join simultaneously (join is additive; only
+  removals are serialized).
+- **Scale-down** (`nodes` decreased or a rack removed): decommission
+  strictly one node at a time, highest node index first within the affected
+  rack:
+  1. **Drain**: re-render the node's config with all disk weights 0 and
+     roll that node (§8.2 machinery); on restart it re-registers drained
+     and the auto-rebalancer moves its data off.
+  2. **Wait drained**: the node holds no object data (needs per-node
+     occupancy from the cluster status endpoint, §11.2 — until it exists,
+     scale-down is refused with `SpecValid=False/ScaleDownRequiresDrain`).
+  3. **Remove**: delete the node's StatefulSet (graceful stop deregisters
+     it from etcd) and config Secret; apply `storage.reclaimPolicy` to its
+     PVCs.
+  4. Wait Converged, repeat for the next node.
+  Total nodes may never drop below the scheme's domain requirement; such a
+  spec is refused outright.
+
+### 8.5 Storage changes
+
+- **Disk size increase**: per node — patch the PVC (requires
+  `allowVolumeExpansion` on the StorageClass), then orphan-recreate that
+  node's StatefulSet (delete leaving the pod orphaned, re-apply with the
+  new volumeClaimTemplate) so a future pod replacement claims the right
+  size. Shrink is rejected by CEL.
+- **Disk added**: per node, one node at a time — orphan-recreate the
+  StatefulSet with the extra volumeClaimTemplate and roll the node; the
+  restarted pod mounts and registers the new disk, weights drive data onto
+  it.
+- **Weight change**: config change → §8.2 rolling restart. (A hot weight
+  path needs §11.6.)
+
+### 8.6 Deletion
+
+Finalizer `fs.go-faster.org/cluster`: delete owned resources (GC handles
+most via ownerRefs), apply `reclaimPolicy` to PVCs, and — only when
+`etcd.cleanupOnDelete: true` — delete the cluster's keys under
+`etcd.prefix` (the operator links the etcd client; the default prefix is
+namespaced per cluster, so this is safe). The default leaves etcd state
+untouched (shared-etcd caution).
+
+### 8.7 Failure handling
+
+- A pod failing mid-rollout: the state machine keeps waiting on its gates
+  and surfaces `Converged=False` + events after `convergenceTimeout` — no
+  automatic destructive remediation (fs repair handles data; the operator
+  never touches a second node while the cluster is unconverged).
+- Involuntary node loss: Kubernetes reschedules the pod (same PVCs, volume
+  topology permitting). The operator does not force-delete pods stuck on
+  dead nodes in v1alpha1; auto-remediation needs fencing and is future
+  work.
+- Requeue is watch-driven plus a slow resync (~5m) refreshing
+  health-derived status (registration, repair queue) from the admin API.
+
+---
+
+## 9. Security
+
+- All generated secrets are 32-byte crypto/rand values; nothing secret is
+  ever placed in ConfigMaps, annotations, inline env values (secrets come
+  via `valueFrom.secretKeyRef`) or logs.
+- fs peer traffic (7080) is HMAC-authenticated but **not encrypted**; docs
+  say so plainly, and `spec.networkPolicy: true` restricts 7080/8090 to
+  cluster pods + the operator namespace.
+- The admin listener requires the bearer token; the token Secret never
+  leaves the namespace.
+- RBAC (operator): apps/StatefulSets, core Secrets/Services/ConfigMaps/Pods
+  (+`pods/exec` only for the SIGHUP fallback — dropped once §11.1 lands),
+  policy/PDB, batch/Jobs, monitoring PodMonitors (optional), the three CRs
+  + status + finalizers.
+- fs pods: non-root (uid 1000), read-only rootfs, no capabilities, seccomp
+  RuntimeDefault.
+
+## 10. Observability
+
+- Operator metrics (controller-runtime plus):
+  `fsoperator_cluster_ready{cluster}`,
+  `fsoperator_cluster_nodes{cluster,state}`,
+  `fsoperator_update_phase{cluster,phase}`,
+  `fsoperator_update_duration_seconds`,
+  `fsoperator_reconcile_errors_total{controller}`.
+- Events on every transition: rollout started/gated/halted/finished,
+  migration run, drain progress, refused spec changes, reload verified.
+  Event reasons are part of the documented API surface (§13).
+- fs pods get OTEL env passthrough and a metrics port;
+  `observability.podMonitor: true` creates the PodMonitor. Grafana
+  dashboards ship later (§16).
+
+---
+
+## 11. Required changes in go-faster/fs
+
+The operator degrades gracefully where these are missing, but each unlocks a
+feature. Each is small and independently useful outside Kubernetes:
+
+1. **Admin reload endpoint** — `POST /api/v1/reload`, semantically identical
+   to SIGHUP (credentials + TLS). Unblocks: hot reload (§8.3) without
+   `pods/exec` RBAC.
+2. **Cluster status endpoint** — `GET /api/v1/cluster/status`: schema
+   version (binary + cluster-recorded), the applied **config revision**
+   (echo of a marker from the config file), topology as this node sees it,
+   per-node/per-disk occupancy (bytes, object count), convergence indicator
+   (misplaced-object estimate, as `fs cluster rebalance --dry-run`
+   computes), repair queue depth, last scrub summary. Unblocks: the §8.2
+   convergence gate, §8.3 reload verification, §8.4 drain-complete
+   detection. (Interim: `repair_queue_depth` from the rebalance endpoint +
+   CLI dry-run via exec — workable but ugly.)
+3. **Bucket scheme via admin API** — `GET/PUT /api/v1/buckets/{name}/scheme`
+   (today CLI-only `fs cluster scheme`). Unblocks: `FSBucket.spec.scheme`.
+4. **etcd client TLS + auth** — `cluster.etcd.{ca,cert,key,username,
+   password}` config. Unblocks: production etcd
+   (`etcd.external.tlsSecretName`).
+5. **`FS_CLUSTER_RACK` env override** — symmetry with node_id/advertise.
+   Nice-to-have (per-node configs carry the rack today).
+6. **Hot drain / weight override** — persisted per-disk drain flag or weight
+   override (etcd) settable via CLI + admin API. Unblocks: drain without a
+   node restart (§8.4 step 1 becomes an API call) and disk removal.
+7. **Public admin client** — export the ogen-generated admin API client
+   (today `internal/adminapi`) as an importable package so the operator and
+   other tooling don't re-generate from `_oas/admin.yml`.
+
+Sequencing: 1, 2, 7 first (they gate the core loops); 3–5 next; 6 with
+decommission polish.
+
+---
+
+## 12. Repository layout and tooling
+
+Scaffold (already initialized): kubebuilder v4.15, domain `go-faster.org`,
+repo `github.com/go-faster/fs-operator`, project `fs-operator`, Go 1.26.
+
+```
+api/v1alpha1/            fscluster_types.go, fsbucket_types.go,
+                         fsaccesskey_types.go, conditions.go, defaults.go,
+                         groupversion, deepcopy
+internal/controller/     step.go (pipeline), fscluster/ (controller,
+                         rolling state machine, resource builders, config
+                         renderer), fsbucket/, fsaccesskey/
+internal/fsclient/       thin wrappers: admin API client + minio-go S3
+                         client, connection cache keyed by cluster
+config/                  kustomize (crd, rbac, manager, samples, …) — the
+                         authoritative manifest source
+dist/chart/              the OWNED Helm chart (§14)
+hack/sync-chart-crds.sh  regenerates dist/chart/templates/crd/* from
+                         config/crd/bases after `make manifests`
+docs/, examples/         §13
+test/e2e/                kind-based e2e
+SPEC.md                  this document
+```
+
+Make targets: the standard kubebuilder set plus `helm-sync-crds`,
+`helm-lint`, `helm-deploy`/`helm-uninstall` (dev), `docs-api-ref`
+(generated API reference via crd-ref-docs), and `check-crd-compat` (CRD
+backward-compatibility diff against `origin/main` in CI).
+
+Conventions inherited from go-faster projects: `github.com/go-faster/errors`
+(wrap only under non-nil checks), full-sentence comments, Conventional
+Commits, `golangci-lint` clean.
+
+## 13. Documentation
+
+Documentation ships with the code and is part of "done" for every feature:
+
+```
+docs/
+  overview.md            what it is, feature list, links
+  install/               helm.md (primary), kubectl.md (kustomize)
+  guides/
+    configuration.md     every spec section: topology/racks, storage,
+                         etcd, auth, S3/TLS, tuning, pod template
+    scaling.md           scale-up, decommission, envelope limits
+    upgrades.md          rolling updates, schema migration, rollback rules
+    storage.md           disks, weights, expansion, reclaim policy
+    buckets-and-keys.md  FSBucket / FSAccessKey
+    monitoring.md        metrics, conditions and events reference
+    security.md          secrets, network policy, peer-traffic caveats
+  reference/
+    api.md               GENERATED from api/v1alpha1 (crd-ref-docs);
+                         CI fails when stale
+examples/
+  01-minimal.yaml            3-node flat dev cluster
+  02-zonal-racks.yaml        3 racks × 2 nodes across zones
+  03-multi-disk.yaml         multiple disks per node, weights
+  04-erasure-coding.yaml     ec:4,2 with 6 nodes
+  05-tls.yaml                S3 TLS via cert-manager Secret
+  06-buckets-and-keys.yaml   FSBucket + FSAccessKey round-trip
+  07-production.yaml         full production shape (resources, monitor,
+                             network policy, external etcd w/ TLS)
+```
+
+Every example is exercised in e2e (applied, or at minimum server-side
+dry-run validated), so the gallery cannot rot. Condition types, condition
+reasons and event reasons are documented in `monitoring.md` as API surface.
+
+## 14. Helm chart ownership
+
+The chart is scaffolded once with the kubebuilder `helm/v2-alpha` plugin
+into `dist/chart`, then committed and hand-owned: it deploys the operator
+(manager Deployment, RBAC, metrics service, optional network policy /
+Prometheus bits) and ships the CRDs as templates guarded by
+`.Values.crd.enable`, with `helm.sh/resource-policy: keep` behind
+`.Values.crd.keep` (default true). Because CRDs are generated from Go
+types, the chart copy must never drift: `hack/sync-chart-crds.sh` wraps
+each `config/crd/bases/*.yaml` into its chart template, `make
+helm-sync-crds` runs it after `manifests`, and CI fails on any diff. Chart
+version is bumped manually with releases; `appVersion` tracks the operator
+image tag.
+
+## 15. Testing
+
+- **Unit**: config renderer golden tests (spec → per-node config.yaml);
+  the rolling state machine as a table-driven pure function over fake
+  cluster-health snapshots; resource builders; **fuzz** on spec
+  validation/defaulting (round-trip: any accepted spec renders a valid
+  config).
+- **envtest**: controller behavior against a real API server — secret
+  generation idempotency, ownership/GC, per-node STS fan-out, status
+  conditions, refusal paths (scheme/topology mismatch, undrained
+  scale-down, disk shrink). fs admin/S3 endpoints faked with httptest.
+- **e2e (kind)**: 1 control-plane + 3 workers with zone topology labels;
+  deploy the operator via `dist/chart`, a minimal 3-pod etcd, then: 3-node
+  FSCluster → S3 smoke (bucket, put/get via minio-go) → FSBucket +
+  FSAccessKey round-trip → image bump → observe strictly-one-at-a-time roll
+  with convergence gates → scale 3→4 → decommission 4→3 → delete cluster,
+  assert cleanup. Examples gallery validated in the same run. E2E specs are
+  labeled per area so a single scenario can run in isolation.
+- **Chaos (later)**: kill a pod mid-rollout, assert the operator halts.
+
+## 16. Phasing
+
+| Phase | Scope |
+|---|---|
+| **P1 — core** | FSCluster CRD + controller: provisioning (secrets, per-node configs + StatefulSets, services, PDB), conditions/status, flat + racks topology, owned Helm chart + CRD sync, docs skeleton + examples 01–03, envtest + kind e2e. Rolling updates gated on ready + repair-queue only (until fs §11.2). |
+| **P2 — day-2** | Full convergence-gated rollouts + migration Job (fs §11.1/2/7), hot reload with revision verification, scale-up, PVC expansion, PodMonitor, NetworkPolicy, docs guides complete. |
+| **P3 — tenancy** | FSBucket (+ scheme once fs §11.3), FSAccessKey via config rendering + verified reload, examples 04–07. |
+| **P4 — lifecycle** | Decommission/scale-down with drain observability (fs §11.2/6), disk add/remove, etcd TLS (fs §11.4), managed dev-grade etcd, admission webhook (cross-field validation moves out of the controller), Grafana dashboards, CRD-compat CI gate. |
+
+## 17. Open questions
+
+1. Managed etcd: dev-only convenience forever, or eventually blessed for
+   small production clusters? (Leaning: dev-only; etcd operation is its own
+   discipline.)
+2. Should `FSAccessKey` support user-supplied secret keys (import), or
+   generated-only? (Leaning: generated-only; import invites weak keys.)
+3. Zone-discovery mode (rack derived from the k8s node's zone at pod start)
+   versus explicit `racks` only? (Leaning: explicit only; discovery makes
+   rack membership scheduling-dependent — exactly what a failure model
+   shouldn't be.)
+4. Multi-namespace watch vs. per-namespace operator instances as the
+   recommended multi-tenant deployment (chart supports both; docs need a
+   stance).
+5. Per-node `podTemplate` overrides (heterogeneous hardware) in v1alpha1, or
+   is the per-rack split enough? (Leaning: per rack is enough; weights
+   already absorb heterogeneous disks.)
