@@ -14,10 +14,20 @@ spec:
     singular: fsbucket
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .spec.clusterRef.name
+      name: Cluster
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: FSBucket is the Schema for the fsbuckets API
+        description: FSBucket is the Schema for the fsbuckets API.
         properties:
           apiVersion:
             description: |-
@@ -39,25 +49,49 @@ spec:
           spec:
             description: spec defines the desired state of FSBucket
             properties:
-              foo:
-                description: foo is an example field of FSBucket. Edit fsbucket_types.go
-                  to remove/update
+              bucketName:
+                description: |-
+                  bucketName is the S3 bucket name; defaults to metadata.name.
+                  Immutable.
+                maxLength: 63
                 type: string
+                x-kubernetes-validations:
+                - message: bucketName is immutable
+                  rule: self == oldSelf
+              clusterRef:
+                description: clusterRef is the FSCluster this bucket lives in. Immutable.
+                properties:
+                  name:
+                    description: name of the FSCluster.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: clusterRef is immutable
+                  rule: self == oldSelf
+              reclaimPolicy:
+                default: Retain
+                description: |-
+                  reclaimPolicy controls what happens to the bucket when this resource
+                  is deleted. Retain leaves the bucket and its data; Delete removes the
+                  bucket, which succeeds only once it is empty (the controller retries
+                  and reports Ready=False/BucketNotEmpty until then).
+                enum:
+                - Retain
+                - Delete
+                type: string
+            required:
+            - clusterRef
             type: object
           status:
             description: status defines the observed state of FSBucket
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the FSBucket resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: conditions represent the current state of the FSBucket
+                  (Ready).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +150,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  observedGeneration is the last spec generation the controller acted
+                  on.
+                format: int64
+                type: integer
+              scheme:
+                description: scheme is the bucket's effective replication scheme.
+                type: string
             type: object
         required:
         - spec

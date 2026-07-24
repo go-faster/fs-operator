@@ -6,4 +6,5 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: fsbucket-sample
 spec:
-  # TODO(user): Add fields here
+  clusterRef:
+    name: fscluster-sample

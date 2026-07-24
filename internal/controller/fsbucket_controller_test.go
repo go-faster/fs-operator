@@ -54,7 +54,9 @@ var _ = Describe("FSBucket Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: fsv1alpha1.FSBucketSpec{
+						ClusterRef: fsv1alpha1.ClusterReference{Name: "test-cluster"},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

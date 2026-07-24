@@ -17,42 +17,75 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
-// FSAccessKeySpec defines the desired state of FSAccessKey
+// FSAccessKeySpec defines the desired state of an FSAccessKey: one S3
+// credential of a referenced FSCluster with its bucket grants.
+//
+// The credential comes from exactly one of two sources: generated (the
+// default — the operator mints it once and owns the Secret named by
+// secretName) or imported via existingSecretRef (a user-managed Secret, e.g.
+// minted by an external secret manager; the operator watches it and
+// propagates rotation to the cluster with a hot reload).
+// +kubebuilder:validation:XValidation:rule="!(has(self.existingSecretRef) && has(self.secretName))",message="secretName and existingSecretRef are mutually exclusive"
 type FSAccessKeySpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// clusterRef is the FSCluster this credential belongs to. Immutable.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="clusterRef is immutable"
+	// +required
+	ClusterRef ClusterReference `json:"clusterRef"`
 
-	// foo is an example field of FSAccessKey. Edit fsaccesskey_types.go to remove/update
+	// secretName names the operator-owned Secret the generated credential
+	// is written to (keys: access-key, secret-key, endpoint). Defaults to
+	// <metadata.name>-credentials. Immutable; not allowed together with
+	// existingSecretRef.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="secretName is immutable"
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	SecretName string `json:"secretName,omitempty"`
+
+	// existingSecretRef imports a credential from a user-managed Secret
+	// with keys "access-key" and "secret-key" (secret-key must be at least
+	// 16 characters, refused otherwise). The operator never writes to this
+	// Secret; external rotation propagates to the cluster via hot reload.
+	// +optional
+	ExistingSecretRef *corev1.LocalObjectReference `json:"existingSecretRef,omitempty"`
+
+	// grants authorize the key for buckets matching a glob, up to a
+	// permission level.
+	// +kubebuilder:validation:MinItems=1
+	// +required
+	Grants []GrantSpec `json:"grants"`
 }
 
-// FSAccessKeyStatus defines the observed state of FSAccessKey.
+// GrantSpec authorizes an access key for buckets matching Bucket (a glob) up
+// to Permission.
+type GrantSpec struct {
+	// bucket is a glob matched against bucket names (fs grant semantics).
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Bucket string `json:"bucket"`
+
+	// permission is the maximum permitted operation class.
+	// +kubebuilder:validation:Enum=read;write;admin
+	// +required
+	Permission string `json:"permission"`
+}
+
+// FSAccessKeyStatus defines the observed state of an FSAccessKey.
 type FSAccessKeyStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// observedGeneration is the last spec generation the controller acted
+	// on.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// accessKey is the non-secret half of the credential, for reference.
+	// +optional
+	AccessKey string `json:"accessKey,omitempty"`
 
-	// conditions represent the current state of the FSAccessKey resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// conditions represent the current state of the FSAccessKey (Ready).
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -61,8 +94,12 @@ type FSAccessKeyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.clusterRef.name`
+// +kubebuilder:printcolumn:name="AccessKey",type=string,JSONPath=`.status.accessKey`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// FSAccessKey is the Schema for the fsaccesskeys API
+// FSAccessKey is the Schema for the fsaccesskeys API.
 type FSAccessKey struct {
 	metav1.TypeMeta `json:",inline"`
 

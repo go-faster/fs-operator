@@ -54,7 +54,12 @@ var _ = Describe("FSAccessKey Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: fsv1alpha1.FSAccessKeySpec{
+						ClusterRef: fsv1alpha1.ClusterReference{Name: "test-cluster"},
+						Grants: []fsv1alpha1.GrantSpec{
+							{Bucket: "test-*", Permission: "write"},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

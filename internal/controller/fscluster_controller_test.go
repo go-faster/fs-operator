@@ -25,10 +25,16 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 )
+
+// resource1Gi is a 1Gi quantity for test disks.
+func resource1Gi() resource.Quantity {
+	return resource.MustParse("1Gi")
+}
 
 var _ = Describe("FSCluster Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -49,12 +55,28 @@ var _ = Describe("FSCluster Controller", func() {
 			By("creating the custom resource for the Kind FSCluster")
 			err := k8sClient.Get(ctx, typeNamespacedName, fscluster)
 			if err != nil && errors.IsNotFound(err) {
+				nodes := int32(3)
 				resource := &fsv1alpha1.FSCluster{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: fsv1alpha1.FSClusterSpec{
+						Image: fsv1alpha1.ImageSpec{Tag: "v0.0.0-test"},
+						Topology: fsv1alpha1.TopologySpec{
+							Nodes: &nodes,
+						},
+						Storage: fsv1alpha1.StorageSpec{
+							Disks: []fsv1alpha1.DiskSpec{
+								{Name: "d0", Size: resource1Gi()},
+							},
+						},
+						Etcd: fsv1alpha1.EtcdSpec{
+							External: fsv1alpha1.ExternalEtcdSpec{
+								Endpoints: []string{"http://etcd.test.svc:2379"},
+							},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
