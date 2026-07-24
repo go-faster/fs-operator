@@ -27,7 +27,7 @@ installation and guides.
 
 ```sh
 # Install the operator (CRDs included).
-helm install fs-operator ./dist/chart \
+helm install fs-operator oci://ghcr.io/go-faster/charts/fs-operator \
   --namespace fs-operator-system --create-namespace
 
 # Create a 3-node dev cluster (requires a reachable etcd).

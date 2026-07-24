@@ -203,7 +203,10 @@ metadata:
 spec:
   image:
     repository: ghcr.io/go-faster/fs
-    tag: v0.34.0                 # required; no floating "latest"
+    # Defaults to the pinned fs release this operator version is validated
+    # against (currently v0.5.0). Always a pinned version, never a floating
+    # tag — cluster upgrades are deliberate, one-node-at-a-time operations.
+    tag: v0.5.0
     pullPolicy: IfNotPresent
     pullSecrets: []
 
@@ -790,9 +793,13 @@ Prometheus bits) and ships the CRDs as templates guarded by
 `.Values.crd.keep` (default true). Because CRDs are generated from Go
 types, the chart copy must never drift: `hack/sync-chart-crds.sh` wraps
 each `config/crd/bases/*.yaml` into its chart template, `make
-helm-sync-crds` runs it after `manifests`, and CI fails on any diff. Chart
-version is bumped manually with releases; `appVersion` tracks the operator
-image tag.
+helm-sync-crds` runs it after `manifests`, and CI fails on any diff.
+
+Releases are keyed by git tag (`vX.Y.Z`): the release workflow publishes
+the multi-arch operator image to `ghcr.io/go-faster/fs-operator:vX.Y.Z` and
+the chart to `oci://ghcr.io/go-faster/charts/fs-operator` with chart
+version `X.Y.Z` and `appVersion vX.Y.Z` (the chart's default image tag), so
+a chart release always pulls its matching image.
 
 ## 15. Testing
 
