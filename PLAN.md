@@ -1,11 +1,10 @@
 # PLAN — current work plan
 
-Working plan for finishing **P1 (core)** of [SPEC.md](SPEC.md) §16. Updated
-as steps land; later phases (P2–P4) stay in the spec until they are next.
+**P1 (core) of [SPEC.md](SPEC.md) §16 is complete and released as `v0.1.0`.**
+This file now tracks the P2 day-2 work and the upstream fs endpoints it is
+gated on; later phases (P3–P4) stay in the spec until they are next.
 
-## Status
-
-Done:
+## P1 — done (shipped in v0.1.0)
 
 - API types (`FSCluster`, `FSBucket`, `FSAccessKey`) with CEL validation,
   conditions and defaults (SPEC §5–7)
@@ -51,10 +50,15 @@ Done:
   API default, CRD, chart, examples, e2e, docs — then regenerates;
   `make check-fs-version` fails on drift
 
-## Remaining P1 — build order
+- **First release** — `v0.1.0` tagged and published: multi-arch operator
+  image (`linux/amd64` + `linux/arm64`) to
+  `ghcr.io/go-faster/fs-operator:v0.1.0` and the chart to
+  `oci://ghcr.io/go-faster/charts/fs-operator` (chart `0.1.0`, appVersion
+  `v0.1.0`). All CI green on the released commit: Release, Tests, Lint,
+  Test Chart, E2E
 
-1. **First release** — tag `v0.1.0` to exercise the release pipeline end
-   to end (multi-arch image + chart to ghcr).
+**P1 (core) is complete.** Next focus is P2 (day-2), which is gated on the
+upstream fs endpoints below.
 
 ## Parallel track — upstream go-faster/fs (unblocks P2)
 
