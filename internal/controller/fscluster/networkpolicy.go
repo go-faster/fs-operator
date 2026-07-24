@@ -29,28 +29,28 @@ import (
 	"github.com/go-faster/errors"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 )
 
 // reconcileNetworkPolicy applies the cluster's NetworkPolicy when opted in and
 // removes it when opted out, so toggling spec.networkPolicy takes effect (SPEC
 // §9).
-func (r *Reconciler) reconcileNetworkPolicy(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileNetworkPolicy(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	policy := NewNetworkPolicy(p.cluster, r.OperatorNamespace)
 
 	if !p.cluster.Spec.NetworkPolicy {
 		if err := r.deleteIfExists(ctx, policy); err != nil {
-			return controller.Outcome{}, err
+			return pipeline.Outcome{}, err
 		}
 
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	if err := r.apply(ctx, p.cluster, policy); err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // deleteIfExists deletes an object, treating an already-absent one as success.

@@ -102,6 +102,8 @@ const (
 	ReasonBucketNotEmpty  ConditionReason = "BucketNotEmpty"
 	ReasonClusterNotFound ConditionReason = "ClusterNotFound"
 	ReasonClusterNotReady ConditionReason = "ClusterNotReady"
+	ReasonSchemeRejected  ConditionReason = "SchemeRejected"
+	ReasonBucketError     ConditionReason = "BucketError"
 )
 
 // FSAccessKey condition reasons.

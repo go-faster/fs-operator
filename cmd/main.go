@@ -196,15 +196,17 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.FSBucketReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("fs-operator"), //nolint:staticcheck // see fscluster wiring
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "fsbucket")
 		os.Exit(1)
 	}
 	if err := (&controller.FSAccessKeyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("fs-operator"), //nolint:staticcheck // see fscluster wiring
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "fsaccesskey")
 		os.Exit(1)

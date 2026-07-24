@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 )
 
 // eventStorageExpanding marks a node's storage being grown.
@@ -44,7 +44,7 @@ const eventStorageExpanding = "StorageExpanding"
 //
 // A shrink is refused outright — fs has no way to reclaim data off a smaller
 // volume, and Kubernetes cannot shrink a PVC.
-func (r *Reconciler) reconcileStorage(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileStorage(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	var drifted []int
 
 	for i, node := range p.nodes {
@@ -66,19 +66,19 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, p *pass) (controller.
 	}
 
 	if len(drifted) == 0 {
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	// Storage surgery replaces a node's StatefulSet, so do it one node at a
 	// time and only while the cluster is healthy and converged — the same
 	// contract as a rollout.
 	if waiting := p.health.notReady; len(waiting) > 0 {
-		return controller.RequeueAfter(pollInterval,
+		return pipeline.RequeueAfter(pollInterval,
 			fmt.Sprintf("waiting for node(s) %v before storage changes", waiting))
 	}
 
 	if !p.convergence.known || !p.convergence.converged {
-		return controller.RequeueAfter(pollInterval,
+		return pipeline.RequeueAfter(pollInterval,
 			"waiting for the cluster to reconverge before storage changes")
 	}
 
@@ -87,9 +87,9 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, p *pass) (controller.
 
 // expandNode grows one node's PVCs and orphan-deletes its StatefulSet so the
 // next pass recreates it with the new claim templates.
-func (r *Reconciler) expandNode(ctx context.Context, p *pass, node Node, desired *appsv1.StatefulSet) (controller.Outcome, error) {
+func (r *Reconciler) expandNode(ctx context.Context, p *pass, node Node, desired *appsv1.StatefulSet) (pipeline.Outcome, error) {
 	if err := r.growClaims(ctx, p, node, desired); err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
 	// Orphan-delete: the pod and PVCs stay, so the node keeps serving; the next
@@ -98,7 +98,7 @@ func (r *Reconciler) expandNode(ctx context.Context, p *pass, node Node, desired
 	if err := r.Delete(ctx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
 		Name: node.Name, Namespace: p.cluster.Namespace,
 	}}, &client.DeleteOptions{PropagationPolicy: &orphan}); err != nil && !apierrors.IsNotFound(err) {
-		return controller.Outcome{}, errors.Wrapf(err, "orphan-delete statefulset %q", node.Name)
+		return pipeline.Outcome{}, errors.Wrapf(err, "orphan-delete statefulset %q", node.Name)
 	}
 
 	r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventStorageExpanding,
@@ -107,7 +107,7 @@ func (r *Reconciler) expandNode(ctx context.Context, p *pass, node Node, desired
 	p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
 		fsv1alpha1.ReasonStorageExpanding, fmt.Sprintf("Applying storage changes to node %q", node.Name))
 
-	return controller.RequeueAfter(pollInterval, "recreating node with new storage")
+	return pipeline.RequeueAfter(pollInterval, "recreating node with new storage")
 }
 
 // growClaims expands a node's PVCs to the declared sizes. Shrinks are already

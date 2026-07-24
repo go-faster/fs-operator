@@ -30,6 +30,9 @@ type Interface interface {
 	Reload(ctx context.Context) (ReloadResult, error)
 	ClusterStatus(ctx context.Context) (ClusterStatus, error)
 	Rebalance(ctx context.Context) (Rebalance, error)
+	ListAccessKeys(ctx context.Context) ([]AccessKey, error)
+	GetBucketScheme(ctx context.Context, bucket string) (BucketScheme, error)
+	SetBucketScheme(ctx context.Context, bucket, scheme string) (BucketScheme, error)
 }
 
 var _ Interface = (*Client)(nil)

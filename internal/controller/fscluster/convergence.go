@@ -21,7 +21,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 	"github.com/go-faster/fs-operator/internal/fsclient"
 )
 
@@ -57,13 +57,13 @@ type convergence struct {
 // gatherConvergence reads the cluster's reconvergence state from the admin
 // API. It runs before the rollout, which gates on the result, and leaves the
 // convergence unknown (so the rollout holds) when no node can be reached.
-func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	log := logf.FromContext(ctx)
 
 	serving := servingNodes(p)
 	if len(serving) == 0 {
 		// Nothing is up to ask; convergence is not yet meaningful.
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	token, err := r.adminToken(ctx, p)
@@ -71,13 +71,13 @@ func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (controller
 		// The secrets step handles a missing token; here, just defer.
 		log.V(1).Info("Admin token unavailable; convergence unknown", "error", err)
 
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	status, ok := r.clusterStatus(ctx, p, serving, token)
 	if !ok {
 		// No node answered; leave convergence unknown so the rollout holds.
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	repairQueue := r.repairQueueDepth(ctx, p, serving, token)
@@ -94,7 +94,7 @@ func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (controller
 		converged: repairQueue == 0 && !status.RebalanceRunning,
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // clusterStatus reads the cluster-wide status from the first serving node that

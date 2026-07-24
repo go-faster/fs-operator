@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 )
 
 // health is what one pass observed of the running cluster: pod state from
@@ -61,10 +61,10 @@ type health struct {
 // observe reads the cluster's own StatefulSets and matches them against the
 // node set. It runs even when the pass was refused: a spec the operator will
 // not apply says nothing about the cluster that is already running.
-func (r *Reconciler) observe(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) observe(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	sets, err := r.nodeSets(ctx, p.cluster)
 	if err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
 	p.live = make(map[string]*appsv1.StatefulSet, len(sets))
@@ -97,7 +97,7 @@ func (r *Reconciler) observe(ctx context.Context, p *pass) (controller.Outcome, 
 
 	p.health.readyDomains = len(domains)
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // nodeServing reports whether a node's single pod is up and is the one the
@@ -128,7 +128,7 @@ func domainOf(node Node) string {
 //
 // It is the always-run step: a pass that refused a spec or failed halfway
 // still has to say so, and this is where that reaches the object.
-func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	base := p.object.DeepCopy()
 	status := &p.object.Status
 
@@ -159,10 +159,10 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (controller.O
 	}
 
 	if err := r.Status().Patch(ctx, p.object, client.MergeFrom(base)); err != nil {
-		return controller.Outcome{}, errors.Wrap(err, "update status")
+		return pipeline.Outcome{}, errors.Wrap(err, "update status")
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // summarize turns the observation into the conditions a user reads.

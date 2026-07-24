@@ -36,9 +36,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 	"github.com/go-faster/fs-operator/internal/fsclient"
 )
 
@@ -96,6 +97,7 @@ func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, err
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsaccesskeys,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets;services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -132,8 +134,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // pipeline is a reconcile pass: resources first, in the order they depend on
 // each other, and the status last so that it describes what actually
 // happened — including a pass that was refused or failed (SPEC §8).
-func (r *Reconciler) pipeline() controller.Pipeline[*pass] {
-	return controller.Pipeline[*pass]{
+func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
+	return pipeline.Pipeline[*pass]{
 		{Name: "validate", Run: r.validate},
 		{Name: "render", Run: r.render},
 		{Name: "observe", AlwaysRun: true, Run: r.observe},
@@ -242,7 +244,7 @@ func (p *pass) hasCondition(conditionType string) bool {
 // spec rather than half-applying it (SPEC §5.1). In v1alpha1 this lives in the
 // controller; §16 moves it to an admission webhook, where a user would find
 // out at apply time instead.
-func (r *Reconciler) validate(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) validate(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	spec := &p.cluster.Spec
 
 	scheme, err := ParseScheme(spec.Scheme)
@@ -269,7 +271,7 @@ func (r *Reconciler) validate(ctx context.Context, p *pass) (controller.Outcome,
 
 	removed, err := r.removedNodes(ctx, p)
 	if err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
 	if len(removed) > 0 {
@@ -281,17 +283,17 @@ func (r *Reconciler) validate(ctx context.Context, p *pass) (controller.Outcome,
 	p.setCondition(fsv1alpha1.ConditionSpecValid, metav1.ConditionTrue, fsv1alpha1.ReasonSpecValid,
 		"Spec passes cross-field validation")
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // refuse records why a spec is not applied and stops the pass. Nothing is
 // mutated: a spec the operator will not apply leaves the running cluster
 // exactly as it was.
-func (r *Reconciler) refuse(p *pass, reason, message string) (controller.Outcome, error) {
+func (r *Reconciler) refuse(p *pass, reason, message string) (pipeline.Outcome, error) {
 	p.setCondition(fsv1alpha1.ConditionSpecValid, metav1.ConditionFalse, reason, message)
 	r.Recorder.Event(p.object, corev1.EventTypeWarning, reason, message)
 
-	return controller.Block(reason)
+	return pipeline.Block(reason)
 }
 
 // removedNodes reports which of the cluster's existing nodes the spec no
@@ -342,7 +344,7 @@ func (r *Reconciler) nodeSets(ctx context.Context, cluster *fsv1alpha1.FSCluster
 // reconcileSecrets makes sure the cluster's secret material exists: what the
 // operator generates is created once and never rewritten, and what the user
 // referenced has to be there before anything is pointed at it.
-func (r *Reconciler) reconcileSecrets(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileSecrets(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	generated := []struct {
 		skip  bool
 		build func(*fsv1alpha1.FSCluster) (*corev1.Secret, error)
@@ -359,11 +361,11 @@ func (r *Reconciler) reconcileSecrets(ctx context.Context, p *pass) (controller.
 
 		object, err := secret.build(p.cluster)
 		if err != nil {
-			return controller.Outcome{}, err
+			return pipeline.Outcome{}, err
 		}
 
 		if err := r.createOnce(ctx, p.cluster, object); err != nil {
-			return controller.Outcome{}, err
+			return pipeline.Outcome{}, err
 		}
 	}
 
@@ -379,13 +381,13 @@ func (r *Reconciler) reconcileSecrets(ctx context.Context, p *pass) (controller.
 		}
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // requireSecret blocks the pass when a referenced Secret is missing or does
 // not carry the keys fs will look for. Pointing a pod at a Secret that is not
 // there produces a container that never starts and no explanation.
-func (r *Reconciler) requireSecret(ctx context.Context, p *pass, name string, keys []string) (controller.Outcome, error) {
+func (r *Reconciler) requireSecret(ctx context.Context, p *pass, name string, keys []string) (pipeline.Outcome, error) {
 	var secret corev1.Secret
 
 	err := r.Get(ctx, types.NamespacedName{Namespace: p.cluster.Namespace, Name: name}, &secret)
@@ -395,7 +397,7 @@ func (r *Reconciler) requireSecret(ctx context.Context, p *pass, name string, ke
 		return r.refuse(p, fsv1alpha1.ReasonSecretNotFound,
 			fmt.Sprintf("Secret %q does not exist", name))
 	case err != nil:
-		return controller.Outcome{}, errors.Wrapf(err, "get secret %q", name)
+		return pipeline.Outcome{}, errors.Wrapf(err, "get secret %q", name)
 	}
 
 	for _, key := range keys {
@@ -405,35 +407,42 @@ func (r *Reconciler) requireSecret(ctx context.Context, p *pass, name string, ke
 		}
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // reconcileServices applies the peer and client Services. They come before the
 // pods on purpose: a node's advertise address has to resolve when it starts.
-func (r *Reconciler) reconcileServices(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileServices(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	for _, service := range []client.Object{
 		NewPeersService(p.cluster),
 		NewClientService(p.cluster),
 	} {
 		if err := r.apply(ctx, p.cluster, service); err != nil {
-			return controller.Outcome{}, err
+			return pipeline.Outcome{}, err
 		}
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // render turns the spec into what every node should be running: its
 // configuration, the fingerprint of the part only a restart can apply, and its
 // StatefulSet. Nothing here touches the API server, so the steps that observe
 // and the steps that write both work from the same desired state.
-func (r *Reconciler) render(_ context.Context, p *pass) (controller.Outcome, error) {
-	// Declarative credentials merge in here once FSAccessKey lands (SPEC §7).
-	opts := RenderOptions{}
+func (r *Reconciler) render(ctx context.Context, p *pass) (pipeline.Outcome, error) {
+	// The cluster's FSAccessKeys are the declarative credentials rendered into
+	// every node's config (SPEC §7). A credential change bumps the config
+	// revision, which the reload step then applies and verifies.
+	keys, err := r.collectAccessKeys(ctx, p.cluster)
+	if err != nil {
+		return pipeline.Outcome{}, err
+	}
+
+	opts := RenderOptions{Keys: keys}
 
 	configs, err := RenderNodeConfigs(p.cluster, p.nodes, opts)
 	if err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
 	restarts := make(map[string]string, len(p.nodes))
@@ -442,14 +451,14 @@ func (r *Reconciler) render(_ context.Context, p *pass) (controller.Outcome, err
 	for _, node := range p.nodes {
 		revision, err := RestartRevision(p.cluster, node, opts)
 		if err != nil {
-			return controller.Outcome{}, err
+			return pipeline.Outcome{}, err
 		}
 
 		restarts[node.Name] = revision
 
 		set := NewStatefulSet(p.cluster, node, revision)
 		if err := stampTemplateRevision(set); err != nil {
-			return controller.Outcome{}, err
+			return pipeline.Outcome{}, err
 		}
 
 		desired = append(desired, set)
@@ -457,7 +466,7 @@ func (r *Reconciler) render(_ context.Context, p *pass) (controller.Outcome, err
 
 	templateRevision, err := PodTemplateRevision(desired)
 	if err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
 	p.configs = configs
@@ -465,27 +474,27 @@ func (r *Reconciler) render(_ context.Context, p *pass) (controller.Outcome, err
 	p.desired = desired
 	p.templateRevision = templateRevision
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // reconcileNodeConfigs applies every node's configuration.
-func (r *Reconciler) reconcileNodeConfigs(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileNodeConfigs(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	for _, node := range p.nodes {
 		if err := r.apply(ctx, p.cluster, NewNodeConfigSecret(p.cluster, node, p.configs[node.Name])); err != nil {
-			return controller.Outcome{}, err
+			return pipeline.Outcome{}, err
 		}
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // reconcileBudget applies the disruption budget.
-func (r *Reconciler) reconcileBudget(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileBudget(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	if err := r.apply(ctx, p.cluster, NewPodDisruptionBudget(p.cluster)); err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // apply writes an object with server-side apply, owned by this operator and by
@@ -553,6 +562,25 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.Service{}).
 		Owns(&batchv1.Job{}).
+		// An FSAccessKey change (add, remove, grant edit, credential rotate)
+		// re-renders the cluster's config so the declarative credential set
+		// stays in sync (SPEC §7). The FSAccessKey controller stamps a
+		// credential fingerprint on the key when its Secret changes, so a
+		// rotation of an imported Secret surfaces here as a key update.
+		Watches(&fsv1alpha1.FSAccessKey{}, handler.EnqueueRequestsFromMapFunc(r.accessKeyToCluster)).
 		Named("fscluster").
 		Complete(r)
+}
+
+// accessKeyToCluster maps an FSAccessKey to a reconcile request for the
+// FSCluster it belongs to (same namespace).
+func (r *Reconciler) accessKeyToCluster(_ context.Context, obj client.Object) []ctrl.Request {
+	key, ok := obj.(*fsv1alpha1.FSAccessKey)
+	if !ok || key.Spec.ClusterRef.Name == "" {
+		return nil
+	}
+
+	return []ctrl.Request{{
+		NamespacedName: types.NamespacedName{Namespace: key.Namespace, Name: key.Spec.ClusterRef.Name},
+	}}
 }

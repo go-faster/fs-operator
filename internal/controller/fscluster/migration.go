@@ -29,7 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 )
 
 // reconcileMigration runs a schema migration once every node runs a binary
@@ -41,10 +41,10 @@ import (
 // the cluster to reconverge, then — under the Auto policy — runs `fs cluster
 // migrate` as a Job and surfaces the state on SchemaCurrent. Under Manual it
 // only reports the pending migration (SPEC §8.2).
-func (r *Reconciler) reconcileMigration(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileMigration(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	if !p.convergence.known {
 		// Schema versions are unknown until a node answers; say nothing.
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	clusterSchema, binarySchema := p.convergence.schemaVersion, p.convergence.binarySchema
@@ -54,7 +54,7 @@ func (r *Reconciler) reconcileMigration(ctx context.Context, p *pass) (controlle
 		p.setCondition(fsv1alpha1.ConditionSchemaCurrent, metav1.ConditionTrue,
 			fsv1alpha1.ReasonUpToDate, "Cluster schema matches the deployed binary")
 
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	// A migration is pending. Under Manual, surface it and stop.
@@ -63,7 +63,7 @@ func (r *Reconciler) reconcileMigration(ctx context.Context, p *pass) (controlle
 			fsv1alpha1.ReasonMigrationPending,
 			fmt.Sprintf("Schema %d pending; run `fs cluster migrate` (schemaMigration: Manual)", binarySchema))
 
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	// Under Auto, migrate only after every node runs the new binary and the
@@ -74,29 +74,29 @@ func (r *Reconciler) reconcileMigration(ctx context.Context, p *pass) (controlle
 			fsv1alpha1.ReasonMigrationPending,
 			"Waiting for every node to run the new binary and the cluster to reconverge before migrating")
 
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	return r.runMigration(ctx, p, binarySchema)
 }
 
 // runMigration ensures the migration Job exists and reports its progress.
-func (r *Reconciler) runMigration(ctx context.Context, p *pass, targetSchema int) (controller.Outcome, error) {
+func (r *Reconciler) runMigration(ctx context.Context, p *pass, targetSchema int) (pipeline.Outcome, error) {
 	job := NewMigrationJob(p.cluster, targetSchema, p.nodes[0].Name)
 
 	// Create-once, keyed by the target schema: a completed migration is never
 	// re-run, and re-running a live one is unnecessary (it is etcd-elected).
 	if err := r.createOnce(ctx, p.cluster, job); err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
 	var live batchv1.Job
 	if err := r.Get(ctx, types.NamespacedName{Namespace: job.Namespace, Name: job.Name}, &live); err != nil {
 		if apierrors.IsNotFound(err) {
-			return controller.RequeueAfter(pollInterval, "migration job starting")
+			return pipeline.RequeueAfter(pollInterval, "migration job starting")
 		}
 
-		return controller.Outcome{}, errors.Wrapf(err, "get migration job %q", job.Name)
+		return pipeline.Outcome{}, errors.Wrapf(err, "get migration job %q", job.Name)
 	}
 
 	p.update = &fsv1alpha1.UpdateStatus{Phase: fsv1alpha1.UpdatePhaseMigrating, StartedAt: jobStart(&live)}
@@ -109,20 +109,20 @@ func (r *Reconciler) runMigration(ctx context.Context, p *pass, targetSchema int
 		p.setCondition(fsv1alpha1.ConditionSchemaCurrent, metav1.ConditionFalse,
 			fsv1alpha1.ReasonMigrationRunning, "Migration complete; awaiting the updated cluster schema")
 
-		return controller.RequeueAfter(pollInterval, "confirming migrated schema")
+		return pipeline.RequeueAfter(pollInterval, "confirming migrated schema")
 	case failedJob(&live):
 		r.Recorder.Eventf(p.object, corev1.EventTypeWarning, eventMigrationFailed,
 			"Schema migration Job %q failed", job.Name)
 		p.setCondition(fsv1alpha1.ConditionSchemaCurrent, metav1.ConditionFalse,
 			fsv1alpha1.ReasonMigrationRunning, "Migration Job failed; see its pods")
 
-		return controller.RequeueAfter(pollInterval, "migration job failed")
+		return pipeline.RequeueAfter(pollInterval, "migration job failed")
 	default:
 		p.setCondition(fsv1alpha1.ConditionSchemaCurrent, metav1.ConditionFalse,
 			fsv1alpha1.ReasonMigrationRunning,
 			fmt.Sprintf("Migrating cluster schema to %d", targetSchema))
 
-		return controller.RequeueAfter(pollInterval, "migration in progress")
+		return pipeline.RequeueAfter(pollInterval, "migration in progress")
 	}
 }
 

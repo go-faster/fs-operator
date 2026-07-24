@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 )
 
 // pollInterval is how often a rollout looks again while it waits for a node.
@@ -52,10 +52,10 @@ const (
 // once. Replacing an existing node's pod takes a failure domain out of the
 // cluster, so it happens strictly one node at a time, and only while every
 // other node is serving — fs's upgrade contract, encoded (SPEC §8.2).
-func (r *Reconciler) reconcileNodes(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileNodes(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	created, stale, err := r.classify(ctx, p)
 	if err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
 	if created > 0 {
@@ -94,14 +94,14 @@ func (r *Reconciler) classify(ctx context.Context, p *pass) (int, []*appsv1.Stat
 
 // roll replaces at most one node per pass, and only while the rest of the
 // cluster is serving.
-func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.StatefulSet) (controller.Outcome, error) {
+func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.StatefulSet) (pipeline.Outcome, error) {
 	if len(stale) == 0 {
 		if p.object.Status.Update != nil {
 			r.Recorder.Event(p.object, corev1.EventTypeNormal, eventRolloutDone,
 				"Every node runs the desired configuration")
 		}
 
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	// The phase a hold reports: a rollout that has already touched a node is
@@ -130,7 +130,7 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 	next := stale[0]
 
 	if err := r.apply(ctx, p.cluster, next); err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
 	r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventNodeRolling,
@@ -142,7 +142,7 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 		StartedAt: ptrTime(metav1.Now()),
 	}
 
-	return controller.RequeueAfter(pollInterval, "node replacement in flight")
+	return pipeline.RequeueAfter(pollInterval, "node replacement in flight")
 }
 
 // hold keeps a rollout where it is and says what it is waiting for.
@@ -150,7 +150,7 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 // It never gives up and never forces anything: past the convergence timeout it
 // reports the wait as stuck, loudly, and keeps waiting — the cluster resumes on
 // its own the moment the gate opens (SPEC §8.2).
-func (r *Reconciler) hold(p *pass, phase fsv1alpha1.UpdatePhase, node, reason string) (controller.Outcome, error) {
+func (r *Reconciler) hold(p *pass, phase fsv1alpha1.UpdatePhase, node, reason string) (pipeline.Outcome, error) {
 	started := metav1.Now()
 	if update := p.object.Status.Update; update != nil && update.Phase == phase && update.Node == node {
 		if update.StartedAt != nil {
@@ -168,12 +168,12 @@ func (r *Reconciler) hold(p *pass, phase fsv1alpha1.UpdatePhase, node, reason st
 		r.Recorder.Eventf(p.object, corev1.EventTypeWarning, eventRolloutStuck,
 			"Rollout halted for over %s: %s", timeout.Duration, reason)
 
-		return controller.RequeueAfter(pollInterval, reason)
+		return pipeline.RequeueAfter(pollInterval, reason)
 	}
 
 	r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventRolloutWait, "Rollout %s: %s", phase, reason)
 
-	return controller.RequeueAfter(pollInterval, reason)
+	return pipeline.RequeueAfter(pollInterval, reason)
 }
 
 // rollOrder interleaves the racks of the nodes to roll, so that two nodes of

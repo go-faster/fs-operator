@@ -23,7 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 )
 
 // podMonitorGVK is the Prometheus-operator resource that scrapes pods. The
@@ -41,31 +41,31 @@ const eventPodMonitorUnavailable = "PodMonitorUnavailable"
 
 // reconcilePodMonitor creates or removes the cluster's PodMonitor per
 // spec.observability.podMonitor, when the monitoring.coreos.com API is present.
-func (r *Reconciler) reconcilePodMonitor(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcilePodMonitor(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	if !r.podMonitorAvailable() {
 		if p.cluster.Spec.Observability.PodMonitor {
 			r.Recorder.Event(p.object, "Warning", eventPodMonitorUnavailable,
 				"observability.podMonitor is set but the monitoring.coreos.com CRDs are not installed")
 		}
 
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	monitor := NewPodMonitor(p.cluster)
 
 	if !p.cluster.Spec.Observability.PodMonitor {
 		if err := r.deleteIfExists(ctx, monitor); err != nil {
-			return controller.Outcome{}, err
+			return pipeline.Outcome{}, err
 		}
 
-		return controller.Continue()
+		return pipeline.Continue()
 	}
 
 	if err := r.apply(ctx, p.cluster, monitor); err != nil {
-		return controller.Outcome{}, err
+		return pipeline.Outcome{}, err
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // podMonitorAvailable reports whether the PodMonitor kind is served by the API,

@@ -25,7 +25,7 @@ import (
 
 	"github.com/go-faster/errors"
 
-	"github.com/go-faster/fs-operator/internal/controller"
+	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 )
 
 // Event reasons the reload step reports.
@@ -46,7 +46,7 @@ const (
 // Secret propagation lags, so a node that has not yet seen the new file still
 // reports the old revision; the step requeues and tries again until every node
 // converges (SPEC §8.3).
-func (r *Reconciler) reconcileReload(ctx context.Context, p *pass) (controller.Outcome, error) {
+func (r *Reconciler) reconcileReload(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	log := logf.FromContext(ctx)
 
 	token, err := r.adminToken(ctx, p)
@@ -56,7 +56,7 @@ func (r *Reconciler) reconcileReload(ctx context.Context, p *pass) (controller.O
 		// come back.
 		log.V(1).Info("Admin token unavailable; deferring reload verification", "error", err)
 
-		return controller.RequeueAfter(pollInterval, "admin token unavailable")
+		return pipeline.RequeueAfter(pollInterval, "admin token unavailable")
 	}
 
 	var (
@@ -76,10 +76,10 @@ func (r *Reconciler) reconcileReload(ctx context.Context, p *pass) (controller.O
 	p.health.configCurrent = configCurrent
 
 	if pending {
-		return controller.RequeueAfter(pollInterval, "waiting for nodes to apply the desired configuration")
+		return pipeline.RequeueAfter(pollInterval, "waiting for nodes to apply the desired configuration")
 	}
 
-	return controller.Continue()
+	return pipeline.Continue()
 }
 
 // reloadNode converges one node's configuration, reporting whether it now runs

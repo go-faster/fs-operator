@@ -47,6 +47,14 @@ type FSBucketSpec struct {
 	// +optional
 	BucketName string `json:"bucketName,omitempty"`
 
+	// scheme overrides the cluster's default replication scheme for this
+	// bucket's objects: "rf2.5", "rf3" or "ec:k,m" (e.g. "ec:4,2"). Empty
+	// applies the cluster default. Changing it affects new writes cluster-wide
+	// within seconds; existing objects convert through repair/rebalance.
+	// +kubebuilder:validation:Pattern=`^(rf2\.5|rf3|ec:[0-9]+,[0-9]+)?$`
+	// +optional
+	Scheme string `json:"scheme,omitempty"`
+
 	// reclaimPolicy controls what happens to the bucket when this resource
 	// is deleted. Retain leaves the bucket and its data; Delete removes the
 	// bucket, which succeeds only once it is empty (the controller retries

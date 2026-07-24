@@ -87,6 +87,34 @@ type Rebalance struct {
 	RepairQueueDepth int
 }
 
+// AccessKey is one credential the cluster accepts (GET /api/v1/access-keys),
+// secret omitted. The operator lists these to confirm a declarative
+// FSAccessKey has been applied cluster-wide (SPEC §7).
+type AccessKey struct {
+	AccessKey string
+}
+
+// BucketScheme is a bucket's effective replication scheme and whether it
+// overrides the cluster default (GET/PUT /api/v1/buckets/{bucket}/scheme).
+type BucketScheme struct {
+	// Scheme is the effective scheme: the override when set, else the default.
+	Scheme string
+	// Override is the explicit override; empty when following the default.
+	Override string
+	// ClusterDefault is the scheme applied to buckets without an override.
+	ClusterDefault string
+	// IsDefault reports whether the bucket follows the cluster default.
+	IsDefault bool
+}
+
+// ErrBucketNotFound is returned by the bucket-scheme calls when the cluster has
+// no such bucket (HTTP 404).
+var ErrBucketNotFound = errors.New("bucket not found")
+
+// ErrSchemeRejected is returned by SetBucketScheme when the cluster refuses the
+// scheme (HTTP 400): an invalid form, or a topology that cannot host it.
+var ErrSchemeRejected = errors.New("scheme rejected")
+
 // Client talks to one fs node's admin API.
 type Client struct {
 	api     *adminapi.Client
@@ -192,6 +220,71 @@ func (c *Client) Rebalance(ctx context.Context) (Rebalance, error) {
 		State:            string(status.State),
 		RepairQueueDepth: status.RepairQueueDepth,
 	}, nil
+}
+
+// ListAccessKeys returns every credential the node accepts, secrets omitted.
+func (c *Client) ListAccessKeys(ctx context.Context) ([]AccessKey, error) {
+	list, err := c.api.ListAccessKeys(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "list access keys")
+	}
+
+	out := make([]AccessKey, 0, len(list.Keys))
+	for _, k := range list.Keys {
+		out = append(out, AccessKey{AccessKey: k.AccessKey})
+	}
+
+	return out, nil
+}
+
+// GetBucketScheme reads a bucket's effective replication scheme and override.
+func (c *Client) GetBucketScheme(ctx context.Context, bucket string) (BucketScheme, error) {
+	res, err := c.api.GetBucketScheme(ctx, adminapi.GetBucketSchemeParams{Bucket: bucket})
+	if err != nil {
+		return BucketScheme{}, mapSchemeError(err, "get bucket scheme")
+	}
+
+	return bucketSchemeFromAPI(res), nil
+}
+
+// SetBucketScheme sets a bucket's scheme override, or clears it when scheme is
+// empty, and returns the effective scheme after applying (SPEC §11.3).
+func (c *Client) SetBucketScheme(ctx context.Context, bucket, scheme string) (BucketScheme, error) {
+	req := &adminapi.SetBucketSchemeRequest{Scheme: adminapi.NewOptString(scheme)}
+
+	res, err := c.api.SetBucketScheme(ctx, req, adminapi.SetBucketSchemeParams{Bucket: bucket})
+	if err != nil {
+		return BucketScheme{}, mapSchemeError(err, "set bucket scheme")
+	}
+
+	return bucketSchemeFromAPI(res), nil
+}
+
+// bucketSchemeFromAPI maps the wire type to the plain struct.
+func bucketSchemeFromAPI(s *adminapi.BucketScheme) BucketScheme {
+	return BucketScheme{
+		Scheme:         s.Scheme,
+		Override:       s.Override.Or(""),
+		ClusterDefault: s.ClusterDefault,
+		IsDefault:      s.IsDefault,
+	}
+}
+
+// mapSchemeError translates the admin API's structured errors to the package's
+// sentinels so a caller can tell a rejected scheme (permanent) or a missing
+// bucket from a transient failure worth retrying.
+func mapSchemeError(err error, op string) error {
+	var status *adminapi.ErrorStatusCode
+	if errors.As(err, &status) {
+		switch status.StatusCode {
+		case http.StatusBadRequest:
+			return errors.Wrap(ErrSchemeRejected, status.Response.ErrorMessage)
+		case http.StatusNotFound:
+			return errors.Wrap(ErrBucketNotFound, status.Response.ErrorMessage)
+		}
+	}
+
+	return errors.Wrap(err, op)
 }
 
 // bearerTransport injects the admin bearer token on every request. The admin

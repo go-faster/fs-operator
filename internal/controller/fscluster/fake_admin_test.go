@@ -54,6 +54,9 @@ type fakeAdmin struct {
 	// is what the deployed binary implements. binarySchema > schemaVersion is a
 	// pending migration.
 	schemaVersion, binarySchema int
+
+	// accessKeys are the access-key IDs every node's ListAccessKeys reports.
+	accessKeys []string
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -200,4 +203,34 @@ func (c *fakeClient) Rebalance(context.Context) (fsclient.Rebalance, error) {
 	}
 
 	return fsclient.Rebalance{RepairQueueDepth: f.repairQueue[c.url]}, nil
+}
+
+func (c *fakeClient) ListAccessKeys(context.Context) ([]fsclient.AccessKey, error) {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.unreachable[c.url] {
+		return nil, errors.New("node admin unreachable")
+	}
+
+	keys := make([]fsclient.AccessKey, 0, len(f.accessKeys))
+	for _, k := range f.accessKeys {
+		keys = append(keys, fsclient.AccessKey{AccessKey: k})
+	}
+
+	return keys, nil
+}
+
+func (c *fakeClient) GetBucketScheme(_ context.Context, _ string) (fsclient.BucketScheme, error) {
+	return fsclient.BucketScheme{Scheme: SchemeRF25, ClusterDefault: SchemeRF25, IsDefault: true}, nil
+}
+
+func (c *fakeClient) SetBucketScheme(_ context.Context, _, scheme string) (fsclient.BucketScheme, error) {
+	if scheme == "" {
+		return fsclient.BucketScheme{Scheme: SchemeRF25, ClusterDefault: SchemeRF25, IsDefault: true}, nil
+	}
+
+	return fsclient.BucketScheme{Scheme: scheme, Override: scheme, ClusterDefault: SchemeRF25}, nil
 }
