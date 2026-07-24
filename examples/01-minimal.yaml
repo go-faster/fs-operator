@@ -1,0 +1,24 @@
+# Minimal development cluster: 3 flat nodes (each its own failure domain),
+# one 10Gi disk per node, relaxed anti-affinity so it fits a small cluster.
+#
+# Requires a reachable etcd — point spec.etcd.external.endpoints at yours.
+# This is a dev shape: for production see 07-production.yaml.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-dev
+spec:
+  image:
+    tag: v0.34.0
+  topology:
+    nodes: 3
+    # Dev only: allows several fs nodes on one Kubernetes node.
+    podAntiAffinity: Preferred
+  storage:
+    disks:
+      - name: d0
+        size: 10Gi
+  etcd:
+    external:
+      endpoints:
+        - http://etcd.default.svc:2379

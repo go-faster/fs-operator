@@ -1,0 +1,29 @@
+# Multiple disks per node with placement weights. Every disk becomes one
+# PVC per node, mounted at /var/lib/fs/disks/<name>; weights are relative
+# capacity (a bigger disk gets proportionally more data). Disks may be added
+# later; they may not be removed or renamed, and sizes may only grow.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-jbod
+spec:
+  image:
+    tag: v0.34.0
+  topology:
+    nodes: 4
+  storage:
+    disks:
+      - name: d0
+        size: 100Gi
+        weight: 1
+      - name: d1
+        size: 100Gi
+        weight: 1
+      - name: big
+        size: 400Gi
+        weight: 4
+    reclaimPolicy: Retain
+  etcd:
+    external:
+      endpoints:
+        - http://etcd.fs-system.svc:2379

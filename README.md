@@ -1,135 +1,57 @@
 # fs-operator
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+Kubernetes operator for clustered [go-faster/fs](https://github.com/go-faster/fs)
+— an S3-compatible object store with quorum replication (`rf2.5`, `rf3`,
+`ec:k,m`), failure-domain-aware placement, automatic rebalancing and
+scrub/repair.
 
-## Getting Started
+The operator manages the full lifecycle of fs clusters through three
+namespaced custom resources:
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+| Kind | Purpose |
+|---|---|
+| `FSCluster` | A whole fs cluster: nodes, racks, disks, etcd, auth, exposure, tuning. |
+| `FSBucket` | An S3 bucket in a referenced cluster. |
+| `FSAccessKey` | One S3 credential with bucket grants, generated or imported. |
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+It provisions per-node StatefulSets with PVC-backed disks, maps fs racks
+(failure domains) onto zones, and encodes fs's operational contracts as
+controller logic: rolling updates one node at a time gated on cluster
+reconvergence, explicit schema migrations, and drain-before-remove
+decommissioning.
 
-```sh
-make docker-build docker-push IMG=<some-registry>/fs-operator:tag
-```
+See [SPEC.md](SPEC.md) for the full design and [docs/](docs/overview.md) for
+installation and guides.
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
-
-**Install the CRDs into the cluster:**
-
-```sh
-make install
-```
-
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+## Quick start
 
 ```sh
-make deploy IMG=<some-registry>/fs-operator:tag
+# Install the operator (CRDs included).
+helm install fs-operator ./dist/chart \
+  --namespace fs-operator-system --create-namespace
+
+# Create a 3-node dev cluster (requires a reachable etcd).
+kubectl apply -f examples/01-minimal.yaml
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+The [examples/](examples/) gallery goes from a minimal dev cluster to a
+zonal, multi-disk production shape.
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+## Development
+
+Standard kubebuilder workflow:
 
 ```sh
-kubectl apply -k config/samples/
+make manifests generate   # regenerate CRDs and deepcopy after API changes
+make helm-sync-crds       # keep the owned chart's CRDs in lockstep
+make test                 # unit + envtest
+make lint                 # golangci-lint
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/fs-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/fs-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+The Helm chart in `dist/chart` is committed and hand-owned; its CRD
+templates are synced from `config/crd` by `hack/sync-chart-crds.sh` and CI
+fails on drift.
 
 ## License
 
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache-2.0. Copyright 2026.

@@ -1,0 +1,33 @@
+# Zonal production topology: three racks (failure domains) of two nodes,
+# each rack pinned to one availability zone. fs places object copies across
+# racks first, so the default rf2.5 scheme survives a full zone loss.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-zonal
+spec:
+  image:
+    tag: v0.34.0
+  scheme: rf2.5
+  topology:
+    racks:
+      - name: a
+        nodes: 2
+        zone: eu-central-1a
+      - name: b
+        nodes: 2
+        zone: eu-central-1b
+      - name: c
+        nodes: 2
+        zone: eu-central-1c
+  storage:
+    disks:
+      - name: d0
+        size: 200Gi
+        storageClass: fast-nvme
+  etcd:
+    external:
+      endpoints:
+        - http://etcd-0.etcd.fs-system:2379
+        - http://etcd-1.etcd.fs-system:2379
+        - http://etcd-2.etcd.fs-system:2379
