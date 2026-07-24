@@ -114,8 +114,8 @@ Now unblocked by fs v0.6.0. Sequenced so each piece builds on the last:
 5. **Day-2 extras** — in progress:
    - ✅ **NetworkPolicy** (§9) — opt-in `spec.networkPolicy`, restricts
      peer/admin ports to cluster pods + operator namespace (POD_NAMESPACE)
-   - ☐ **PVC expansion** (§8.5) — grow disk PVCs + orphan-recreate the
-     StatefulSet; controller-side disk-shrink refusal
+   - ✅ **PVC expansion** (§8.5) — grow disk PVCs + orphan-recreate the
+     StatefulSet (one node at a time, gated); disk-shrink refused
    - ☐ **PodMonitor** — optional, created when `monitoring.coreos.com` is
      discoverable
    - ☐ **Docs guides** — upgrades, scaling, monitoring (§13)
