@@ -282,6 +282,15 @@ install-helm: ## Install the latest version of Helm.
 helm-sync-crds: manifests ## Sync the owned chart's CRD templates from config/crd (run after changing the API types).
 	./hack/sync-chart-crds.sh
 
+.PHONY: fs-version
+fs-version: ## Pin the fs release everywhere (API default, CRDs, chart, examples, e2e, docs). Usage: make fs-version FS_VERSION=v0.6.0
+	@test -n "$(FS_VERSION)" || { echo "usage: make fs-version FS_VERSION=vX.Y.Z"; exit 2; }
+	./hack/set-fs-version.sh $(FS_VERSION)
+
+.PHONY: check-fs-version
+check-fs-version: ## Fail if the pinned fs release is not spelled the same everywhere.
+	./hack/set-fs-version.sh --check
+
 .PHONY: helm-lint
 helm-lint: install-helm ## Lint the Helm chart.
 	$(HELM) lint $(HELM_CHART_DIR)
