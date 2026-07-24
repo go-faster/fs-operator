@@ -8,8 +8,8 @@ kind: FSCluster
 metadata:
   name: fs-dev
 spec:
-  image:
-    tag: v0.34.0
+  # image is omitted: it defaults to the pinned fs release this operator
+  # version is validated against.
   topology:
     nodes: 3
     # Dev only: allows several fs nodes on one Kubernetes node.

@@ -149,7 +149,10 @@ spec:
                 - message: etcd.prefix is immutable
                   rule: self.prefix == oldSelf.prefix
               image:
-                description: image is the fs container image to run on every node.
+                default: {}
+                description: |-
+                  image is the fs container image to run on every node. Defaults to the
+                  pinned fs release this operator version is validated against.
                 properties:
                   pullPolicy:
                     default: IfNotPresent
@@ -183,13 +186,14 @@ spec:
                     description: repository is the image repository.
                     type: string
                   tag:
+                    default: v0.5.0
                     description: |-
-                      tag is the image tag. Required: cluster upgrades are deliberate,
-                      one-node-at-a-time operations, so a floating tag is never safe.
+                      tag is the image tag. Defaults to the pinned fs release this operator
+                      version is validated against — always set a pinned version, never a
+                      floating tag: cluster upgrades are deliberate, one-node-at-a-time
+                      operations.
                     minLength: 1
                     type: string
-                required:
-                - tag
                 type: object
               integrity:
                 description: integrity configures object integrity checking (scrub).
@@ -783,7 +787,6 @@ spec:
                 type: object
             required:
             - etcd
-            - image
             - storage
             - topology
             type: object

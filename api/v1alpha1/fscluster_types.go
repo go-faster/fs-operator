@@ -27,9 +27,11 @@ import (
 // storage nodes spread over failure domains (racks), replicating objects at
 // write quorum with an etcd control plane.
 type FSClusterSpec struct {
-	// image is the fs container image to run on every node.
-	// +required
-	Image ImageSpec `json:"image"`
+	// image is the fs container image to run on every node. Defaults to the
+	// pinned fs release this operator version is validated against.
+	// +kubebuilder:default={}
+	// +optional
+	Image ImageSpec `json:"image,omitempty"`
 
 	// scheme is the default replication scheme for all buckets: "rf2.5"
 	// (2 replicas + half parity), "rf3" (3 replicas) or "ec:k,m"
@@ -107,11 +109,14 @@ type ImageSpec struct {
 	// +optional
 	Repository string `json:"repository,omitempty"`
 
-	// tag is the image tag. Required: cluster upgrades are deliberate,
-	// one-node-at-a-time operations, so a floating tag is never safe.
+	// tag is the image tag. Defaults to the pinned fs release this operator
+	// version is validated against — always set a pinned version, never a
+	// floating tag: cluster upgrades are deliberate, one-node-at-a-time
+	// operations.
 	// +kubebuilder:validation:MinLength=1
-	// +required
-	Tag string `json:"tag"`
+	// +kubebuilder:default="v0.5.0"
+	// +optional
+	Tag string `json:"tag,omitempty"`
 
 	// pullPolicy is the image pull policy.
 	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never

@@ -6,8 +6,6 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: fscluster-sample
 spec:
-  image:
-    tag: latest
   topology:
     nodes: 3
     podAntiAffinity: Preferred

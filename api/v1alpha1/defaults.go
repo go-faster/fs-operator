@@ -32,6 +32,10 @@ const (
 	// DefaultImageRepository is the default fs image repository.
 	DefaultImageRepository = "ghcr.io/go-faster/fs"
 
+	// DefaultImageTag is the pinned fs release this operator version is
+	// validated against; used when spec.image.tag is empty.
+	DefaultImageTag = "v0.5.0"
+
 	// DefaultScheme is the default replication scheme.
 	DefaultScheme = "rf2.5"
 
@@ -64,6 +68,10 @@ func (s *FSClusterSpec) EtcdPrefix(namespace, name string) string {
 func (s *FSClusterSpec) WithDefaults() {
 	if s.Image.Repository == "" {
 		s.Image.Repository = DefaultImageRepository
+	}
+
+	if s.Image.Tag == "" {
+		s.Image.Tag = DefaultImageTag
 	}
 
 	if s.Image.PullPolicy == "" {
