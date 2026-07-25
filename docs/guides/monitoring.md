@@ -39,6 +39,7 @@ The `reason` names the specific cause; these are stable.
 | `SecretNotFound` / `SecretInvalid` | `SpecValid` | A referenced Secret is missing or lacks the expected keys. |
 | `ReconcileFinished` / `ReconcileError` | `ReconcileSucceeded` | The pass finished / the pass failed (message carries the error). |
 | `QuorumAvailable` / `QuorumUnavailable` | `Ready` | Enough / not enough failure domains are serving for a write. |
+| `RootCredentialUnregistered` | `Ready` | Quorum is serving, but the cluster's key store does not hold the root credential — the cluster started on an etcd prefix left behind by a previous incarnation. See [deletion.md](deletion.md). |
 | `AllNodesReady` / `NodesNotReady` | `NodesHealthy` | All / not all node pods are Ready. |
 | `UpToDate` | `ClusterSizeAligned`, `ConfigurationInSync` | Everything matches the spec. |
 | `ScalingUp` | `ClusterSizeAligned` | New nodes are joining. |
@@ -72,6 +73,10 @@ kubectl get events --field-selector involvedObject.name=prod --sort-by=.lastTime
 | `MigrationFailed` | Warning | The schema migration Job failed. |
 | `SchemeTopologyMismatch`, `ScaleDownRequiresDrain`, `UnsupportedTopology`, … | Warning | A spec was refused (same names as the condition reasons). |
 | `PodMonitorUnavailable` | Warning | `observability.podMonitor` is set but the Prometheus-operator CRDs are absent. |
+| `RootCredentialUnregistered` | Warning | The cluster's key store does not hold its root credential. |
+| `EtcdCleanup` | Normal | A deleted cluster's nodes are being stopped before its etcd keys go. |
+| `EtcdCleanupComplete` | Normal | A deleted cluster's etcd keys were removed. |
+| `EtcdCleanupFailed` | Warning | The etcd cleanup failed; the cluster is held until it succeeds. |
 
 ## Metrics
 

@@ -232,6 +232,15 @@ func (r *Reconciler) summarizeReadiness(p *pass) {
 		p.health.readyDomains, quorum)
 
 	if p.health.readyDomains >= quorum {
+		// Quorum is only half of usable. A cluster whose key store does not
+		// hold the root credential serves nothing to anyone, and reporting it
+		// Ready is what turns that into a hunt through node logs (SPEC §8.6).
+		if condition, unusable := summarizeRootCredential(p); unusable {
+			p.conditions = append(p.conditions, condition)
+
+			return
+		}
+
 		p.setCondition(fsv1alpha1.ConditionReady, metav1.ConditionTrue,
 			fsv1alpha1.ReasonQuorumAvailable, message)
 

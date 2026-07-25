@@ -109,6 +109,15 @@ func (f *fakeAdmin) setRepairQueue(url string, depth int) {
 	f.repairQueue[url] = depth
 }
 
+// setAccessKeys replaces what every node's ListAccessKeys reports — the
+// cluster-wide key store as it stands in etcd.
+func (f *fakeAdmin) setAccessKeys(keys ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.accessKeys = keys
+}
+
 // setSchema sets the cluster-recorded and binary schema versions.
 //
 //nolint:unparam // binary is a meaningful axis even if the current tests all use 5.

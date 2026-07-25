@@ -39,6 +39,7 @@ import (
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller/pipeline"
+	"github.com/go-faster/fs-operator/internal/etcdstore"
 	"github.com/go-faster/fs-operator/internal/fsclient"
 )
 
@@ -83,6 +84,11 @@ type Reconciler struct {
 	// Empty keeps each cluster's own image.repository.
 	FSImageRegistry string
 
+	// EtcdPurge deletes a cluster's keys from etcd when it is deleted with
+	// etcd.cleanupOnDelete (SPEC §8.6). Nil talks to etcd directly; tests
+	// inject a fake to stand in for a control plane they do not run.
+	EtcdPurge func(ctx context.Context, cfg etcdstore.Config, prefix string) (int64, error)
+
 	poolOnce sync.Once
 	pool     *fsclient.Pool
 }
@@ -122,9 +128,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if !object.DeletionTimestamp.IsZero() {
 		// Everything the operator creates carries an owner reference, so
 		// garbage collection takes it down, and each node's claim retention
-		// policy decides the fate of its data. Only etcd state outlives this,
-		// which is what the deletion work of SPEC §8.6 is about.
-		return ctrl.Result{}, nil
+		// policy decides the fate of its data. Only etcd state outlives that,
+		// which is what the finalizer is for (SPEC §8.6).
+		return r.finalize(ctx, object)
+	}
+
+	if err := r.reconcileFinalizer(ctx, object); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	result, err := r.pipeline().Run(ctx, newPass(object, r.FSImageRegistry))
@@ -151,6 +161,7 @@ func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
 		{Name: "nodes", Run: r.reconcileNodes},
 		{Name: "reload", Run: r.reconcileReload},
 		{Name: "publicread", Run: r.reconcilePublicRead},
+		{Name: "rootcredential", Run: r.reconcileRootCredential},
 		{Name: migrateName, Run: r.reconcileMigration},
 		{Name: "budget", Run: r.reconcileBudget},
 		{Name: "networkpolicy", Run: r.reconcileNetworkPolicy},
@@ -194,6 +205,11 @@ type pass struct {
 	// schema is the cluster's observed schema versions, filled by the
 	// migration step for the status.
 	schema *fsv1alpha1.SchemaVersionStatus
+
+	// rootCredential is whether the cluster's key store holds the root
+	// credential the operator holds — the difference between a cluster that is
+	// usable and one that only looks it (SPEC §8.6).
+	rootCredential rootCredentialState
 
 	// update is the rolling change in flight, if any.
 	update *fsv1alpha1.UpdateStatus

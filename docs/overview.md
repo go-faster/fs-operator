@@ -31,6 +31,7 @@ All three are namespaced; the namespace is the tenancy boundary.
 - [Scaling](guides/scaling.md) — scale-up, decommission, envelope limits
 - [Upgrades](guides/upgrades.md) — rolling updates, schema migration, rollback
 - [Storage](guides/storage.md) — disks, weights, expansion, reclaim policy
+- [Deletion](guides/deletion.md) — reclaim policy, etcd cleanup, re-creating a cluster
 - [Buckets and access keys](guides/buckets-and-keys.md)
 - [Monitoring](guides/monitoring.md) — metrics, conditions, events
 - [Security](guides/security.md) — secrets, network policy, peer traffic

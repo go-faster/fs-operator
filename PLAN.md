@@ -184,6 +184,29 @@ node. This removed the reason v0.1–0.3 rendered credentials into config
 - ✅ Release **v0.4.0**; operator pinned to fs `v0.8.0`. All CI green on
   `00add8b`.
 
+## Post-P3: deletion and re-creation (issue #4)
+
+`spec.etcd.cleanupOnDelete` was declared in the CRD but nothing read it, and
+the SPEC §8.6 finalizer did not exist — so a cluster deleted and re-created
+under the same name adopted the previous incarnation's etcd keys, whose sealed
+credentials it could no longer open. It went `Ready` while every FSBucket hung
+on `cluster S3 not reachable yet`.
+
+- ✅ **Finalizer** `fs.go-faster.org/cluster`, carried only by clusters with
+  `etcd.cleanupOnDelete`, so an ordinary delete is never held up by an
+  unreachable etcd. On delete it stops the node StatefulSets and the migration
+  Job, waits for their pods (a running node re-registers itself), deletes every
+  key under `<prefix>/` — the trailing separator keeps `app` from taking
+  `app-staging`'s keys — then releases. A failed purge retries rather than
+  leaking the keys.
+- ✅ **`internal/etcdstore`** — the operator's own etcd client, refusing an
+  empty or root prefix.
+- ✅ **Adopted-prefix detection** — the root credential is checked against the
+  cluster's key store; a mismatch is `Ready=False/RootCredentialUnregistered`
+  naming the prefix and the fix, instead of a `warn` line in a node's log. An
+  empty key store is treated as unknown (a starting cluster looks like that).
+- ✅ **`docs/guides/deletion.md`**, monitoring catalogue, SPEC §8.6.
+
 Next focus is P4 (lifecycle: decommission/drain, disk add/remove, etcd TLS,
 managed dev-etcd, admission webhook, Grafana dashboards — SPEC §16).
 

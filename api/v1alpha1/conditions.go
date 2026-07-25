@@ -94,6 +94,14 @@ const (
 	ReasonMigrationPending       ConditionReason = "MigrationPending"
 	ReasonMigrationRunning       ConditionReason = "MigrationRunning"
 	ReasonEtcdUnreachable        ConditionReason = "EtcdUnreachable"
+
+	// ReasonRootCredentialUnregistered means the cluster's key store does not
+	// hold the operator's root credential, so nothing can authenticate with it.
+	// It is how an etcd prefix left behind by a previous incarnation of the
+	// cluster shows itself: fs seeds credentials into an empty key namespace
+	// only, so a cluster starting on stale keys adopts credentials it cannot
+	// unseal (SPEC §8.6).
+	ReasonRootCredentialUnregistered ConditionReason = "RootCredentialUnregistered"
 )
 
 // FSBucket condition reasons.

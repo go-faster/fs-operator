@@ -640,12 +640,35 @@ target revision; `ConfigurationInSync` flips True when every node does.
 
 ### 8.6 Deletion
 
-Finalizer `fs.go-faster.org/cluster`: delete owned resources (GC handles
-most via ownerRefs), apply `reclaimPolicy` to PVCs, and — only when
-`etcd.cleanupOnDelete: true` — delete the cluster's keys under
-`etcd.prefix` (the operator links the etcd client; the default prefix is
-namespaced per cluster, so this is safe). The default leaves etcd state
+Owned resources carry ownerRefs, so GC takes them down, and PVCs follow
+`reclaimPolicy` through each StatefulSet's claim retention policy. etcd is
+the one thing outside that graph, and the finalizer
+`fs.go-faster.org/cluster` is what handles it — carried **only** by
+clusters with `etcd.cleanupOnDelete: true`, so an ordinary cluster's
+deletion can never be held up by an etcd the operator cannot reach.
+
+On delete, with cleanup opted in: stop the node StatefulSets and wait for
+every node pod to be gone (a running node re-registers itself, so purging
+first would race the cluster being purged), then delete every key under
+`<etcd.prefix>/` — with the trailing separator, or a cluster named `app`
+would take `app-staging`'s keys with it — then release the object. A purge
+that fails retries rather than releasing: leaving the keys behind is the
+failure the cleanup exists to prevent. The default leaves etcd state
 untouched (shared-etcd caution).
+
+**Adopting a prefix.** Since fs §6.8 the credential store is cluster-wide
+in etcd and seeded from config only while it is empty, so a cluster
+starting on a prefix that already holds keys adopts credentials sealed
+with a cluster secret it no longer has: fs skips what it cannot unseal,
+the pods pass their probes, and nothing can authenticate. Re-creating a
+deleted cluster under the same name is the ordinary way to get there. The
+operator checks its root credential against the cluster's key store and
+reports `Ready=False/RootCredentialUnregistered` naming the prefix and the
+way out, rather than leaving the cause a node's log away and the symptom
+on every FSBucket. It reports only — registering the credential itself
+would be repairing a cluster it cannot prove is its own, and a root key
+removed deliberately wants the opposite. A key store that is merely
+*empty* is treated as unknown: a starting cluster looks like that.
 
 ### 8.7 Failure handling
 
