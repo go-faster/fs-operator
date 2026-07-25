@@ -45,6 +45,46 @@ registry, keeping the `go-faster/...` path. The chart wires the override into
 the operator as `FS_IMAGE_REGISTRY`; the operator applies it to every cluster
 it reconciles, overriding each `FSCluster`'s own `spec.image.repository` host.
 Use `manager.imagePullSecrets` and each cluster's `spec.image.pullSecrets` for
-a registry that needs credentials.
+a registry that needs credentials, and `manager.image.pullPolicy` /
+`spec.image.pullPolicy` (default `IfNotPresent`) to keep a node from reaching
+for a registry it cannot see.
+
+### The two images to mirror
+
+| Image | Pulled by | Overridden with |
+|---|---|---|
+| `ghcr.io/go-faster/fs-operator` | the operator Deployment | `manager.image.*` |
+| `ghcr.io/go-faster/fs` | every `FSCluster`'s node pods | `spec.image.*` per cluster |
+
+That is the whole list — the operator has no sidecars, no init containers and
+no cert-manager or other in-cluster dependency to mirror.
+
+### Pinning by digest
+
+A tag can be repointed in a mirror under a running cluster; a digest cannot.
+Both images can be pinned by content:
+
+```yaml
+# The operator image, at install time.
+manager:
+  image:
+    repository: ghcr.io/go-faster/fs-operator
+    digest: sha256:3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea
+```
+
+```yaml
+# The fs node image, per cluster.
+spec:
+  image:
+    repository: ghcr.io/go-faster/fs
+    digest: sha256:3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea
+```
+
+A digest wins over `tag`, and `global.imageRegistry` still rewrites the
+registry host, so a mirrored digest stays pinned. Writing the digest straight
+into `repository` (`ghcr.io/go-faster/fs@sha256:…`) works too.
+
+Changing a cluster's digest is an ordinary image change: it rolls the cluster
+one node at a time under the usual convergence gates ([upgrades](../guides/upgrades.md)).
 
 <!-- TODO(P2): values reference, watchNamespaces. -->

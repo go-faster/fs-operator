@@ -115,6 +115,66 @@ func TestNewPassImageRegistry(t *testing.T) {
 	}
 }
 
+// TestImageDigestPinning covers pinning a node image by content rather than by
+// tag, which is what makes a mirrored registry trustworthy: a tag can be
+// repointed under a running cluster, a digest cannot.
+func TestImageDigestPinning(t *testing.T) {
+	const digest = "sha256:" +
+		"3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea"
+
+	tests := []struct {
+		name     string
+		registry string
+		mutate   func(*fsv1alpha1.FSCluster)
+		want     string
+	}{
+		{
+			name:   "digest wins over the tag",
+			mutate: func(c *fsv1alpha1.FSCluster) { c.Spec.Image.Digest = digest },
+			want:   "ghcr.io/go-faster/fs@" + digest,
+		},
+		{
+			name:     "mirrored digest keeps the content pin",
+			registry: "registry.internal",
+			mutate:   func(c *fsv1alpha1.FSCluster) { c.Spec.Image.Digest = digest },
+			want:     "registry.internal/go-faster/fs@" + digest,
+		},
+		{
+			// The spelling the chart uses for the operator's own image, and
+			// the one ApplyRegistry preserves.
+			name: "digest written into the repository is honoured",
+			mutate: func(c *fsv1alpha1.FSCluster) {
+				c.Spec.Image.Repository = "ghcr.io/go-faster/fs@" + digest
+			},
+			want: "ghcr.io/go-faster/fs@" + digest,
+		},
+		{
+			name:   "no digest still runs the tag",
+			mutate: func(*fsv1alpha1.FSCluster) {},
+			want:   "ghcr.io/go-faster/fs:" + fsv1alpha1.DefaultImageTag,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := testCluster()
+			tt.mutate(cluster)
+
+			p := newPass(cluster, tt.registry)
+
+			if got := Image(p.cluster); got != tt.want {
+				t.Errorf("image = %q, want %q", got, tt.want)
+			}
+
+			// A digest has to reach the pod, not just the helper.
+			set := NewStatefulSet(p.cluster, p.nodes[0], "rev")
+			if got := set.Spec.Template.Spec.Containers[0].Image; got != tt.want {
+				t.Errorf("container image = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestStatefulSetIsUnprivileged pins the hardening SPEC §9 promises.
 func TestStatefulSetIsUnprivileged(t *testing.T) {
 	set := nodeStatefulSet(t, testCluster())

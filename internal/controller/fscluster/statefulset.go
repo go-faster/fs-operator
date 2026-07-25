@@ -251,8 +251,25 @@ const flagConfig = "--config"
 const capAll corev1.Capability = "ALL"
 
 // Image is the image reference a cluster's nodes run.
+//
+// A digest wins over the tag: pinning by content is what makes an air-gapped
+// mirror trustworthy, since a tag can be repointed under a running cluster
+// while a digest cannot. Both spellings work — a separate spec.image.digest,
+// and a digest written straight into the repository, which is the form
+// ApplyRegistry preserves and the chart's managerImage helper uses for the
+// operator's own image.
 func Image(cluster *fsv1alpha1.FSCluster) string {
-	return cluster.Spec.Image.Repository + ":" + cluster.Spec.Image.Tag
+	image := cluster.Spec.Image
+
+	if strings.Contains(image.Repository, "@") {
+		return image.Repository
+	}
+
+	if image.Digest != "" {
+		return image.Repository + "@" + image.Digest
+	}
+
+	return image.Repository + ":" + image.Tag
 }
 
 // containerPort names a port so Services and probes can target it by name.

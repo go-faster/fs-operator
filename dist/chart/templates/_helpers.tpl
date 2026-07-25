@@ -76,13 +76,19 @@ Takes a dict with:
 
 {{/*
 Fully qualified manager image reference: the repository with the global
-registry applied, then the tag (defaulting to the chart appVersion) unless the
-repository already pins a digest.
+registry applied, then a digest if one is pinned, else the tag (defaulting to
+the chart appVersion).
+
+A digest wins over the tag — a mirrored tag can be repointed under a running
+operator, a digest cannot. Mirrors FSCluster's spec.image handling (see
+fscluster.Image); keep the two in step.
 */}}
 {{- define "fs-operator.managerImage" -}}
 {{- $repo := include "fs-operator.applyRegistry" (dict "repository" .Values.manager.image.repository "registry" (.Values.global).imageRegistry) -}}
 {{- if contains "@" $repo -}}
 {{- $repo -}}
+{{- else if .Values.manager.image.digest -}}
+{{- printf "%s@%s" $repo .Values.manager.image.digest -}}
 {{- else -}}
 {{- printf "%s:%s" $repo (.Values.manager.image.tag | default .Chart.AppVersion) -}}
 {{- end -}}

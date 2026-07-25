@@ -67,6 +67,20 @@ func TestCRDRejectsInvalidSpecs(t *testing.T) {
 				c.Spec.Etcd.External.Endpoints = nil
 			},
 		},
+		{
+			// A digest is the one field a typo silently turns into an image
+			// that will never pull, so it is validated rather than trusted.
+			name: "malformed image digest",
+			mutate: func(c *fsv1alpha1.FSCluster) {
+				c.Spec.Image.Digest = "sha256:not-hex"
+			},
+		},
+		{
+			name: "image digest without an algorithm",
+			mutate: func(c *fsv1alpha1.FSCluster) {
+				c.Spec.Image.Digest = "3f79bb7b435b05321651daefd374cdc6"
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cluster := testCluster()

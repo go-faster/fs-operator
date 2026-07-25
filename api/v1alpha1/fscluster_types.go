@@ -119,6 +119,15 @@ type ImageSpec struct {
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
+	// digest pins the image by content instead of by tag, as
+	// "sha256:<hex>". When set it wins over tag, and the nodes run
+	// repository@digest — the reference a mirror cannot silently change
+	// under a cluster. A digest already written into repository is honoured
+	// too, which is how the chart pins the operator's own image.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-fA-F0-9]{32,128}$`
+	// +optional
+	Digest string `json:"digest,omitempty"`
+
 	// pullPolicy is the image pull policy.
 	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
 	// +kubebuilder:default=IfNotPresent

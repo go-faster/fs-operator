@@ -33,6 +33,11 @@ manager:
     ## Image tag (defaults to Chart.appVersion if not set)
     ##
     # tag: ""
+    ## Pin the image by content instead of by tag, as "sha256:<hex>". Wins
+    ## over tag; global.imageRegistry still applies, so a mirrored image
+    ## stays pinned. A digest written into repository works too.
+    ##
+    # digest: ""
     pullPolicy: IfNotPresent
 
   ## Arguments
