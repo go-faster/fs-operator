@@ -18,6 +18,14 @@ package v1alpha1
 
 import "testing"
 
+// The image and registry the table repeats: naming them keeps a change to
+// either in one place.
+const (
+	fsImage  = DefaultImageRepository
+	mirror   = "registry.internal"
+	mirrored = mirror + "/go-faster/fs"
+)
+
 func TestApplyRegistry(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -27,57 +35,57 @@ func TestApplyRegistry(t *testing.T) {
 	}{
 		{
 			name:       "empty registry is a no-op",
-			repository: "ghcr.io/go-faster/fs",
+			repository: fsImage,
 			registry:   "",
-			want:       "ghcr.io/go-faster/fs",
+			want:       fsImage,
 		},
 		{
 			name:       "empty repository is a no-op",
 			repository: "",
-			registry:   "registry.internal",
+			registry:   mirror,
 			want:       "",
 		},
 		{
 			name:       "replaces the host of the default fs image",
-			repository: "ghcr.io/go-faster/fs",
-			registry:   "registry.internal",
-			want:       "registry.internal/go-faster/fs",
+			repository: fsImage,
+			registry:   mirror,
+			want:       mirrored,
 		},
 		{
 			name:       "replaces the host of the operator image",
-			repository: "ghcr.io/go-faster/fs-operator",
-			registry:   "registry.internal",
-			want:       "registry.internal/go-faster/fs-operator",
+			repository: fsImage + "-operator",
+			registry:   mirror,
+			want:       mirrored + "-operator",
 		},
 		{
 			name:       "trailing slash on the registry is trimmed",
-			repository: "ghcr.io/go-faster/fs",
-			registry:   "registry.internal/",
-			want:       "registry.internal/go-faster/fs",
+			repository: fsImage,
+			registry:   mirror + "/",
+			want:       mirrored,
 		},
 		{
 			name:       "host with a port is treated as a registry host",
 			repository: "example.com:5000/team/fs",
-			registry:   "registry.internal",
-			want:       "registry.internal/team/fs",
+			registry:   mirror,
+			want:       mirror + "/team/fs",
 		},
 		{
 			name:       "digest pin is preserved after replacement",
-			repository: "ghcr.io/go-faster/fs@sha256:abc123",
-			registry:   "registry.internal",
-			want:       "registry.internal/go-faster/fs@sha256:abc123",
+			repository: fsImage + "@sha256:abc123",
+			registry:   mirror,
+			want:       mirrored + "@sha256:abc123",
 		},
 		{
 			name:       "repository without a host segment is prepended",
 			repository: "go-faster/fs",
-			registry:   "registry.internal",
-			want:       "registry.internal/go-faster/fs",
+			registry:   mirror,
+			want:       mirrored,
 		},
 		{
 			name:       "single-segment repository is prepended",
 			repository: "fs",
-			registry:   "registry.internal",
-			want:       "registry.internal/fs",
+			registry:   mirror,
+			want:       mirror + "/fs",
 		},
 	}
 
