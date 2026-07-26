@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -97,6 +98,25 @@ var _ = BeforeSuite(func() {
 	)
 	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to install the chart")
+
+	// helm --wait returns the moment the pod reports Ready, which is when the
+	// webhook server has bound its port — but the Service backend is
+	// programmed a beat later, and until it is the ClusterIP rejects with
+	// "connection refused". With failurePolicy: Fail that turns the first
+	// apply after an install into a coin flip, so wait for the path to
+	// actually work rather than for its parts to exist.
+	//
+	// A server-side dry run goes through admission without creating anything,
+	// which is exactly the question being asked.
+	By("waiting for the webhook to accept requests")
+	Eventually(func(g Gomega) {
+		probe := exec.Command("kubectl", "apply", "--dry-run=server", "-n", "default", "-f", "-")
+		probe.Stdin = strings.NewReader(minimalExample())
+
+		_, err := utils.Run(probe)
+		g.Expect(err).NotTo(HaveOccurred())
+	}).WithTimeout(2*time.Minute).WithPolling(2*time.Second).Should(Succeed(),
+		"the admission webhook never became reachable")
 })
 
 var _ = AfterSuite(func() {

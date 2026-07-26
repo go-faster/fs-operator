@@ -66,6 +66,18 @@ a typo and a cluster that cannot host its own data. `webhook.failurePolicy:
 Ignore` relaxes that if you would rather trade the guarantee for availability;
 the operator still refuses the spec, but only after it has been stored.
 
+**Right after installing**, an `FSCluster` apply can be rejected with:
+
+```
+Internal error occurred: failed calling webhook "vfscluster.kb.io":
+  dial tcp 10.96.0.1:443: connect: connection refused
+```
+
+The operator reports Ready only once the webhook is serving, but the Service
+backend is programmed a moment later, and `failurePolicy: Fail` rejects rather
+than admits in that window. It is a few seconds and it resolves itself — retry
+the apply. Nothing is half-created: the object was never stored.
+
 Everything the webhook checks, the controller checks again before it touches
 anything, so turning the webhook off costs you the early error message and
 nothing else. That is deliberate: a webhook can be disabled, unreachable, or
