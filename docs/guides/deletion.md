@@ -60,6 +60,11 @@ kubectl patch fscluster prod --type merge -p '{"metadata":{"finalizers":[]}}'
 Clusters without `cleanupOnDelete` never carry the finalizer, so their deletion
 can never be held up by an etcd the operator cannot reach.
 
+Neither do clusters using the [managed development
+etcd](configuration.md#managed--development-only): it is owned by the cluster,
+so garbage collection takes it and (by default) its volumes, and there is
+nothing left to purge. `cleanupOnDelete` is a no-op there.
+
 ## Re-creating a cluster with the same name
 
 This is where the two policies meet, and it is worth being deliberate about.

@@ -201,7 +201,7 @@ func drainedStatefulSet(live *appsv1.StatefulSet, restartRevision string) (*apps
 		set.Spec.Template.Annotations, AnnotationRestartRevision, restartRevision)
 
 	// A typed read strips the kind, which server-side apply requires.
-	set.TypeMeta = metav1.TypeMeta{APIVersion: appsv1.SchemeGroupVersion.String(), Kind: "StatefulSet"}
+	set.TypeMeta = metav1.TypeMeta{APIVersion: appsv1.SchemeGroupVersion.String(), Kind: KindStatefulSet}
 
 	// Apply owns these; a resourceVersion carried over from a read would make
 	// the apply a conflict, and the managed fields are the server's to keep.

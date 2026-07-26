@@ -30,6 +30,12 @@ except ImportError:  # pragma: no cover - the script says how to fix itself.
 
 CRD_DIR = Path("config/crd/bases")
 
+# ALLOW_FILE lists findings a human has reviewed and accepted. The checker
+# compares schemas and cannot see the objects a cluster holds, so a rule that
+# every stored object already satisfies looks identical to one that breaks
+# them all — the difference is a judgement, and it gets written down there.
+ALLOW_FILE = Path("hack/crd-compat-allow.txt")
+
 # The one default that is *meant* to move. Every operator release pins the fs
 # version it was validated against, and a cluster that omits spec.image.tag
 # inherits it — that is the point of the default, and hack/set-fs-version.sh
@@ -183,6 +189,18 @@ def check(ref: str) -> list[str]:
     return findings
 
 
+def allowed() -> set[str]:
+    """The findings hack/crd-compat-allow.txt accepts."""
+    if not ALLOW_FILE.exists():
+        return set()
+
+    return {
+        line.strip()
+        for line in ALLOW_FILE.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+
 def main() -> int:
     ref = sys.argv[1] if len(sys.argv) > 1 else latest_tag()
 
@@ -190,10 +208,15 @@ def main() -> int:
         print("no release tag to compare against; skipping the CRD compatibility check")
         return 0
 
-    findings = check(ref)
+    accepted = allowed()
+    findings = [f for f in check(ref) if f not in accepted]
 
     if not findings:
-        print(f"CRDs are compatible with {ref}")
+        if accepted:
+            print(f"CRDs are compatible with {ref} ({len(accepted)} acknowledged change(s))")
+        else:
+            print(f"CRDs are compatible with {ref}")
+
         return 0
 
     print(f"CRD changes incompatible with objects stored under {ref}:\n", file=sys.stderr)
@@ -202,11 +225,10 @@ def main() -> int:
         print(f"  {finding}", file=sys.stderr)
 
     print(
-        "\nEach of these changes the meaning of an object a user has already applied.\n"
-        "If one is intended, it needs a new API version — or, before v1alpha1 has\n"
-        "users, an explicit override:\n"
-        "\n"
-        "  make check-crd-compat CRD_COMPAT_BASE=<ref>   # compare against another ref\n",
+        f"\nEach of these changes the meaning of an object a user has already applied.\n"
+        f"If a change is genuinely safe — a rule every stored object already\n"
+        f"satisfies, say — copy the line into {ALLOW_FILE} with a comment saying\n"
+        f"why. If it is not, it needs a new API version.\n",
         file=sys.stderr,
     )
 

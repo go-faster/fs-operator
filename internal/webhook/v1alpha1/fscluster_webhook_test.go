@@ -36,6 +36,11 @@ func cluster(mutate func(*fsv1alpha1.FSCluster)) *fsv1alpha1.FSCluster {
 		Spec: fsv1alpha1.FSClusterSpec{
 			Scheme:   scheme.RF3,
 			Topology: fsv1alpha1.TopologySpec{Nodes: &nodes},
+			Etcd: fsv1alpha1.EtcdSpec{
+				External: &fsv1alpha1.ExternalEtcdSpec{
+					Endpoints: []string{"http://etcd.default.svc:2379"},
+				},
+			},
 		},
 	}
 

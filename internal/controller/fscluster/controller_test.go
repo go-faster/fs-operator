@@ -350,7 +350,7 @@ func TestReconcileIgnoresDeletedCluster(t *testing.T) {
 	r, _ := reconciler(t)
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "default", Name: "gone"},
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "gone"},
 	})
 	if err != nil {
 		t.Fatalf("reconcile a cluster that does not exist: %v", err)

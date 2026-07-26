@@ -274,7 +274,7 @@ func clusterConfig(cluster *fsv1alpha1.FSCluster, node Node, drained bool) fscon
 		Scheme:        spec.Scheme,
 		Disks:         diskConfigs(spec, drained),
 		Etcd: fsconfig.Etcd{
-			Endpoints: spec.Etcd.External.Endpoints,
+			Endpoints: EtcdEndpoints(cluster),
 			Prefix:    spec.EtcdPrefix(cluster.Namespace, cluster.Name),
 			TTL:       duration(spec.Etcd.TTL),
 		},

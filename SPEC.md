@@ -65,8 +65,15 @@ the day-2 choreography.
   etcd is the only supported control plane for production. A minimal managed
   mode (`etcd.managed: {}`) exists purely for dev/demo clusters: no backups,
   no defrag automation, no member replacement, and the operator says so
-  loudly (condition message + event + docs). It will not be hardened into a
-  production offering; etcd lifecycle management is its own discipline.
+  loudly (warning event on every reconcile + admission warning + docs). It
+  will not be hardened into a production offering; etcd lifecycle management
+  is its own discipline. **Shipped in P4**: a StatefulSet with a static
+  bootstrap list, one PVC per member, `replicas` 1 or 3 and immutable
+  (growing it needs a join the operator does not implement), volumes
+  reclaimed on delete by default — a kept dev volume only buys the
+  adopted-prefix failure of §8.6. `etcd.cleanupOnDelete` is a no-op in
+  managed mode and the finalizer is not added: the etcd is owned by the
+  cluster, so GC takes it, and there is nothing left to purge.
 - **No cluster-secret rotation.** Peer HMAC auth uses a single shared secret;
   mixed secrets partition the cluster. Rotation is a documented manual
   procedure until fs grows dual-secret support.

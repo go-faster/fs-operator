@@ -22,6 +22,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -42,6 +43,24 @@ const (
 
 	// DefaultS3Port is the default S3 service port.
 	DefaultS3Port int32 = 8080
+
+	// DefaultManagedEtcdRepository and DefaultManagedEtcdTag pin the etcd the
+	// operator runs in managed (development) mode.
+	DefaultManagedEtcdRepository = "quay.io/coreos/etcd"
+	DefaultManagedEtcdTag        = "v3.5.17"
+
+	// DefaultManagedEtcdReplicas is a single member: the managed mode is for
+	// development, where one is enough and three is a choice.
+	DefaultManagedEtcdReplicas int32 = 1
+
+	// DefaultManagedEtcdSize is each member's volume. etcd holds only
+	// control-plane state, so this is room for history and compaction rather
+	// than for data.
+	DefaultManagedEtcdSize = "2Gi"
+
+	// EtcdClientPort and EtcdPeerPort are etcd's well-known ports.
+	EtcdClientPort int32 = 2379
+	EtcdPeerPort   int32 = 2380
 
 	// DefaultConvergenceTimeout bounds the per-node reconvergence wait
 	// during rolling changes.
@@ -120,6 +139,8 @@ func (s *FSClusterSpec) WithDefaults() {
 	if s.S3.Service.Type == "" {
 		s.S3.Service.Type = corev1.ServiceTypeClusterIP
 	}
+
+	s.Etcd.withDefaults()
 
 	if s.S3.Service.Port == 0 {
 		s.S3.Service.Port = DefaultS3Port
@@ -223,4 +244,52 @@ func (s *FSAccessKeySpec) CredentialsSecretName(name string) string {
 	}
 
 	return name + "-credentials"
+}
+
+// withDefaults fills in the managed etcd's optional fields. External etcd has
+// nothing to default: its endpoints are the whole of it.
+func (e *EtcdSpec) withDefaults() {
+	if e.Managed == nil {
+		return
+	}
+
+	if e.Managed.Replicas == nil {
+		replicas := DefaultManagedEtcdReplicas
+		e.Managed.Replicas = &replicas
+	}
+
+	if e.Managed.Image.Repository == "" {
+		e.Managed.Image.Repository = DefaultManagedEtcdRepository
+	}
+
+	if e.Managed.Image.Tag == "" {
+		e.Managed.Image.Tag = DefaultManagedEtcdTag
+	}
+
+	if e.Managed.Image.PullPolicy == "" {
+		e.Managed.Image.PullPolicy = corev1.PullIfNotPresent
+	}
+
+	if e.Managed.Storage.Size == nil {
+		size := resource.MustParse(DefaultManagedEtcdSize)
+		e.Managed.Storage.Size = &size
+	}
+
+	if e.Managed.Storage.ReclaimPolicy == "" {
+		e.Managed.Storage.ReclaimPolicy = ReclaimDelete
+	}
+}
+
+// ManagedEtcd reports whether the operator runs this cluster's etcd.
+func (s *FSClusterSpec) ManagedEtcd() bool {
+	return s.Etcd.Managed != nil
+}
+
+// EtcdReplicas is the managed etcd's member count, zero when etcd is external.
+func (s *FSClusterSpec) EtcdReplicas() int32 {
+	if s.Etcd.Managed == nil || s.Etcd.Managed.Replicas == nil {
+		return 0
+	}
+
+	return *s.Etcd.Managed.Replicas
 }

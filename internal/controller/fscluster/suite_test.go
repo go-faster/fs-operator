@@ -43,6 +43,9 @@ var (
 	envErr    error
 )
 
+// testNamespace is where every fixture in this package lives.
+const testNamespace = "default"
+
 // eventBuffer is how many events a test recorder holds before it blocks.
 const eventBuffer = 64
 

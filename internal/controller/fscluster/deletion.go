@@ -55,7 +55,11 @@ const (
 // A cluster that does not opt in never carries it, so a delete of an ordinary
 // cluster can never be held up by an etcd the operator cannot reach.
 func (r *Reconciler) reconcileFinalizer(ctx context.Context, cluster *fsv1alpha1.FSCluster) error {
-	want := cluster.Spec.Etcd.CleanupOnDelete
+	// A managed etcd never needs the finalizer: it is owned by this cluster, so
+	// garbage collection takes it and its volumes down. Holding the object open
+	// to purge keys from an etcd that is being deleted underneath us would only
+	// stall the delete on a control plane already on its way out.
+	want := cluster.Spec.Etcd.CleanupOnDelete && !cluster.Spec.ManagedEtcd()
 	if want == controllerutil.ContainsFinalizer(cluster, ClusterFinalizer) {
 		return nil
 	}
@@ -196,7 +200,7 @@ func (r *Reconciler) purgeEtcd(ctx context.Context, cluster *fsv1alpha1.FSCluste
 	log := logf.FromContext(ctx)
 
 	prefix := cluster.Spec.EtcdPrefix(cluster.Namespace, cluster.Name)
-	cfg := etcdstore.Config{Endpoints: cluster.Spec.Etcd.External.Endpoints}
+	cfg := etcdstore.Config{Endpoints: EtcdEndpoints(cluster)}
 
 	deleted, err := r.purge(ctx, cfg, prefix)
 	if err != nil {

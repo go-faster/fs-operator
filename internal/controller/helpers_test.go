@@ -48,7 +48,7 @@ func makeCluster(ctx context.Context, name string) {
 				Disks: []fsv1alpha1.DiskSpec{{Name: "d0", Size: resource.MustParse("10Gi")}},
 			},
 			Etcd: fsv1alpha1.EtcdSpec{
-				External: fsv1alpha1.ExternalEtcdSpec{Endpoints: []string{"http://etcd.default.svc:2379"}},
+				External: &fsv1alpha1.ExternalEtcdSpec{Endpoints: []string{"http://etcd.default.svc:2379"}},
 			},
 		},
 	}

@@ -33,6 +33,11 @@ func spec(mutate func(*fsv1alpha1.FSClusterSpec)) *fsv1alpha1.FSClusterSpec {
 	s := &fsv1alpha1.FSClusterSpec{
 		Scheme:   scheme.RF3,
 		Topology: fsv1alpha1.TopologySpec{Nodes: &nodes},
+		Etcd: fsv1alpha1.EtcdSpec{
+			External: &fsv1alpha1.ExternalEtcdSpec{
+				Endpoints: []string{"http://etcd.default.svc:2379"},
+			},
+		},
 	}
 
 	if mutate != nil {

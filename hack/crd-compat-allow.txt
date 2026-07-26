@@ -1,0 +1,15 @@
+# Acknowledged CRD changes: findings hack/check-crd-compat.py reports that a
+# human has decided are safe.
+#
+# The checker is deliberately conservative — it compares schemas, and cannot
+# see the objects a cluster actually holds. A tightened rule that every stored
+# object already satisfies is safe, and this is where that gets written down.
+#
+# One finding per line, copied verbatim from the checker's output, and each
+# preceded by a comment saying why it is safe. A line with no justification is
+# a line nobody reviewed.
+
+# Adding managed etcd made spec.etcd.external optional, which needs a rule to
+# keep "exactly one of them" true. Every object stored before this has external
+# set — it was a required field — so all of them satisfy the new rule.
+FSCluster/v1alpha1.spec.etcd: new validation rule 'has(self.external) != has(self.managed)'

@@ -156,6 +156,7 @@ func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
 		{Name: "observe", AlwaysRun: true, Run: r.observe},
 		{Name: "secrets", Run: r.reconcileSecrets},
 		{Name: "services", Run: r.reconcileServices},
+		{Name: "etcd", Run: r.reconcileEtcd},
 		{Name: "configs", Run: r.reconcileNodeConfigs},
 		{Name: "convergence", Run: r.gatherConvergence},
 		{Name: "storage", Run: r.reconcileStorage},

@@ -85,7 +85,7 @@ func TestCRDRejectsInvalidSpecs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cluster := testCluster()
 			cluster.Name = "invalid"
-			cluster.Namespace = "default"
+			cluster.Namespace = testNamespace
 			tc.mutate(cluster)
 
 			if err := r.Create(t.Context(), cluster); err == nil {

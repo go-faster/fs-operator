@@ -20,7 +20,12 @@ limitations under the License.
 // budget (SPEC §8.1).
 package fscluster
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+
+	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
+)
 
 // The identity scheme of SPEC §4.2. These names are API surface in practice —
 // users reference the Services and Secrets — so they are computed in one place
@@ -55,6 +60,62 @@ func AdminTokenSecretName(cluster string) string {
 // RootCredentialsSecretName is the Secret holding the root S3 credential.
 func RootCredentialsSecretName(cluster string) string {
 	return cluster + "-root-credentials"
+}
+
+// EtcdStatefulSetName is the managed etcd's StatefulSet, and EtcdServiceName
+// the headless Service that gives its members stable DNS.
+func EtcdStatefulSetName(cluster string) string {
+	return cluster + "-etcd"
+}
+
+func EtcdServiceName(cluster string) string {
+	return cluster + "-etcd"
+}
+
+// EtcdEndpoints is where this cluster's nodes reach etcd: the endpoints the
+// user gave, or the managed members' stable DNS names.
+//
+// Every reader goes through this. Reading spec.etcd.external.endpoints
+// directly is how a managed cluster would end up configured with no control
+// plane at all.
+func EtcdEndpoints(cluster *fsv1alpha1.FSCluster) []string {
+	if external := cluster.Spec.Etcd.External; external != nil {
+		return external.Endpoints
+	}
+
+	replicas := cluster.Spec.EtcdReplicas()
+	endpoints := make([]string, 0, replicas)
+
+	// Per-member DNS rather than the Service name: the etcd client balances
+	// across the endpoints it is given and fails over between them, which a
+	// single round-robin Service name cannot do.
+	for i := range int(replicas) {
+		endpoints = append(endpoints, fmt.Sprintf("http://%s.%s.%s.svc:%d",
+			EtcdPodName(cluster.Name, i), EtcdServiceName(cluster.Name),
+			cluster.Namespace, fsv1alpha1.EtcdClientPort))
+	}
+
+	return endpoints
+}
+
+// EtcdPodName is one managed etcd member's pod.
+func EtcdPodName(cluster string, ordinal int) string {
+	return fmt.Sprintf("%s-%d", EtcdStatefulSetName(cluster), ordinal)
+}
+
+// EtcdInitialCluster is the static bootstrap list every managed member is
+// given: etcd needs to know its peers before it has a control plane to ask.
+func EtcdInitialCluster(cluster *fsv1alpha1.FSCluster) string {
+	replicas := cluster.Spec.EtcdReplicas()
+	members := make([]string, 0, replicas)
+
+	for i := range int(replicas) {
+		pod := EtcdPodName(cluster.Name, i)
+		members = append(members, fmt.Sprintf("%s=http://%s.%s.%s.svc:%d",
+			pod, pod, EtcdServiceName(cluster.Name), cluster.Namespace, fsv1alpha1.EtcdPeerPort))
+	}
+
+	return strings.Join(members, ",")
 }
 
 // PodName is the name of a node's pod: its StatefulSet has exactly one

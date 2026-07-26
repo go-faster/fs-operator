@@ -51,8 +51,22 @@ const (
 	// LabelRack names the fs failure domain a node is in.
 	LabelRack = "fs.go-faster.org/rack"
 
+	// LabelComponent separates the pieces the operator runs for a cluster.
+	// Node objects carry no component label, so the selectors that predate
+	// this — the peers Service, the disruption budget — keep matching exactly
+	// what they always did and never pick up an etcd pod.
+	LabelComponent = "app.kubernetes.io/component"
+
+	// ComponentEtcd marks the managed development etcd.
+	ComponentEtcd = "etcd"
+
 	// AppName is the application every managed pod runs.
 	AppName = "fs"
+
+	// KindService and KindStatefulSet are the TypeMeta kinds server-side apply
+	// needs on every object the operator sends.
+	KindService     = "Service"
+	KindStatefulSet = "StatefulSet"
 
 	// OperatorName is this operator, both as a label value and as the
 	// server-side apply field manager.
@@ -248,7 +262,7 @@ func newSecret(cluster *fsv1alpha1.FSCluster, name string, data map[string]strin
 // the admin API of a node that is not serving yet to find out why.
 func NewPeersService(cluster *fsv1alpha1.FSCluster) *corev1.Service {
 	return &corev1.Service{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: KindService},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      PeersServiceName(cluster.Name),
 			Namespace: cluster.Namespace,
@@ -270,7 +284,7 @@ func NewPeersService(cluster *fsv1alpha1.FSCluster) *corev1.Service {
 // NewClientService builds the Service S3 clients talk to.
 func NewClientService(cluster *fsv1alpha1.FSCluster) *corev1.Service {
 	service := &corev1.Service{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: KindService},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        ClientServiceName(cluster.Name),
 			Namespace:   cluster.Namespace,

@@ -120,7 +120,7 @@ const (
 // operator only decides when.
 func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string) *appsv1.StatefulSet {
 	return &appsv1.StatefulSet{
-		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"},
+		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: KindStatefulSet},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      node.Name,
 			Namespace: cluster.Namespace,

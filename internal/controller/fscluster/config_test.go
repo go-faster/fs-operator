@@ -72,7 +72,7 @@ func testCluster() *fsv1alpha1.FSCluster {
 				},
 			},
 			Etcd: fsv1alpha1.EtcdSpec{
-				External: fsv1alpha1.ExternalEtcdSpec{
+				External: &fsv1alpha1.ExternalEtcdSpec{
 					Endpoints: []string{
 						"http://etcd-0.etcd.fs-system:2379",
 						"http://etcd-1.etcd.fs-system:2379",

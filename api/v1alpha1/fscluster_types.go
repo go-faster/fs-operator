@@ -272,11 +272,25 @@ type DiskSpec struct {
 // writes — while the field is unset, and setting it later would move the
 // cluster's keys.
 // +kubebuilder:validation:XValidation:rule="has(self.prefix) == has(oldSelf.prefix) && (!has(self.prefix) || self.prefix == oldSelf.prefix)",message="etcd.prefix is immutable"
+// +kubebuilder:validation:XValidation:rule="has(self.external) != has(self.managed)",message="exactly one of etcd.external or etcd.managed must be set"
 type EtcdSpec struct {
 	// external points the cluster at user-operated etcd endpoints. This is
-	// the production mode.
-	// +required
-	External ExternalEtcdSpec `json:"external"`
+	// the production mode, and the only supported one.
+	// +optional
+	External *ExternalEtcdSpec `json:"external,omitempty"`
+
+	// managed asks the operator to run a minimal etcd for this cluster.
+	//
+	// For development and demos only, permanently. It has no backups, no
+	// defrag automation, no member replacement and no restore path: losing
+	// its volume loses the cluster's control plane, and with it the sealed
+	// credentials and the topology. The operator says so on every cluster
+	// that uses it (Ready condition message plus an event) — that is not a
+	// warning that will be softened once it is "good enough", because etcd
+	// lifecycle management is its own discipline and this is not it.
+	// Production clusters use external (SPEC §2).
+	// +optional
+	Managed *ManagedEtcdSpec `json:"managed,omitempty"`
 
 	// prefix namespaces this cluster's keys in etcd. Defaults to
 	// /fs/<namespace>/<name>. Immutable.
@@ -303,6 +317,76 @@ type ExternalEtcdSpec struct {
 	// +kubebuilder:validation:items:MinLength=1
 	// +required
 	Endpoints []string `json:"endpoints"`
+}
+
+// ManagedEtcdSpec is the operator-run development etcd (SPEC §2). Everything
+// here is deliberately small: it exists so `kubectl apply` of an example
+// produces a working cluster, not so anyone runs it in production.
+type ManagedEtcdSpec struct {
+	// replicas is the etcd member count: 1 for a laptop, 3 for a demo that
+	// should survive a node restart. Even counts cannot form a quorum and are
+	// refused. Immutable, because this etcd has no member-replacement path:
+	// growing it would need a join dance the operator does not implement.
+	// +kubebuilder:validation:Enum=1;3
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="etcd.managed.replicas is immutable"
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// image is the etcd image. Defaults to the release this operator is
+	// tested against.
+	// +optional
+	Image ManagedEtcdImageSpec `json:"image,omitempty"`
+
+	// storage sizes each member's volume. etcd holds only control-plane
+	// state — the node registry, cursors, the sealed key store — so this is
+	// kilobytes of data with room for history and compaction.
+	// +optional
+	Storage ManagedEtcdStorageSpec `json:"storage,omitempty"`
+
+	// resources are the etcd container's resource requirements.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+// ManagedEtcdImageSpec pins the managed etcd image.
+type ManagedEtcdImageSpec struct {
+	// repository is the etcd image repository.
+	// +kubebuilder:default="quay.io/coreos/etcd"
+	// +optional
+	Repository string `json:"repository,omitempty"`
+
+	// tag is the etcd image tag.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:default="v3.5.17"
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// pullPolicy is the image pull policy.
+	// +kubebuilder:validation:Enum=Always;IfNotPresent;Never
+	// +kubebuilder:default=IfNotPresent
+	// +optional
+	PullPolicy corev1.PullPolicy `json:"pullPolicy,omitempty"`
+}
+
+// ManagedEtcdStorageSpec sizes the managed etcd's volumes.
+type ManagedEtcdStorageSpec struct {
+	// size is the capacity requested for each member's PVC.
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+
+	// storageClass selects the StorageClass; empty uses the cluster default.
+	// +optional
+	StorageClass string `json:"storageClass,omitempty"`
+
+	// reclaimPolicy decides what happens to the members' volumes when the
+	// cluster is deleted. Delete by default, unlike the data disks: this etcd
+	// is a development convenience, and leaving its volumes behind means a
+	// re-created cluster adopts a key store whose sealed credentials it can no
+	// longer open (SPEC §8.6).
+	// +kubebuilder:validation:Enum=Retain;Delete
+	// +kubebuilder:default=Delete
+	// +optional
+	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
 }
 
 // AuthSpec configures S3 authentication.

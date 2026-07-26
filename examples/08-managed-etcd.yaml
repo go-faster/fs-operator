@@ -1,0 +1,37 @@
+# Self-contained development cluster: the operator runs etcd too, so this is
+# the one example that needs nothing else in the namespace.
+#
+# DEVELOPMENT ONLY, permanently. The managed etcd has no backups, no defrag
+# automation, no member replacement and no restore path. Its volume holds the
+# cluster's control plane — the node registry and the sealed credential store —
+# so losing that volume loses the cluster, not just its metadata. Every cluster
+# using it carries a warning event and says so in its Ready condition.
+#
+# Production uses spec.etcd.external against an etcd you operate: see
+# 07-production.yaml.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-dev
+spec:
+  topology:
+    nodes: 3
+    # Dev only: allows several fs nodes on one Kubernetes node.
+    podAntiAffinity: Preferred
+  storage:
+    disks:
+      - name: d0
+        size: 10Gi
+  etcd:
+    # Exactly one of external or managed. Empty {} is a valid managed etcd:
+    # one member, the pinned etcd release, a 2Gi volume.
+    managed:
+      # 1 (the default) is enough for a laptop; 3 survives a node restart.
+      # Immutable — this etcd has no member-join path.
+      replicas: 1
+      storage:
+        size: 2Gi
+        # Delete by default, unlike the data disks: a re-created cluster that
+        # adopted a stale key store would inherit credentials sealed with a
+        # cluster secret it no longer has (SPEC §8.6).
+        reclaimPolicy: Delete

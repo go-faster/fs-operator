@@ -44,6 +44,13 @@ const MaxNodes = 16
 // Below it a cluster is a development toy — allowed, but it says so.
 const DevClusterNodes = 3
 
+// ManagedEtcdWarning is what every cluster running the operator-managed etcd
+// is told, at apply time and again on the object. It is a permanent property
+// of that mode, not a caveat that gets softened later (SPEC §2).
+const ManagedEtcdWarning = "etcd is operator-managed (development only): no backups, " +
+	"no defrag automation, no member replacement. Losing its volume loses the cluster's " +
+	"control plane and the credentials sealed in it. Use etcd.external in production"
+
 // Failure is one rejected spec: the reason a caller reports, and why.
 //
 // The reason is the condition reason the controller sets and the event it
@@ -78,6 +85,23 @@ func Cluster(spec *fsv1alpha1.FSClusterSpec) *Failure {
 		}
 	}
 
+	// CEL enforces this too, but a spec stored before the rule existed, or
+	// admitted while the webhook was off, would otherwise be rendered with no
+	// etcd endpoints at all — a config the nodes accept and cannot use.
+	if (spec.Etcd.External == nil) == (spec.Etcd.Managed == nil) {
+		return &Failure{
+			Reason:  fsv1alpha1.ReasonSpecInvalid,
+			Message: "exactly one of etcd.external or etcd.managed must be set",
+		}
+	}
+
+	if external := spec.Etcd.External; external != nil && len(external.Endpoints) == 0 {
+		return &Failure{
+			Reason:  fsv1alpha1.ReasonSpecInvalid,
+			Message: "etcd.external.endpoints must not be empty",
+		}
+	}
+
 	if total := int(spec.TotalNodes()); total > MaxNodes {
 		return &Failure{
 			Reason: fsv1alpha1.ReasonUnsupportedTopology,
@@ -99,6 +123,10 @@ func ClusterWarnings(spec *fsv1alpha1.FSClusterSpec) []string {
 		warnings = append(warnings, fmt.Sprintf(
 			"cluster has %d nodes, below the supported minimum of %d: suitable for development only",
 			total, DevClusterNodes))
+	}
+
+	if spec.Etcd.Managed != nil {
+		warnings = append(warnings, ManagedEtcdWarning)
 	}
 
 	return warnings
