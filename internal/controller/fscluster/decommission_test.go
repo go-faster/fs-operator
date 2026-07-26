@@ -214,6 +214,53 @@ func TestDecommissionDrainsBeforeRemoving(t *testing.T) {
 	}
 }
 
+// TestDecommissionWaitsForTheDrainedConfigToLand covers the first gate, which
+// a live e2e caught being waved through: the node must actually be *running*
+// the drained config before its occupancy means anything. Until it restarts its
+// disks are still in placement and still taking writes, so an "empty" read from
+// the pass that only just rendered the drain is not evidence of anything.
+func TestDecommissionWaitsForTheDrainedConfigToLand(t *testing.T) {
+	r, _, fake := reconcilerWithAdmin(t)
+	key := createCluster(t, r, "decomm-gate", func(c *fsv1alpha1.FSCluster) {
+		nodes := int32(4)
+		c.Spec.Topology.Nodes = &nodes
+	})
+
+	reconcile(t, r, key)
+	names := settleAll(t, r, key, fake)
+
+	victim := "decomm-gate-3"
+
+	// Empty from the very first pass — a node that just joined and holds
+	// nothing, which is exactly the case that hid the bug.
+	fake.setLive(0, liveCluster(names, map[string]bool{victim: true})...)
+
+	shrink(t, r, key, 3)
+	reconcile(t, r, key)
+
+	// The drain was rendered this pass; the node has not restarted onto it yet,
+	// so it must still be here.
+	var set appsv1.StatefulSet
+	if err := r.Get(t.Context(),
+		types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set); err != nil {
+		t.Fatalf("node removed in the same pass that rendered its drain: %v", err)
+	}
+
+	if phase := updatePhase(t, r, key); phase != fsv1alpha1.UpdatePhaseDraining {
+		t.Errorf("update phase = %q, want %q while the drain lands", phase,
+			fsv1alpha1.UpdatePhaseDraining)
+	}
+
+	// The pod comes back on the drained config, and only now may it go.
+	settleAll(t, r, key, fake)
+	reconcile(t, r, key)
+
+	err := r.Get(t.Context(), types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("node still present once drained and empty: %v", err)
+	}
+}
+
 // TestDecommissionHoldsWhileUnconverged covers the gate that matters most: a
 // node reporting empty is not enough while the cluster is still moving data,
 // because the rebalancer is what moves it.

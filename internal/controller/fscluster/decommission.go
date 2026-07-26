@@ -254,8 +254,18 @@ func (r *Reconciler) reconcileDecommission(ctx context.Context, p *pass) (pipeli
 
 	// Still coming back on the drained configuration. The rollout step is what
 	// restarts it; here we only wait for it to land.
-	desired := p.decommission.set.Annotations[AnnotationTemplateRevision]
-	if live.Annotations[AnnotationTemplateRevision] != desired || !nodeServing(live) {
+	//
+	// Compared against the *desired* set, never against the one the drain
+	// started from — that one carries the revision the node is already running,
+	// so it would match itself and wave the node straight through to removal
+	// while its disks were still taking writes.
+	desired, ok := p.desiredSet(name)
+	if !ok {
+		return pipeline.Continue()
+	}
+
+	if live.Annotations[AnnotationTemplateRevision] != desired.Annotations[AnnotationTemplateRevision] ||
+		!nodeServing(live) {
 		return r.holdDrain(p, fmt.Sprintf(
 			"node %q is restarting onto the drained configuration", name))
 	}

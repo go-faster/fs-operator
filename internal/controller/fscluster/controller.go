@@ -262,6 +262,17 @@ func (p *pass) setCondition(conditionType string, status metav1.ConditionStatus,
 	})
 }
 
+// desiredSet is the StatefulSet a node should be running this pass.
+func (p *pass) desiredSet(name string) (*appsv1.StatefulSet, bool) {
+	for _, set := range p.desired {
+		if set.Name == name {
+			return set, true
+		}
+	}
+
+	return nil, false
+}
+
 // hasCondition reports whether a condition of the given type is already queued,
 // so a later step can defer to an earlier, more specific one.
 func (p *pass) hasCondition(conditionType string) bool {
