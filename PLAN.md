@@ -296,7 +296,18 @@ needs a pointer field to tell an absent key from an explicit zero.
    required field, dropped enum value, tightened bound/pattern, new CEL
    rule, changed default). Additive changes pass. One exemption:
    `spec.image.tag`'s default, which is meant to move every release.
-9. **Managed dev-grade etcd**, **etcd TLS** (needs §11.4).
+9. ✅ **Managed dev-grade etcd** — `spec.etcd.managed`: a StatefulSet with a
+   static bootstrap list, one PVC per member, and nothing else. Development
+   only and built to stay that way (SPEC §2): `replicas` 1 or 3 and
+   immutable, `PodManagementPolicy: Parallel` (OrderedReady deadlocks a fresh
+   three-member etcd), volumes reclaimed on delete by default, a warning
+   event every reconcile, no finalizer. The etcd objects use a distinct app
+   name so they match none of the selectors the client Service, PDB,
+   NetworkPolicy and PodMonitor use — a test guards it, having caught exactly
+   that.
+10. **etcd TLS** — still blocked on fs §11.4: `EtcdConfig` upstream carries
+    only endpoints/prefix/ttl and neither `clientv3.New` call site passes TLS
+    or credentials. Needs an upstream PR like #102.
 
 ## Definition of done for P1 (met — v0.1.0)
 
