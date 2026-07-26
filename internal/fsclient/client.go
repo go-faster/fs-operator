@@ -76,6 +76,138 @@ type ClusterStatus struct {
 	// RebalanceRunning reports whether a rebalance runner holds the
 	// cluster-wide election.
 	RebalanceRunning bool
+
+	// TotalBytes and FreeBytes sum the capacity every disk reports.
+	TotalBytes, FreeBytes int64
+
+	// RepairQueueDepth is pending async replication/repair work summed over
+	// the nodes that answered — the cluster-wide signal fs v0.9.0 added, which
+	// replaces fanning out over each node's rebalance endpoint (SPEC §11.2).
+	//
+	// It counts only reporting nodes, so read it together with
+	// NodesNotReporting: a zero depth with nodes silent is "nobody said
+	// otherwise", not "nothing left to do".
+	RepairQueueDepth int
+
+	// NodesReporting and NodesNotReporting split the topology by whether the
+	// node answered the live-state request. A node is silent when it is
+	// unreachable or runs a binary older than the peer status endpoint, so a
+	// rolling upgrade degrades to "not reporting" rather than to an error.
+	NodesReporting, NodesNotReporting int
+
+	// Nodes is the per-node view: the registered topology, each node's disks
+	// and, where the node answered, its live runtime state.
+	Nodes []ClusterNode
+}
+
+// AllNodesReporting is true when every node in the topology answered the
+// live-state request. The gates that must not mistake silence for quiescence —
+// convergence, and the drain check that decides a node may be deleted — require
+// it before trusting RepairQueueDepth or a node's live state.
+func (s ClusterStatus) AllNodesReporting() bool {
+	return s.NodesNotReporting == 0 && s.NodesReporting > 0
+}
+
+// Node returns the status of one node by its fs node ID.
+func (s ClusterStatus) Node(id string) (ClusterNode, bool) {
+	for _, node := range s.Nodes {
+		if node.ID == id {
+			return node, true
+		}
+	}
+
+	return ClusterNode{}, false
+}
+
+// ClusterNode is one registered node as the control plane sees it.
+type ClusterNode struct {
+	// ID is the fs node ID, which the operator derives from the node's name
+	// (SPEC §4.2), and Rack its failure-domain label.
+	ID, Rack string
+
+	// Disks is what the node registered, with the capacity it last republished.
+	Disks []ClusterDisk
+
+	// Live is the node's own runtime state, nil when it did not answer.
+	Live *NodeLive
+
+	// LiveError says why Live is missing: unreachable, or a binary that does
+	// not serve live state.
+	LiveError string
+}
+
+// UsedBytes sums the used capacity of the node's disks, and reports whether
+// every disk answered with capacity. fs exposes no object count (SPEC §11.2
+// remainder), so bytes are the only occupancy signal there is — and they come
+// from statfs, so they include filesystem overhead and never reach zero on a
+// drained disk.
+func (n ClusterNode) UsedBytes() (int64, bool) {
+	var (
+		used  int64
+		known = len(n.Disks) > 0
+	)
+
+	for _, disk := range n.Disks {
+		if !disk.CapacityKnown {
+			known = false
+			continue
+		}
+
+		used += disk.UsedBytes()
+	}
+
+	return used, known
+}
+
+// ClusterDisk is one disk of one node.
+type ClusterDisk struct {
+	// ID is the disk ID within its node.
+	ID string
+
+	// Weight is the placement weight the node registered. Not positive means
+	// the disk is out of placement — how a drain is expressed (see
+	// fscluster.DrainWeight).
+	Weight float64
+
+	// TotalBytes, FreeBytes and Fullness (the used fraction, 0..1) are the
+	// node's last statfs report; CapacityKnown is false when it has not
+	// reported any, and the three are then meaningless.
+	TotalBytes, FreeBytes int64
+	Fullness              float64
+	CapacityKnown         bool
+}
+
+// UsedBytes is the disk's used capacity, zero when it reported none.
+func (d ClusterDisk) UsedBytes() int64 {
+	if !d.CapacityKnown {
+		return 0
+	}
+
+	return d.TotalBytes - d.FreeBytes
+}
+
+// Drained reports whether the disk is out of placement.
+func (d ClusterDisk) Drained() bool {
+	return d.Weight <= 0
+}
+
+// NodeLive is a node's own runtime state, fetched over the peer transport and
+// folded into the cluster status. It is process-local, so it keeps answering
+// during an etcd outage.
+type NodeLive struct {
+	// Version is the node's binary version and SchemaVersion the schema that
+	// binary implements — a half-upgraded cluster shows mixed values.
+	Version       string
+	SchemaVersion int
+
+	// RepairQueueDepth is the objects with pending async replication or repair
+	// work on this node.
+	RepairQueueDepth int
+
+	// RebalanceState is the node's rebalance runner state, and RebalanceError
+	// why it failed, if it did.
+	RebalanceState string
+	RebalanceError string
 }
 
 // Rebalance is a node's rebalance runner snapshot (GET
@@ -210,14 +342,72 @@ func (c *Client) ClusterStatus(ctx context.Context) (ClusterStatus, error) {
 	}
 
 	return ClusterStatus{
-		Disabled:         status.State == adminapi.ClusterStateDisabled,
-		SchemaVersion:    status.SchemaVersion,
-		BinarySchema:     status.BinarySchemaVersion,
-		NodeCount:        status.NodeCount,
-		DiskCount:        status.DiskCount,
-		PlacementSkew:    status.PlacementSkew,
-		RebalanceRunning: status.RebalanceRunning,
+		Disabled:          status.State == adminapi.ClusterStateDisabled,
+		SchemaVersion:     status.SchemaVersion,
+		BinarySchema:      status.BinarySchemaVersion,
+		NodeCount:         status.NodeCount,
+		DiskCount:         status.DiskCount,
+		PlacementSkew:     status.PlacementSkew,
+		RebalanceRunning:  status.RebalanceRunning,
+		TotalBytes:        status.TotalBytes,
+		FreeBytes:         status.FreeBytes,
+		RepairQueueDepth:  status.RepairQueueDepth,
+		NodesReporting:    status.NodesReporting,
+		NodesNotReporting: status.NodesNotReporting,
+		Nodes:             clusterNodesFromAPI(status.Nodes),
 	}, nil
+}
+
+// clusterNodesFromAPI maps the wire types to the plain structs.
+func clusterNodesFromAPI(nodes []adminapi.ClusterNode) []ClusterNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+
+	out := make([]ClusterNode, 0, len(nodes))
+
+	for _, node := range nodes {
+		mapped := ClusterNode{
+			ID:        node.ID,
+			Rack:      node.Rack.Or(""),
+			LiveError: node.LiveError.Or(""),
+		}
+
+		if len(node.Disks) > 0 {
+			mapped.Disks = make([]ClusterDisk, 0, len(node.Disks))
+
+			for _, disk := range node.Disks {
+				total, hasTotal := disk.TotalBytes.Get()
+				free, hasFree := disk.FreeBytes.Get()
+
+				mapped.Disks = append(mapped.Disks, ClusterDisk{
+					ID:     disk.ID,
+					Weight: disk.Weight,
+					// Capacity is reported as a set or not at all: a disk whose
+					// node has not republished statfs carries neither figure,
+					// and a size without a free figure says nothing about use.
+					CapacityKnown: hasTotal && hasFree,
+					TotalBytes:    total,
+					FreeBytes:     free,
+					Fullness:      disk.Fullness.Or(0),
+				})
+			}
+		}
+
+		if live, ok := node.Live.Get(); ok {
+			mapped.Live = &NodeLive{
+				Version:          live.Version.Or(""),
+				SchemaVersion:    live.SchemaVersion.Or(0),
+				RepairQueueDepth: live.RepairQueueDepth,
+				RebalanceState:   string(live.RebalanceState),
+				RebalanceError:   live.RebalanceError.Or(""),
+			}
+		}
+
+		out = append(out, mapped)
+	}
+
+	return out
 }
 
 // Rebalance reads the node's rebalance runner state, including its repair-queue
