@@ -305,9 +305,15 @@ needs a pointer field to tell an absent key from an explicit zero.
    name so they match none of the selectors the client Service, PDB,
    NetworkPolicy and PodMonitor use — a test guards it, having caught exactly
    that.
-10. **etcd TLS** — still blocked on fs §11.4: `EtcdConfig` upstream carries
-    only endpoints/prefix/ttl and neither `clientv3.New` call site passes TLS
-    or credentials. Needs an upstream PR like #102.
+10. ✅ **etcd TLS + auth** (§11.4) — unblocked upstream by fs PR #106,
+    released as **v0.11.0**: `cluster.etcd.tls.*` and `cluster.etcd.auth.*`,
+    both `clientv3.New` call sites through one constructor, and an `https://`
+    endpoint enabling TLS by itself (the client takes the transport from the
+    config, not the URL, so an https endpoint used to connect in the clear).
+    Operator side: `etcd.external.tls.secretName` (mounted, paths rendered)
+    and `authSecretRef` (through FS_ETCD_USERNAME/PASSWORD, never the config).
+    `internal/etcdstore` takes the same material so the deletion finalizer is
+    not a second plaintext path in.
 
 ## Definition of done for P1 (met — v0.1.0)
 
