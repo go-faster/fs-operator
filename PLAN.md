@@ -215,8 +215,9 @@ on `cluster S3 not reachable yet`.
 SPEC §16: decommission/drain, disk add/remove, etcd TLS, managed dev-grade
 etcd, admission webhook, Grafana dashboards, CRD-compat CI gate.
 
-Three of these were gated on upstream fs. What v0.9.0 settled, and what it
-did not:
+Three of these were gated on upstream fs. Two upstream releases were cut for
+this phase — v0.9.0 (live node state) and v0.10.0 (per-disk occupancy, fs PR
+#102, written here) — which between them settled the §11.2 gap entirely:
 
 - ✅ **Aggregate repair-queue depth + per-node live state** (fs #97) — the
   §11.2 gap the convergence gate was working around. `GET
@@ -225,10 +226,13 @@ did not:
   a node that does not answer carries `live_error` rather than zeroed
   counters. Also lands `GET/POST /api/v1/cluster/migrate`, and fixes the
   cluster-mode multipart 500 this repo recorded during P2 e2e.
-- ❌ **Per-node/per-disk object count** (§11.2 remainder) — still absent, and
-  it is what a drain gate needs. `statfs` bytes are the only occupancy
-  signal, and they include filesystem overhead, so a disk with zero objects
-  never reads zero. Being closed upstream first (see below).
+- ✅ **Per-disk occupancy** (§11.2 remainder, fs v0.10.0) — `has_data` per
+  disk in `GET /api/v1/cluster/status`: false once the disk holds no
+  fragments. A boolean rather than the object count originally sketched —
+  fs keeps no index, so counting means walking the tree, while the status
+  path is contracted cheap; the boolean is exact *and* constant-time on a
+  drained disk, the case a drain polls hardest. `data_error` carries a disk
+  the node could not probe, and both absences mean unknown, never drained.
 - ❌ **etcd client TLS/auth** (§11.4) — `EtcdConfig` carries only
   `endpoints`/`prefix`/`ttl`; both `clientv3.New` call sites pass no TLS and
   no credentials. Blocks `etcd.external.tlsSecretName`.
@@ -237,12 +241,14 @@ did not:
   record, republished every 30s, so an external writer is overwritten.
   Draining still means: render a negative weight, restart the node.
 
-Upstream bug found on the way, worth fixing with §11.6: fs substitutes `1`
-for a disk weight of `0` (`weight == 0` reads as "unset"), while three
-places in its own tree — the config struct comment, `config.yaml` and the
-admin OpenAPI description — document `0` as draining. So the documented
-drain is unreachable, and a user who writes `weight: 0` gets **full** weight.
-Only a negative weight drains, which is why `DrainWeight = -1.0`.
+Upstream bug found on the way, **documented** in fs v0.10.0 and still to be
+fixed with §11.6: fs substitutes `1` for a disk weight of `0` (`weight == 0`
+reads as "unset"), while four places in its own tree — the config struct
+comment, `config.yaml`, the admin OpenAPI description and SIZING.md —
+documented `0` as draining. So the documented drain was unreachable, and a
+user who wrote `weight: 0` got **full** weight. All four now say a negative
+weight drains, which is why `DrainWeight = -1.0`; making `0` itself work
+needs a pointer field to tell an absent key from an explicit zero.
 
 ### Build order
 
@@ -254,16 +260,27 @@ Only a negative weight drains, which is why `DrainWeight = -1.0`.
    state and its zeroed aggregate would otherwise read as an empty queue
    mid-upgrade. `NodesReporting` tells "nobody answered" from "nothing to
    do".
-3. **Per-disk object count upstream** — close the §11.2 remainder in fs so
-   the drain gate is exact rather than inferred from bytes.
-4. **Decommission** (§8.4) — drain-then-remove, one node at a time, gated on
-   the object count and on a complete cluster view.
+3. ✅ **Per-disk occupancy upstream** — fs PR #102, released as v0.10.0, and
+   pinned here. Closes the §11.2 remainder so the drain gate is exact rather
+   than inferred from bytes.
+4. ✅ **Decommission** (§8.4) — drain-then-remove, one node at a time, highest
+   index first within the affected rack. The node stays in the pass while it
+   drains (so the health, rollout and PDB gates keep counting it) and keeps
+   the StatefulSet it is running, restamped onto the drained config rather
+   than rebuilt from a spec that no longer describes where it runs. Every
+   gate resolves unknown to *wait*, so a pre-v0.10.0 cluster drains and then
+   holds rather than deleting on a signal that is not there.
 5. **Disk add** (§8.5), and removal once §11.6 lands.
 6. **Admission webhook** — after decommission, which changes what
    scale-down validation means.
 7. **Operator metrics** (§10, none exist yet) **+ Grafana dashboards**.
-8. **Managed dev-grade etcd**, **etcd TLS** (needs §11.4), **CRD-compat CI
-   gate**.
+8. ✅ **CRD-compat CI gate** — `hack/check-crd-compat.py` diffs the generated
+   CRDs against the last release tag and fails on anything that breaks
+   objects already stored (removed field or version, changed type, newly
+   required field, dropped enum value, tightened bound/pattern, new CEL
+   rule, changed default). Additive changes pass. One exemption:
+   `spec.image.tag`'s default, which is meant to move every release.
+9. **Managed dev-grade etcd**, **etcd TLS** (needs §11.4).
 
 ## Definition of done for P1 (met — v0.1.0)
 
