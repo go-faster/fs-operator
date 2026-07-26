@@ -22,6 +22,8 @@ package etcdstore
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"strings"
 	"time"
 
@@ -38,12 +40,91 @@ const (
 	RequestTimeout = 15 * time.Second
 )
 
-// Config is how to reach a cluster's etcd. It carries only what
-// FSCluster.spec.etcd.external offers today; client TLS and authentication
-// arrive with fs §11.4.
+// Config is how to reach a cluster's etcd.
 type Config struct {
 	// Endpoints are the etcd client URLs.
 	Endpoints []string
+
+	// Security is the TLS material and credentials, if the cluster's etcd
+	// needs them.
+	Security Security
+}
+
+// Security is the client TLS material and credentials for reaching etcd.
+//
+// The certificates are bytes rather than paths on purpose: the nodes read
+// theirs from a mounted Secret, but the operator reaches etcd from its own
+// process, where the only thing it has is what it read out of the API.
+type Security struct {
+	// CA is the PEM bundle etcd's certificate is verified against. Empty
+	// verifies against the system roots.
+	CA []byte
+
+	// Cert and Key are this client's certificate for mutual TLS. Both or
+	// neither.
+	Cert, Key []byte
+
+	// ServerName overrides the name verified against etcd's certificate.
+	ServerName string
+
+	// InsecureSkipVerify disables verification entirely.
+	InsecureSkipVerify bool
+
+	// Username and Password are etcd role-based credentials.
+	Username, Password string
+}
+
+// enabled reports whether any TLS material was configured.
+func (s Security) enabled() bool {
+	return len(s.CA) > 0 || len(s.Cert) > 0 || s.ServerName != "" || s.InsecureSkipVerify
+}
+
+// tlsConfig builds the transport, or nil for a plaintext connection.
+//
+// An https endpoint enables TLS on its own, for the reason fs does the same:
+// the etcd client takes the transport from this value and ignores the URL
+// scheme, so an https endpoint with a nil config would connect in the clear.
+func (c Config) tlsConfig() (*tls.Config, error) {
+	if !c.Security.enabled() && !hasTLSEndpoint(c.Endpoints) {
+		return nil, nil //nolint:nilnil // No TLS configured is a valid answer.
+	}
+
+	out := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         c.Security.ServerName,
+		InsecureSkipVerify: c.Security.InsecureSkipVerify, //nolint:gosec // Opt-in, documented as development-only.
+	}
+
+	if len(c.Security.CA) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(c.Security.CA) {
+			return nil, errors.New("etcd CA bundle contains no certificates")
+		}
+
+		out.RootCAs = pool
+	}
+
+	if len(c.Security.Cert) > 0 {
+		cert, err := tls.X509KeyPair(c.Security.Cert, c.Security.Key)
+		if err != nil {
+			return nil, errors.Wrap(err, "load etcd client certificate")
+		}
+
+		out.Certificates = []tls.Certificate{cert}
+	}
+
+	return out, nil
+}
+
+// hasTLSEndpoint reports whether any endpoint is an https URL.
+func hasTLSEndpoint(endpoints []string) bool {
+	for _, endpoint := range endpoints {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(endpoint)), "https://") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // DeletePrefix removes every key of one cluster and reports how many it
@@ -65,10 +146,18 @@ func DeletePrefix(ctx context.Context, cfg Config, prefix string) (int64, error)
 		return 0, errors.Errorf("refusing to delete etcd prefix %q", prefix)
 	}
 
+	tlsCfg, err := cfg.tlsConfig()
+	if err != nil {
+		return 0, err
+	}
+
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   cfg.Endpoints,
 		DialTimeout: DialTimeout,
 		Context:     ctx,
+		TLS:         tlsCfg,
+		Username:    cfg.Security.Username,
+		Password:    cfg.Security.Password,
 	})
 	if err != nil {
 		return 0, errors.Wrap(err, "connect to etcd")

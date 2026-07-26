@@ -44,6 +44,7 @@ const (
 	// Secrets.
 	configVolumeName = "config"
 	tlsVolumeName    = "tls"
+	etcdTLSVolume    = "etcd-tls"
 )
 
 // The unprivileged identity fs runs as. It matches the uid the upstream image
@@ -95,6 +96,8 @@ const (
 	envAdminToken     = "FS_ADMIN_TOKEN"
 	envRootAccessKey  = "FS_ROOT_ACCESS_KEY"
 	envRootSecretKey  = "FS_ROOT_SECRET_KEY"
+	envEtcdUsername   = "FS_ETCD_USERNAME"
+	envEtcdPassword   = "FS_ETCD_PASSWORD"
 	envMetricsAddr    = "METRICS_ADDR"
 	envPprofAddr      = "PPROF_ADDR"
 	envLogLevel       = "OTEL_LOG_LEVEL"
@@ -326,6 +329,17 @@ func env(cluster *fsv1alpha1.FSCluster, node Node) []corev1.EnvVar {
 		{Name: envResourceAttrs, Value: resourceAttributes(cluster, node)},
 	}
 
+	// etcd credentials go through the environment, never the rendered config:
+	// a config Secret is readable by anything that can read Secrets in the
+	// namespace, and a password in it would also be written into every
+	// config-revision fingerprint (SPEC §9, fs §11.4).
+	if external := spec.Etcd.External; external != nil && external.AuthSecretRef != nil {
+		vars = append(vars,
+			secretEnv(envEtcdUsername, external.AuthSecretRef.Name, EtcdUsernameKey),
+			secretEnv(envEtcdPassword, external.AuthSecretRef.Name, EtcdPasswordKey),
+		)
+	}
+
 	if endpoint := spec.Observability.OTLP.Endpoint; endpoint != "" {
 		vars = append(vars,
 			corev1.EnvVar{Name: envTracesExporter, Value: exporterOTLP},
@@ -388,6 +402,18 @@ func volumes(cluster *fsv1alpha1.FSCluster, node Node) []corev1.Volume {
 		},
 	}}
 
+	if external := cluster.Spec.Etcd.External; external != nil && external.TLS.SecretName != "" {
+		vols = append(vols, corev1.Volume{
+			Name: etcdTLSVolume,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  external.TLS.SecretName,
+					DefaultMode: ptr.To(secretFileMode),
+				},
+			},
+		})
+	}
+
 	if name := cluster.Spec.S3.TLS.SecretName; name != "" {
 		vols = append(vols, corev1.Volume{
 			Name: tlsVolumeName,
@@ -410,6 +436,14 @@ func volumeMounts(cluster *fsv1alpha1.FSCluster) []corev1.VolumeMount {
 		MountPath: ConfigDir,
 		ReadOnly:  true,
 	}}
+
+	if external := cluster.Spec.Etcd.External; external != nil && external.TLS.SecretName != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      etcdTLSVolume,
+			MountPath: EtcdTLSDir,
+			ReadOnly:  true,
+		})
+	}
 
 	if cluster.Spec.S3.TLS.SecretName != "" {
 		mounts = append(mounts, corev1.VolumeMount{

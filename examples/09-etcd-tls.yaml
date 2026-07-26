@@ -1,0 +1,78 @@
+# Production etcd reached over mutual TLS with role-based authentication.
+#
+# etcd holds the node registry and the cluster's credential store, sealed with
+# the cluster secret. Anything that can write to it can reshape the cluster, so
+# on anything but a trusted network the path to it should be secured — this is
+# the shape for that.
+#
+# Needs fs >= v0.11.0.
+---
+# The trust material. ca.crt is required; tls.crt and tls.key are the client
+# certificate for mutual TLS and must appear together. A kubernetes.io/tls
+# Secret with a ca.crt added is exactly this layout, so cert-manager can issue
+# it directly.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: etcd-client-tls
+type: Opaque
+stringData:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    ... the CA that signed etcd's serving certificate ...
+    -----END CERTIFICATE-----
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    ... this client's certificate ...
+    -----END CERTIFICATE-----
+  tls.key: |
+    -----BEGIN PRIVATE KEY-----
+    ... its key ...
+    -----END PRIVATE KEY-----
+---
+# etcd role-based credentials. They reach the nodes as environment variables,
+# never through the rendered configuration — a config Secret is readable by
+# anything that can read Secrets in the namespace, and a password in it would
+# also be baked into every config-revision fingerprint.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: etcd-credentials
+type: Opaque
+stringData:
+  username: fs
+  password: change-me
+---
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-prod
+spec:
+  scheme: rf3
+  topology:
+    nodes: 3
+  storage:
+    disks:
+      - name: d0
+        size: 100Gi
+  etcd:
+    external:
+      endpoints:
+        - https://etcd-0.etcd.svc:2379
+        - https://etcd-1.etcd.svc:2379
+        - https://etcd-2.etcd.svc:2379
+      tls:
+        secretName: etcd-client-tls
+        # serverName overrides the name checked against etcd's certificate,
+        # for reaching it through an address the certificate does not name.
+        # serverName: etcd.internal
+        #
+        # insecureSkipVerify makes TLS decorative — anything on the path can
+        # impersonate the control plane — and is for development against
+        # self-signed certificates only.
+        # insecureSkipVerify: false
+      authSecretRef:
+        name: etcd-credentials
+    # The operator uses the same Secrets for its own connection when it purges
+    # this cluster's keys, so there is no second, quietly-plaintext path.
+    cleanupOnDelete: true

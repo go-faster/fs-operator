@@ -200,7 +200,14 @@ func (r *Reconciler) purgeEtcd(ctx context.Context, cluster *fsv1alpha1.FSCluste
 	log := logf.FromContext(ctx)
 
 	prefix := cluster.Spec.EtcdPrefix(cluster.Namespace, cluster.Name)
-	cfg := etcdstore.Config{Endpoints: EtcdEndpoints(cluster)}
+	// The finalizer runs outside the reconcile pipeline, so it resolves the
+	// same Secrets the nodes are given rather than reusing the pass's copy.
+	security, err := r.etcdSecurity(ctx, cluster)
+	if err != nil {
+		return err
+	}
+
+	cfg := etcdstore.Config{Endpoints: EtcdEndpoints(cluster), Security: security}
 
 	deleted, err := r.purge(ctx, cfg, prefix)
 	if err != nil {

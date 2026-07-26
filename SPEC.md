@@ -214,9 +214,9 @@ spec:
   image:
     repository: ghcr.io/go-faster/fs
     # Defaults to the pinned fs release this operator version is validated
-    # against (currently v0.10.0). Always a pinned version, never a floating
+    # against (currently v0.11.0). Always a pinned version, never a floating
     # tag — cluster upgrades are deliberate, one-node-at-a-time operations.
-    tag: v0.10.0
+    tag: v0.11.0
     pullPolicy: IfNotPresent
     pullSecrets: []
 
@@ -819,9 +819,15 @@ rest remain:
    (`GET /api/v1/info`).
 3. **Bucket scheme via admin API** — `GET/PUT /api/v1/buckets/{name}/scheme`
    (today CLI-only `fs cluster scheme`). Unblocks: `FSBucket.spec.scheme`.
-4. **etcd client TLS + auth** — `cluster.etcd.{ca,cert,key,username,
-   password}` config. Unblocks: production etcd
-   (`etcd.external.tlsSecretName`).
+4. **etcd client TLS + auth** — `cluster.etcd.tls.{ca_file,cert_file,key_file,
+   server_name,insecure_skip_verify}` and `cluster.etcd.auth.{username,
+   password}` (with `FS_ETCD_USERNAME`/`FS_ETCD_PASSWORD` overrides).
+   **DONE** (go-faster/fs PR #106, released as v0.11.0). Both `clientv3.New`
+   call sites — the data node and the CLI/headless admin — go through one
+   constructor, and an `https://` endpoint enables TLS by itself: the client
+   takes the transport from the config and ignores the URL scheme, so an https
+   endpoint without a TLS block used to connect in the clear. Unblocked
+   `etcd.external.tls.secretName` and `authSecretRef`.
 5. **`FS_CLUSTER_RACK` env override** — symmetry with node_id/advertise.
    Nice-to-have (per-node configs carry the rack today).
 6. **Hot drain / weight override** — persisted per-disk drain flag or weight

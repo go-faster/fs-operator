@@ -115,7 +115,7 @@ type ImageSpec struct {
 	// floating tag: cluster upgrades are deliberate, one-node-at-a-time
 	// operations.
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:default="v0.10.0"
+	// +kubebuilder:default="v0.11.0"
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
@@ -312,11 +312,51 @@ type EtcdSpec struct {
 
 // ExternalEtcdSpec is a user-operated etcd.
 type ExternalEtcdSpec struct {
-	// endpoints are the etcd client URLs.
+	// endpoints are the etcd client URLs. An "https://" endpoint is served
+	// over TLS; fs enables it from the scheme alone, so an https endpoint
+	// works without tls below (verifying against the system roots).
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:items:MinLength=1
 	// +required
 	Endpoints []string `json:"endpoints"`
+
+	// tls secures the connection to etcd. etcd holds the node registry and
+	// the cluster's credential store, sealed with the cluster secret, so
+	// anything that can write to it can reshape the cluster.
+	// +optional
+	TLS EtcdTLSSpec `json:"tls,omitempty"`
+
+	// authSecretRef references a Secret with keys "username" and "password"
+	// for etcd role-based authentication. Both keys are required. The
+	// credentials reach the nodes as environment variables, never through
+	// the rendered configuration, so they are not written to a config file.
+	// +optional
+	AuthSecretRef *corev1.LocalObjectReference `json:"authSecretRef,omitempty"`
+}
+
+// EtcdTLSSpec is the client TLS material for reaching etcd.
+type EtcdTLSSpec struct {
+	// secretName names a Secret with the trust material. Key "ca.crt" is the
+	// bundle etcd's certificate is verified against; "tls.crt" and "tls.key",
+	// when present, are this client's certificate for mutual TLS — a
+	// kubernetes.io/tls Secret with a ca.crt added serves both.
+	//
+	// Setting it turns TLS on. Omit it against an https endpoint to verify
+	// with the system roots instead.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
+
+	// serverName overrides the name verified against etcd's certificate, for
+	// reaching it through an address the certificate does not name.
+	// +optional
+	ServerName string `json:"serverName,omitempty"`
+
+	// insecureSkipVerify disables verification of etcd's certificate. It
+	// makes TLS decorative — anything on the path can impersonate the
+	// cluster's control plane — and exists for development against
+	// self-signed certificates only.
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 }
 
 // ManagedEtcdSpec is the operator-run development etcd (SPEC §2). Everything

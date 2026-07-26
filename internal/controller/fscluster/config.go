@@ -85,6 +85,23 @@ const (
 	// are the kubernetes.io/tls ones.
 	TLSDir = ConfigDir + "/tls"
 
+	// EtcdTLSDir is where the etcd trust material is mounted. Separate from
+	// TLSDir: that one holds the certificate fs *serves*, this one the
+	// material it verifies etcd with, and a Secret rotated for one reason
+	// should not disturb the other.
+	EtcdTLSDir = ConfigDir + "/etcd-tls"
+
+	// Keys of the etcd TLS Secret. ca.crt is the bundle etcd is verified
+	// against; tls.crt/tls.key are this client's certificate for mutual TLS,
+	// which is the layout of a kubernetes.io/tls Secret with a CA added.
+	EtcdCAKey   = "ca.crt"
+	EtcdCertKey = "tls.crt"
+	EtcdKeyKey  = "tls.key"
+
+	// Keys of the etcd auth Secret.
+	EtcdUsernameKey = "username"
+	EtcdPasswordKey = "password"
+
 	// TLSCertPath and TLSKeyPath are the mounted certificate and key.
 	TLSCertPath = TLSDir + "/tls.crt"
 	TLSKeyPath  = TLSDir + "/tls.key"
@@ -129,6 +146,11 @@ type RenderOptions struct {
 	// Drained holds the names of nodes being decommissioned: their disks are
 	// rendered at DrainWeight (SPEC §8.4).
 	Drained map[string]bool
+
+	// EtcdClientCert says the referenced etcd TLS Secret carries a client
+	// certificate, so the config should name it. Only an API read knows, and
+	// naming a file that is not mounted fails the node at startup (§11.4).
+	EtcdClientCert bool
 }
 
 // RenderedConfig is a node's rendered config.yaml and its revision — the
@@ -223,7 +245,7 @@ func nodeConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) (f
 			Enabled: true,
 			Addr:    listenAddr(AdminPort),
 		},
-		Cluster:       clusterConfig(cluster, node, opts.Drained[node.Name]),
+		Cluster:       clusterConfig(cluster, node, opts, opts.Drained[node.Name]),
 		Integrity:     integrityConfig(spec),
 		Observability: observabilityConfig(cluster),
 	}, nil
@@ -260,10 +282,42 @@ func authConfig(_ *fsv1alpha1.FSClusterSpec) fsconfig.Auth {
 	return fsconfig.Auth{Source: fsconfig.AuthSourceEtcd}
 }
 
+// etcdTLSConfig renders the client TLS block for reaching etcd.
+//
+// The file paths are where the referenced Secret is mounted; only the keys the
+// Secret actually carries are named, because fs requires cert_file and
+// key_file together and pointing at a file that is not there fails the node at
+// startup. serverName and insecureSkipVerify apply with or without a Secret,
+// so an https endpoint verified against the system roots can still be reached
+// through an address its certificate does not name.
+func etcdTLSConfig(spec *fsv1alpha1.FSClusterSpec, opts RenderOptions) fsconfig.EtcdTLS {
+	external := spec.Etcd.External
+	if external == nil {
+		// The managed development etcd is plaintext in-cluster (SPEC §2).
+		return fsconfig.EtcdTLS{}
+	}
+
+	tls := fsconfig.EtcdTLS{
+		ServerName:         external.TLS.ServerName,
+		InsecureSkipVerify: external.TLS.InsecureSkipVerify,
+	}
+
+	if external.TLS.SecretName != "" {
+		tls.CAFile = EtcdTLSDir + "/" + EtcdCAKey
+
+		if opts.EtcdClientCert {
+			tls.CertFile = EtcdTLSDir + "/" + EtcdCertKey
+			tls.KeyFile = EtcdTLSDir + "/" + EtcdKeyKey
+		}
+	}
+
+	return tls
+}
+
 // clusterConfig renders the node's identity, disks and control plane. The
 // shared cluster secret is deliberately absent: it is injected through
 // FS_CLUSTER_SECRET so it never lands in a rendered file.
-func clusterConfig(cluster *fsv1alpha1.FSCluster, node Node, drained bool) fsconfig.Cluster {
+func clusterConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions, drained bool) fsconfig.Cluster {
 	spec := &cluster.Spec
 
 	return fsconfig.Cluster{
@@ -277,6 +331,10 @@ func clusterConfig(cluster *fsv1alpha1.FSCluster, node Node, drained bool) fscon
 			Endpoints: EtcdEndpoints(cluster),
 			Prefix:    spec.EtcdPrefix(cluster.Namespace, cluster.Name),
 			TTL:       duration(spec.Etcd.TTL),
+			TLS:       etcdTLSConfig(spec, opts),
+			// Auth is deliberately absent: the credentials reach fs through
+			// FS_ETCD_USERNAME / FS_ETCD_PASSWORD, so an etcd password is
+			// never written into a rendered config (SPEC §9).
 		},
 		Rebalance: fsconfig.Rebalance{
 			AutoDisabled:  spec.Rebalance.AutoDisabled,

@@ -121,13 +121,63 @@ spec:
                       external points the cluster at user-operated etcd endpoints. This is
                       the production mode, and the only supported one.
                     properties:
+                      authSecretRef:
+                        description: |-
+                          authSecretRef references a Secret with keys "username" and "password"
+                          for etcd role-based authentication. Both keys are required. The
+                          credentials reach the nodes as environment variables, never through
+                          the rendered configuration, so they are not written to a config file.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
                       endpoints:
-                        description: endpoints are the etcd client URLs.
+                        description: |-
+                          endpoints are the etcd client URLs. An "https://" endpoint is served
+                          over TLS; fs enables it from the scheme alone, so an https endpoint
+                          works without tls below (verifying against the system roots).
                         items:
                           minLength: 1
                           type: string
                         minItems: 1
                         type: array
+                      tls:
+                        description: |-
+                          tls secures the connection to etcd. etcd holds the node registry and
+                          the cluster's credential store, sealed with the cluster secret, so
+                          anything that can write to it can reshape the cluster.
+                        properties:
+                          insecureSkipVerify:
+                            description: |-
+                              insecureSkipVerify disables verification of etcd's certificate. It
+                              makes TLS decorative — anything on the path can impersonate the
+                              cluster's control plane — and exists for development against
+                              self-signed certificates only.
+                            type: boolean
+                          secretName:
+                            description: |-
+                              secretName names a Secret with the trust material. Key "ca.crt" is the
+                              bundle etcd's certificate is verified against; "tls.crt" and "tls.key",
+                              when present, are this client's certificate for mutual TLS — a
+                              kubernetes.io/tls Secret with a ca.crt added serves both.
+
+                              Setting it turns TLS on. Omit it against an https endpoint to verify
+                              with the system roots instead.
+                            type: string
+                          serverName:
+                            description: |-
+                              serverName overrides the name verified against etcd's certificate, for
+                              reaching it through an address the certificate does not name.
+                            type: string
+                        type: object
                     required:
                     - endpoints
                     type: object
@@ -337,7 +387,7 @@ spec:
                     description: repository is the image repository.
                     type: string
                   tag:
-                    default: v0.10.0
+                    default: v0.11.0
                     description: |-
                       tag is the image tag. Defaults to the pinned fs release this operator
                       version is validated against — always set a pinned version, never a

@@ -151,6 +151,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
 	return pipeline.Pipeline[*pass]{
 		{Name: "validate", Run: r.validate},
+		{Name: "etcdsecurity", Run: r.resolveEtcdSecurity},
 		{Name: "decommission", Run: r.planDecommission},
 		{Name: "render", Run: r.render},
 		{Name: "observe", AlwaysRun: true, Run: r.observe},
@@ -208,6 +209,10 @@ type pass struct {
 	// decommission is the node the spec no longer declares that is being
 	// drained and removed, if any (SPEC §8.4).
 	decommission decommission
+
+	// etcd is what the cluster's referenced etcd Secrets contain, read before
+	// anything is rendered from them (SPEC §11.4).
+	etcd etcdSecurity
 
 	// schema is the cluster's observed schema versions, filled by the
 	// migration step for the status.
@@ -431,7 +436,7 @@ func (r *Reconciler) render(_ context.Context, p *pass) (pipeline.Outcome, error
 	//
 	// A node being decommissioned renders with every disk drained, which is
 	// what makes the rebalancer move its data off (SPEC §8.4).
-	opts := RenderOptions{}
+	opts := RenderOptions{EtcdClientCert: p.etcd.clientCert}
 	if p.decommission.active() {
 		opts.Drained = map[string]bool{p.decommission.node.Name: true}
 	}

@@ -166,6 +166,31 @@ type Etcd struct {
 	Endpoints []string      `yaml:"endpoints"`
 	Prefix    string        `yaml:"prefix,omitempty"`
 	TTL       time.Duration `yaml:"ttl,omitempty"`
+	TLS       EtcdTLS       `yaml:"tls,omitempty"`
+	Auth      EtcdAuth      `yaml:"auth,omitempty"`
+}
+
+// EtcdTLS is the client TLS material for the etcd connection (fs §11.4).
+//
+// Any field enables TLS, and so does an https endpoint on its own: fs takes
+// the transport from this block and not from the URL scheme.
+type EtcdTLS struct {
+	CAFile             string `yaml:"ca_file,omitempty"`
+	CertFile           string `yaml:"cert_file,omitempty"`
+	KeyFile            string `yaml:"key_file,omitempty"`
+	ServerName         string `yaml:"server_name,omitempty"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify,omitempty"`
+}
+
+// EtcdAuth is etcd role-based authentication.
+//
+// The operator never renders these: the credentials reach fs through
+// FS_ETCD_USERNAME / FS_ETCD_PASSWORD so a password is not written into a
+// config file. The fields exist because this type mirrors fs's schema, and a
+// mirror that omits a field silently stops validating it.
+type EtcdAuth struct {
+	Username string `yaml:"username,omitempty"`
+	Password string `yaml:"password,omitempty"`
 }
 
 // Rebalance tunes the automatic rebalancer; zero values keep the fs defaults.

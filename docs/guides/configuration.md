@@ -39,9 +39,62 @@ Give it the same availability care as any etcd: an odd number of members
 (3 is typical), fast disks, and backups. The endpoints are passed to every fs
 node, and the client fails over between them.
 
-> TLS and authentication to etcd are not configurable yet: fs's own etcd config
-> carries only endpoints, prefix and TTL (SPEC §11.4). Until that lands
-> upstream, etcd must be reachable without client certificates.
+#### TLS
+
+etcd holds the node registry and the cluster's credential store, sealed with
+the cluster secret — anything that can write to it can reshape the cluster.
+Secure the path to it on anything but a trusted network:
+
+```yaml
+spec:
+  etcd:
+    external:
+      endpoints:
+        - https://etcd-0.example:2379
+      tls:
+        # A Secret with ca.crt, and optionally tls.crt/tls.key for mutual TLS.
+        secretName: etcd-client-tls
+        # serverName: etcd.internal      # when the address is not on the cert
+        # insecureSkipVerify: false      # development only
+```
+
+The Secret is mounted read-only into every node and the paths are rendered
+into its config. `ca.crt` is required; add `tls.crt` and `tls.key` — **both or
+neither** — for mutual TLS. A Secret missing `ca.crt`, or carrying one half of
+the pair, is refused with `SpecValid=False` (`SecretInvalid`) rather than
+producing nodes that will not start.
+
+An `https://` endpoint enables TLS **on its own**, verifying against the system
+roots, so `tls` is only needed for a private CA, a client certificate, or a
+name override. That default exists because fs takes the transport from its
+config and not from the URL: an https endpoint with no TLS block would
+otherwise connect in the clear to a port expecting TLS.
+
+`insecureSkipVerify` makes TLS decorative — anything on the path can
+impersonate the cluster's control plane — and is for development against
+self-signed certificates only.
+
+#### Authentication
+
+```yaml
+spec:
+  etcd:
+    external:
+      endpoints: ["https://etcd-0.example:2379"]
+      # A Secret with keys "username" and "password".
+      authSecretRef:
+        name: etcd-credentials
+```
+
+The credentials reach the nodes as `FS_ETCD_USERNAME` / `FS_ETCD_PASSWORD`,
+never through the rendered configuration. That is deliberate: a config Secret
+is readable by anything that can read Secrets in the namespace, and a password
+in it would also be baked into every config-revision fingerprint. Both keys are
+required.
+
+The operator uses the same Secrets for its own connection when it purges a
+deleted cluster's keys (`etcd.cleanupOnDelete`), so there is one place to
+configure and no second, quietly-plaintext path.
 
 ### `managed` — development only
 
