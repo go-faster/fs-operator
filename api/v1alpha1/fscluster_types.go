@@ -115,7 +115,7 @@ type ImageSpec struct {
 	// floating tag: cluster upgrades are deliberate, one-node-at-a-time
 	// operations.
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:default="v0.9.0"
+	// +kubebuilder:default="v0.10.0"
 	// +optional
 	Tag string `json:"tag,omitempty"`
 

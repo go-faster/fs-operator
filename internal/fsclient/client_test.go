@@ -35,6 +35,9 @@ import (
 const (
 	testToken   = "admin-token-abc"
 	testVersion = "v0.6.0"
+
+	// firstNode is the node ID the per-node fixtures key off.
+	firstNode = "fs-0"
 )
 
 // stubHandler serves canned admin responses. It embeds UnimplementedHandler so
@@ -228,7 +231,7 @@ func TestClientClusterStatusNodes(t *testing.T) {
 		NodesNotReporting: 1,
 		Nodes: []adminapi.ClusterNode{
 			{
-				ID:   "fs-0",
+				ID:   firstNode,
 				Rack: adminapi.NewOptString("a"),
 				Disks: []adminapi.ClusterDisk{
 					{
@@ -237,6 +240,7 @@ func TestClientClusterStatusNodes(t *testing.T) {
 						TotalBytes: adminapi.NewOptInt64(100),
 						FreeBytes:  adminapi.NewOptInt64(40),
 						Fullness:   adminapi.NewOptFloat64(0.6),
+						HasData:    adminapi.NewOptBool(true),
 					},
 					{
 						// Drained, and still holding data: the state a
@@ -246,6 +250,7 @@ func TestClientClusterStatusNodes(t *testing.T) {
 						TotalBytes: adminapi.NewOptInt64(100),
 						FreeBytes:  adminapi.NewOptInt64(90),
 						Fullness:   adminapi.NewOptFloat64(0.1),
+						HasData:    adminapi.NewOptBool(true),
 					},
 				},
 				Live: adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{
@@ -286,7 +291,7 @@ func TestClientClusterStatusNodes(t *testing.T) {
 		t.Error("AllNodesReporting is true with a node not reporting")
 	}
 
-	reporting, ok := status.Node("fs-0")
+	reporting, ok := status.Node(firstNode)
 	if !ok {
 		t.Fatal("fs-0 missing from the per-node view")
 	}
@@ -330,6 +335,114 @@ func TestClientClusterStatusNodes(t *testing.T) {
 	// exactly the reading that would delete a node still holding data.
 	if used, known := silent.UsedBytes(); known {
 		t.Errorf("fs-1 reports no capacity, got used = %d known", used)
+	}
+}
+
+// TestClientClusterStatusOccupancy covers the drain signal fs v0.10.0 added.
+// Only one state means the volume can be deleted; every other one is unknown,
+// and reading unknown as empty is how a decommission destroys data.
+func TestClientClusterStatusOccupancy(t *testing.T) {
+	handler := &stubHandler{cluster: &adminapi.ClusterStatus{
+		State:          adminapi.ClusterStateOk,
+		NodesReporting: 3,
+		Nodes: []adminapi.ClusterNode{
+			{
+				// Emptied: every disk answered, and none holds anything.
+				ID: firstNode,
+				Disks: []adminapi.ClusterDisk{
+					{ID: "d0", Weight: -1, HasData: adminapi.NewOptBool(false)},
+					{ID: "d1", Weight: -1, HasData: adminapi.NewOptBool(false)},
+				},
+				Live: adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{RebalanceState: adminapi.RebalanceStateIdle}),
+			},
+			{
+				// One disk emptied, one still holding: not done.
+				ID: "fs-1",
+				Disks: []adminapi.ClusterDisk{
+					{ID: "d0", Weight: -1, HasData: adminapi.NewOptBool(false)},
+					{ID: "d1", Weight: -1, HasData: adminapi.NewOptBool(true)},
+				},
+				Live: adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{RebalanceState: adminapi.RebalanceStateIdle}),
+			},
+			{
+				// One disk emptied, one that could not be probed. The unknown
+				// disk is what stops this node being deleted.
+				ID: "fs-2",
+				Disks: []adminapi.ClusterDisk{
+					{ID: "d0", Weight: -1, HasData: adminapi.NewOptBool(false)},
+					{ID: "d1", Weight: -1, DataError: adminapi.NewOptString("input/output error")},
+				},
+				Live: adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{RebalanceState: adminapi.RebalanceStateIdle}),
+			},
+		},
+	}}
+	url, _ := newServer(t, handler)
+
+	client, err := fsclient.New(url, testToken)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	status, err := client.ClusterStatus(context.Background())
+	if err != nil {
+		t.Fatalf("cluster status: %v", err)
+	}
+
+	drained, _ := status.Node(firstNode)
+	if !drained.Empty() {
+		t.Errorf("fs-0 reported every disk empty, got Empty() = false: %+v", drained.Disks)
+	}
+
+	holding, _ := status.Node("fs-1")
+	if holding.Empty() {
+		t.Error("fs-1 still holds data on d1, so it is not empty")
+	}
+
+	unknown, _ := status.Node("fs-2")
+	if unknown.Empty() {
+		t.Error("fs-2 has a disk that could not be probed; unknown must not read as empty")
+	}
+
+	if got := unknown.Disks[1]; got.OccupancyKnown || got.DataError == "" {
+		t.Errorf("an unprobeable disk = %+v, want occupancy unknown with a reason", got)
+	}
+}
+
+// TestClientClusterStatusOccupancyUnsupported covers a cluster on a binary
+// older than has_data: every disk is unknown, so nothing reads as empty and a
+// decommission holds instead of deleting on a signal that is not there.
+func TestClientClusterStatusOccupancyUnsupported(t *testing.T) {
+	handler := &stubHandler{cluster: &adminapi.ClusterStatus{
+		State:          adminapi.ClusterStateOk,
+		NodesReporting: 1,
+		Nodes: []adminapi.ClusterNode{{
+			ID: firstNode,
+			// Weight says drained, but the binary reports no occupancy at all.
+			Disks: []adminapi.ClusterDisk{{ID: "d0", Weight: -1}},
+			Live:  adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{RebalanceState: adminapi.RebalanceStateIdle}),
+		}},
+	}}
+	url, _ := newServer(t, handler)
+
+	client, err := fsclient.New(url, testToken)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	status, err := client.ClusterStatus(context.Background())
+	if err != nil {
+		t.Fatalf("cluster status: %v", err)
+	}
+
+	node, _ := status.Node(firstNode)
+	if node.Empty() {
+		t.Error("a cluster that reports no occupancy must never read as empty")
+	}
+
+	// Out of placement is not the same as emptied, and must not be mistaken
+	// for it: the disk takes no new data, but its data may still be there.
+	if !node.Disks[0].Drained() {
+		t.Error("a negative weight is still drained from placement")
 	}
 }
 

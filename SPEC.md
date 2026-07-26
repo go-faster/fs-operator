@@ -207,9 +207,9 @@ spec:
   image:
     repository: ghcr.io/go-faster/fs
     # Defaults to the pinned fs release this operator version is validated
-    # against (currently v0.9.0). Always a pinned version, never a floating
+    # against (currently v0.10.0). Always a pinned version, never a floating
     # tag — cluster upgrades are deliberate, one-node-at-a-time operations.
-    tag: v0.9.0
+    tag: v0.10.0
     pullPolicy: IfNotPresent
     pullSecrets: []
 

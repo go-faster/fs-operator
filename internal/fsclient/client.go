@@ -136,11 +136,32 @@ type ClusterNode struct {
 	LiveError string
 }
 
+// Empty reports whether every one of the node's disks is known to hold no
+// data — the gate a decommission opens on, before deleting the node and its
+// volumes (SPEC §8.4).
+//
+// A node with no disks reported, or any disk whose occupancy is unknown, is not
+// empty: the question is whether anything might still be there, and silence is
+// not an answer.
+func (n ClusterNode) Empty() bool {
+	if len(n.Disks) == 0 {
+		return false
+	}
+
+	for _, disk := range n.Disks {
+		if !disk.Empty() {
+			return false
+		}
+	}
+
+	return true
+}
+
 // UsedBytes sums the used capacity of the node's disks, and reports whether
-// every disk answered with capacity. fs exposes no object count (SPEC §11.2
-// remainder), so bytes are the only occupancy signal there is — and they come
-// from statfs, so they include filesystem overhead and never reach zero on a
-// drained disk.
+// every disk answered with capacity. Bytes are the human-readable progress of a
+// drain, not its completion test — they come from statfs, so they include
+// filesystem overhead and never reach zero on an emptied disk. Empty() is what
+// says the data is gone.
 func (n ClusterNode) UsedBytes() (int64, bool) {
 	var (
 		used  int64
@@ -175,6 +196,27 @@ type ClusterDisk struct {
 	TotalBytes, FreeBytes int64
 	Fullness              float64
 	CapacityKnown         bool
+
+	// HasData reports whether the disk still holds any fragment, and
+	// OccupancyKnown whether the node answered at all. This is occupancy, not
+	// placement: Drained() says the disk takes no new data, Empty() says its
+	// data has finished moving off. A decommission needs both, in that order.
+	HasData        bool
+	OccupancyKnown bool
+
+	// DataError is why the node could not probe the disk, when it could not.
+	DataError string
+}
+
+// Empty reports whether the disk is known to hold no data — the signal that a
+// drain has finished and the volume can be deleted (fs v0.10.0 `has_data`).
+//
+// It is false when the answer is unknown: a node that did not report, a disk
+// the node could not read, or a cluster running a binary that predates the
+// field. That is the safe direction — a decommission that holds is recoverable,
+// one that deletes a disk still holding the only copy of something is not.
+func (d ClusterDisk) Empty() bool {
+	return d.OccupancyKnown && !d.HasData
 }
 
 // UsedBytes is the disk's used capacity, zero when it reported none.
@@ -379,10 +421,18 @@ func clusterNodesFromAPI(nodes []adminapi.ClusterNode) []ClusterNode {
 			for _, disk := range node.Disks {
 				total, hasTotal := disk.TotalBytes.Get()
 				free, hasFree := disk.FreeBytes.Get()
+				hasData, hasOccupancy := disk.HasData.Get()
 
 				mapped.Disks = append(mapped.Disks, ClusterDisk{
 					ID:     disk.ID,
 					Weight: disk.Weight,
+					// fs omits has_data rather than zeroing it when the node
+					// did not report or could not probe the disk, and the
+					// operator keeps that distinction intact: absent is
+					// unknown, and unknown is not empty.
+					HasData:        hasData,
+					OccupancyKnown: hasOccupancy,
+					DataError:      disk.DataError.Or(""),
 					// Capacity is reported as a set or not at all: a disk whose
 					// node has not republished statfs carries neither figure,
 					// and a size without a free figure says nothing about use.
