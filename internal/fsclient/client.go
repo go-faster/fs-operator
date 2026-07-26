@@ -293,6 +293,65 @@ type BucketScheme struct {
 	IsDefault bool
 }
 
+// DiskWeightOverride is one disk's placement-weight override as the cluster
+// stores it (fs §11.6).
+type DiskWeightOverride struct {
+	Node, Disk string
+	Weight     float64
+	Reason     string
+}
+
+// Drained reports whether the override takes the disk out of placement.
+func (o DiskWeightOverride) Drained() bool { return o.Weight <= 0 }
+
+// ListDiskWeights returns every placement-weight override the cluster holds.
+func (c *Client) ListDiskWeights(ctx context.Context) ([]DiskWeightOverride, error) {
+	list, err := c.api.ListDiskWeights(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "list disk weights")
+	}
+
+	out := make([]DiskWeightOverride, 0, len(list.Overrides))
+	for _, o := range list.Overrides {
+		out = append(out, DiskWeightOverride{
+			Node: o.Node, Disk: o.Disk, Weight: o.Weight, Reason: o.Reason.Or(""),
+		})
+	}
+
+	return out, nil
+}
+
+// SetDiskWeight overrides one disk's placement weight until it is cleared.
+//
+// A weight that is not positive drains the disk: no new data is placed on it
+// and the rebalancer moves what it holds elsewhere. The override outlives the
+// node restarting, which is what makes it usable as a decommission step.
+func (c *Client) SetDiskWeight(ctx context.Context, node, disk string, weight float64, reason string) error {
+	req := &adminapi.SetDiskWeightRequest{Weight: weight}
+	if reason != "" {
+		req.Reason = adminapi.NewOptString(reason)
+	}
+
+	if _, err := c.api.SetDiskWeight(ctx, req, adminapi.SetDiskWeightParams{
+		Node: node, Disk: disk,
+	}); err != nil {
+		return errors.Wrapf(err, "set weight of disk %q on node %q", disk, node)
+	}
+
+	return nil
+}
+
+// ClearDiskWeight restores the weight a node registers from its config.
+func (c *Client) ClearDiskWeight(ctx context.Context, node, disk string) error {
+	if err := c.api.ClearDiskWeight(ctx, adminapi.ClearDiskWeightParams{
+		Node: node, Disk: disk,
+	}); err != nil {
+		return errors.Wrapf(err, "clear weight of disk %q on node %q", disk, node)
+	}
+
+	return nil
+}
+
 // ErrBucketNotFound is returned by the bucket-scheme calls when the cluster has
 // no such bucket (HTTP 404).
 var ErrBucketNotFound = errors.New("bucket not found")

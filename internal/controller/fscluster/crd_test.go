@@ -120,11 +120,22 @@ func TestCRDEnforcesImmutability(t *testing.T) {
 			},
 		},
 		{
-			name: "a disk cannot be removed",
+			// Removing a disk is a decommission the controller performs, not
+			// something the API refuses (SPEC §8.5): it drains the disk out of
+			// placement on every node and takes its volumes only once fs
+			// reports it holds nothing.
+			name: "a disk can be removed",
 			mutate: func(c *fsv1alpha1.FSCluster) {
 				c.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{
 					{Name: "d1", Size: resource.MustParse("1Gi")},
 				}
+			},
+			allowed: true,
+		},
+		{
+			name: "the last disk cannot be removed",
+			mutate: func(c *fsv1alpha1.FSCluster) {
+				c.Spec.Storage.Disks = nil
 			},
 		},
 		{

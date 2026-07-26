@@ -147,6 +147,12 @@ type RenderOptions struct {
 	// rendered at DrainWeight (SPEC §8.4).
 	Drained map[string]bool
 
+	// RetainDisks are, per node, disks the spec no longer declares that the
+	// node's StatefulSet still carries. They stay mounted and configured until
+	// the disk is empty, because fs cannot move data off a volume the pod does
+	// not have (SPEC §8.5).
+	RetainDisks map[string][]string
+
 	// EtcdClientCert says the referenced etcd TLS Secret carries a client
 	// certificate, so the config should name it. Only an API read knows, and
 	// naming a file that is not mounted fails the node at startup (§11.4).
@@ -326,7 +332,7 @@ func clusterConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions,
 		Addr:          listenAddr(PeerPort),
 		AdvertiseAddr: AdvertiseAddr(cluster.Name, cluster.Namespace, node.Name),
 		Scheme:        spec.Scheme,
-		Disks:         diskConfigs(spec, drained),
+		Disks:         diskConfigs(spec, opts.RetainDisks[node.Name], drained),
 		Etcd: fsconfig.Etcd{
 			Endpoints: EtcdEndpoints(cluster),
 			Prefix:    spec.EtcdPrefix(cluster.Namespace, cluster.Name),
@@ -347,14 +353,29 @@ func clusterConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions,
 
 // diskConfigs renders this node's disks: one claim per spec entry, mounted
 // below DisksDir under its own name.
-func diskConfigs(spec *fsv1alpha1.FSClusterSpec, drained bool) []fsconfig.Disk {
-	disks := make([]fsconfig.Disk, 0, len(spec.Storage.Disks))
+func diskConfigs(spec *fsv1alpha1.FSClusterSpec, retained []string, drained bool) []fsconfig.Disk {
+	disks := make([]fsconfig.Disk, 0, len(spec.Storage.Disks)+len(retained))
 
 	for _, disk := range spec.Storage.Disks {
 		disks = append(disks, fsconfig.Disk{
 			ID:     disk.Name,
 			Path:   DiskPath(disk.Name),
 			Weight: diskWeight(disk, drained),
+		})
+	}
+
+	// A disk being removed stays in the config until its data has moved off.
+	// Dropping it here would be worse than dropping the mount: fs would not
+	// know the disk exists, so it could neither serve what is on it nor move
+	// it — the data would simply be stranded on a volume nobody reads.
+	//
+	// It is registered at DrainWeight so it takes no new data even before the
+	// control-plane override lands (SPEC §8.5).
+	for _, name := range retained {
+		disks = append(disks, fsconfig.Disk{
+			ID:     name,
+			Path:   DiskPath(name),
+			Weight: DrainWeight,
 		})
 	}
 

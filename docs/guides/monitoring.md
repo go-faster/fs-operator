@@ -79,6 +79,8 @@ kubectl get events --field-selector involvedObject.name=prod --sort-by=.lastTime
 | `NodeDraining` | Normal | A decommission started: the node is being taken out of placement. |
 | `NodeDrained` | Normal | A decommissioning node reports no data left; it is being removed. |
 | `NodeRemoved` | Normal | A decommissioned node's StatefulSet and config were deleted. |
+| `DiskDraining` | Normal | A disk the spec dropped is being taken out of placement, or restored because it was declared again. See [storage.md](storage.md#removing-a-disk). |
+| `DiskRemoved` | Normal | A drained disk holds no data; it is being removed from a node. |
 | `ManagedEtcdUnsupported` | Warning | The cluster runs the operator-managed development etcd. Permanent, and repeated every reconcile. See [configuration.md](configuration.md#managed--development-only). |
 | `MigrationFailed` | Warning | The schema migration Job failed. |
 | `SchemeTopologyMismatch`, `UnsupportedTopology`, … | Warning | A spec was refused (same names as the condition reasons). |

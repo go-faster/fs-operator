@@ -27,6 +27,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -121,7 +122,7 @@ const (
 // §4.1): it is what makes per-node configuration, per-node storage and exact
 // rollout control possible. The StatefulSet controller replaces the pod; this
 // operator only decides when.
-func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string) *appsv1.StatefulSet {
+func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string, retain ...string) *appsv1.StatefulSet {
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: KindStatefulSet},
 		ObjectMeta: metav1.ObjectMeta{
@@ -136,7 +137,7 @@ func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision st
 				MatchLabels: NodeSelectorLabels(cluster.Name, node.Name),
 			},
 			Template:                             podTemplate(cluster, node, restartRevision),
-			VolumeClaimTemplates:                 volumeClaimTemplates(cluster, node),
+			VolumeClaimTemplates:                 volumeClaimTemplates(cluster, node, retain),
 			PersistentVolumeClaimRetentionPolicy: claimRetentionPolicy(cluster),
 		},
 	}
@@ -464,7 +465,7 @@ func volumeMounts(cluster *fsv1alpha1.FSCluster) []corev1.VolumeMount {
 }
 
 // volumeClaimTemplates turns each declared disk into one claim per node.
-func volumeClaimTemplates(cluster *fsv1alpha1.FSCluster, node Node) []corev1.PersistentVolumeClaim {
+func volumeClaimTemplates(cluster *fsv1alpha1.FSCluster, node Node, retain []string) []corev1.PersistentVolumeClaim {
 	claims := make([]corev1.PersistentVolumeClaim, 0, len(cluster.Spec.Storage.Disks))
 
 	for _, disk := range cluster.Spec.Storage.Disks {
@@ -488,7 +489,41 @@ func volumeClaimTemplates(cluster *fsv1alpha1.FSCluster, node Node) []corev1.Per
 		claims = append(claims, claim)
 	}
 
+	// A disk the spec dropped stays until its data has moved off. Its size is
+	// the live claim's, which is immutable anyway; the claim template only has
+	// to keep naming it so the pod keeps mounting it.
+	for _, name := range retain {
+		claims = append(claims, corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   name,
+				Labels: NodeObjectLabels(cluster.Name, node),
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: retainedDiskSize(cluster)},
+				},
+			},
+		})
+	}
+
 	return claims
+}
+
+// retainedDiskSize is the size a retained claim template declares. The live
+// PVC's size is what actually applies — a claim template cannot resize one —
+// so this only has to be a value the API accepts, and the largest declared
+// disk is the one least likely to read as a shrink.
+func retainedDiskSize(cluster *fsv1alpha1.FSCluster) resource.Quantity {
+	var largest resource.Quantity
+
+	for _, disk := range cluster.Spec.Storage.Disks {
+		if disk.Size.Cmp(largest) > 0 {
+			largest = disk.Size
+		}
+	}
+
+	return largest
 }
 
 // claimRetentionPolicy applies the spec's reclaim policy to the claims a

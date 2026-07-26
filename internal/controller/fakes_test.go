@@ -221,3 +221,14 @@ func (s *fakeS3) RemoveBucket(_ context.Context, bucket string) error {
 
 	return nil
 }
+
+// Disk weight overrides are cluster state the tenancy controllers never touch.
+func (c *fakeAdminClient) SetDiskWeight(context.Context, string, string, float64, string) error {
+	return nil
+}
+
+func (c *fakeAdminClient) ClearDiskWeight(context.Context, string, string) error { return nil }
+
+func (c *fakeAdminClient) ListDiskWeights(context.Context) ([]fsclient.DiskWeightOverride, error) {
+	return nil, nil
+}

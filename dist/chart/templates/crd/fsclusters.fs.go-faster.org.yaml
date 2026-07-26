@@ -387,7 +387,7 @@ spec:
                     description: repository is the image repository.
                     type: string
                   tag:
-                    default: v0.11.0
+                    default: v0.12.0
                     description: |-
                       tag is the image tag. Defaults to the pinned fs release this operator
                       version is validated against — always set a pinned version, never a
@@ -831,8 +831,14 @@ spec:
                     description: |-
                       disks are this cluster's per-node storage devices: every entry becomes
                       one PersistentVolumeClaim on every node, mounted at
-                      /var/lib/fs/disks/<name>. Entries may be added; they may not be
-                      removed or renamed, and sizes may only grow.
+                      /var/lib/fs/disks/<name>.
+
+                      Entries may be added, and removed. Removing one is a decommission, not
+                      a delete: the disk is drained out of placement on every node, and its
+                      volumes go only once fs reports it holds nothing (SPEC §8.5). Sizes may
+                      only grow. A disk is identified by its name, so renaming one reads as
+                      removing a disk and adding an empty one — which is a slow, safe, and
+                      almost certainly unintended way to spend a rebalance.
                     items:
                       description: DiskSpec is one per-node disk.
                       properties:
@@ -891,9 +897,6 @@ spec:
                 required:
                 - disks
                 type: object
-                x-kubernetes-validations:
-                - message: disks may not be removed or renamed
-                  rule: oldSelf.disks.all(d, self.disks.exists(n, n.name == d.name))
               topology:
                 description: topology declares the cluster's nodes and failure domains.
                 properties:

@@ -35,6 +35,9 @@ type Interface interface {
 	DeleteAccessKey(ctx context.Context, access string) error
 	GetPublicReadBuckets(ctx context.Context) ([]string, error)
 	SetPublicReadBuckets(ctx context.Context, buckets []string) error
+	ListDiskWeights(ctx context.Context) ([]DiskWeightOverride, error)
+	SetDiskWeight(ctx context.Context, node, disk string, weight float64, reason string) error
+	ClearDiskWeight(ctx context.Context, node, disk string) error
 	GetBucketScheme(ctx context.Context, bucket string) (BucketScheme, error)
 	SetBucketScheme(ctx context.Context, bucket, scheme string) (BucketScheme, error)
 }

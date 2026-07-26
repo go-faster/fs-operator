@@ -214,9 +214,9 @@ spec:
   image:
     repository: ghcr.io/go-faster/fs
     # Defaults to the pinned fs release this operator version is validated
-    # against (currently v0.11.0). Always a pinned version, never a floating
+    # against (currently v0.12.0). Always a pinned version, never a floating
     # tag — cluster upgrades are deliberate, one-node-at-a-time operations.
-    tag: v0.11.0
+    tag: v0.12.0
     pullPolicy: IfNotPresent
     pullSecrets: []
 
@@ -678,8 +678,25 @@ target revision; `ConfigurationInSync` flips True when every node does.
   StatefulSet with the extra volumeClaimTemplate and roll the node; the
   restarted pod mounts and registers the new disk, weights drive data onto
   it.
-- **Weight change**: config change → §8.2 rolling restart. (A hot weight
-  path needs §11.6.)
+- **Disk removed**: a decommission, not a delete. The disk is drained out of
+  placement on *every* node at once through fs's control plane (§11.6), so
+  no restart is needed and the rebalancer starts immediately; the operator
+  waits until every node's copy reports `has_data: false`, then
+  orphan-recreates each node without it, one at a time, and its PVCs follow
+  `storage.reclaimPolicy`. The gates are the node decommission's, and
+  resolve unknown to *wait* for the same reasons (§8.4).
+
+  **The disk stays mounted and in the node's config for the whole drain.**
+  Dropping it from the config would leave fs unable to move the data — it
+  would not know the disk exists — and dropping the volume would leave it
+  nothing to read. It is registered at a drained weight and removed only
+  once empty.
+
+  Restoring the entry mid-drain clears the override. The operator clears
+  only overrides it set (matched by reason), so a disk drained by hand stays
+  drained. Removing the last disk is refused outright.
+- **Weight change**: config change → §8.2 rolling restart. `fs cluster
+  drain` (§11.6) is the hot path, and what the removal flow above uses.
 
 ### 8.6 Deletion
 
@@ -830,13 +847,18 @@ rest remain:
    `etcd.external.tls.secretName` and `authSecretRef`.
 5. **`FS_CLUSTER_RACK` env override** — symmetry with node_id/advertise.
    Nice-to-have (per-node configs carry the rack today).
-6. **Hot drain / weight override** — persisted per-disk drain flag or weight
-   override (etcd) settable via CLI + admin API. Unblocks: drain without a
-   node restart (§8.4 step 1 becomes an API call) and disk removal. Also
-   worth fixing on the way: `cluster.disks[].weight: 0` in the config file
-   means "unset" (fs substitutes 1) while placement treats any weight ≤ 0 as
-   drained, so the documented "weight 0 drains the disk" is only reachable
-   through a negative weight today (§8.4).
+6. **Hot drain / weight override** — persisted per-disk weight override in
+   etcd, settable via CLI + admin API. **DONE** (go-faster/fs PR #110,
+   released as v0.12.0): `fs cluster drain <node> <disk>` and
+   `GET/PUT/DELETE /api/v1/cluster/disk-weights/{node}/{disk}`. The override
+   is its own etcd key rather than part of the node's registration — a node
+   republishes that record on every capacity refresh, so a weight written
+   there would be undone within the interval and a drained disk would
+   silently return to placement. The topology source merges the two, so a
+   drain moves the topology signature and the rebalancer acts on it.
+   Unblocked disk removal (§8.5). The `weight: 0` trap is fixed too: the
+   config field is a pointer, so an explicit zero is a value and drains as
+   documented.
 7. **Public admin client** — export the ogen-generated admin API client
    as an importable package so the operator and other tooling don't
    re-generate from `_oas/admin.yml`. **DONE** (go-faster/fs

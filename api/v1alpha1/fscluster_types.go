@@ -115,7 +115,7 @@ type ImageSpec struct {
 	// floating tag: cluster upgrades are deliberate, one-node-at-a-time
 	// operations.
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:default="v0.11.0"
+	// +kubebuilder:default="v0.12.0"
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
@@ -208,12 +208,17 @@ type RackSpec struct {
 }
 
 // StorageSpec declares the per-node disks and how their claims are reclaimed.
-// +kubebuilder:validation:XValidation:rule="oldSelf.disks.all(d, self.disks.exists(n, n.name == d.name))",message="disks may not be removed or renamed"
 type StorageSpec struct {
 	// disks are this cluster's per-node storage devices: every entry becomes
 	// one PersistentVolumeClaim on every node, mounted at
-	// /var/lib/fs/disks/<name>. Entries may be added; they may not be
-	// removed or renamed, and sizes may only grow.
+	// /var/lib/fs/disks/<name>.
+	//
+	// Entries may be added, and removed. Removing one is a decommission, not
+	// a delete: the disk is drained out of placement on every node, and its
+	// volumes go only once fs reports it holds nothing (SPEC §8.5). Sizes may
+	// only grow. A disk is identified by its name, so renaming one reads as
+	// removing a disk and adding an empty one — which is a slow, safe, and
+	// almost certainly unintended way to spend a rebalance.
 	// +listType=map
 	// +listMapKey=name
 	// +kubebuilder:validation:MinItems=1

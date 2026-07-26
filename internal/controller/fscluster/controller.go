@@ -163,6 +163,7 @@ func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
 		{Name: "storage", Run: r.reconcileStorage},
 		{Name: "nodes", Run: r.reconcileNodes},
 		{Name: "drain", Run: r.reconcileDecommission},
+		{Name: "diskremoval", Run: r.reconcileDiskRemoval},
 		{Name: "reload", Run: r.reconcileReload},
 		{Name: "publicread", Run: r.reconcilePublicRead},
 		{Name: "rootcredential", Run: r.reconcileRootCredential},
@@ -213,6 +214,11 @@ type pass struct {
 	// etcd is what the cluster's referenced etcd Secrets contain, read before
 	// anything is rendered from them (SPEC §11.4).
 	etcd etcdSecurity
+
+	// retainedDisks are, per node, the disks the spec dropped that the node
+	// still carries. They stay in the rendered StatefulSet until the disk is
+	// empty and the node is rebuilt without it (SPEC §8.5).
+	retainedDisks map[string][]string
 
 	// schema is the cluster's observed schema versions, filled by the
 	// migration step for the status.
@@ -436,7 +442,7 @@ func (r *Reconciler) render(_ context.Context, p *pass) (pipeline.Outcome, error
 	//
 	// A node being decommissioned renders with every disk drained, which is
 	// what makes the rebalancer move its data off (SPEC §8.4).
-	opts := RenderOptions{EtcdClientCert: p.etcd.clientCert}
+	opts := RenderOptions{EtcdClientCert: p.etcd.clientCert, RetainDisks: p.retainedDisks}
 	if p.decommission.active() {
 		opts.Drained = map[string]bool{p.decommission.node.Name: true}
 	}
@@ -468,7 +474,7 @@ func (r *Reconciler) render(_ context.Context, p *pass) (pipeline.Outcome, error
 				return pipeline.Outcome{}, err
 			}
 		} else {
-			set = NewStatefulSet(p.cluster, node, revision)
+			set = NewStatefulSet(p.cluster, node, revision, opts.RetainDisks[node.Name]...)
 			if err := stampTemplateRevision(set); err != nil {
 				return pipeline.Outcome{}, err
 			}

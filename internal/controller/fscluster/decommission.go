@@ -99,6 +99,12 @@ func (r *Reconciler) planDecommission(ctx context.Context, p *pass) (pipeline.Ou
 		}
 	}
 
+	// Disks the spec dropped that nodes still carry. Recorded before the
+	// render because a draining disk has to stay mounted: fs cannot move data
+	// off a volume the pod no longer has, and a StatefulSet's claim templates
+	// cannot be changed in place anyway (SPEC §8.5).
+	p.retainedDisks = retainedDisks(p.cluster, existing)
+
 	if len(removed) == 0 {
 		return pipeline.Continue()
 	}
@@ -133,6 +139,34 @@ func (r *Reconciler) planDecommission(ctx context.Context, p *pass) (pipeline.Ou
 	}
 
 	return pipeline.Continue()
+}
+
+// retainedDisks is, per node, the disks its StatefulSet carries that the spec
+// no longer declares.
+//
+// The render keeps them, so a disk being removed stays mounted while its data
+// moves off. A node whose StatefulSet has already been recreated without the
+// disk has no entry, which is what lets the removal finish: the next render
+// builds it from the spec alone.
+func retainedDisks(cluster *fsv1alpha1.FSCluster, existing []appsv1.StatefulSet) map[string][]string {
+	declared := make(map[string]bool, len(cluster.Spec.Storage.Disks))
+	for _, disk := range cluster.Spec.Storage.Disks {
+		declared[disk.Name] = true
+	}
+
+	retained := make(map[string][]string)
+
+	for i := range existing {
+		set := &existing[i]
+
+		for _, claim := range set.Spec.VolumeClaimTemplates {
+			if !declared[claim.Name] {
+				retained[set.Name] = append(retained[set.Name], claim.Name)
+			}
+		}
+	}
+
+	return retained
 }
 
 // removalOrder sorts nodes into the order they are decommissioned: rack by

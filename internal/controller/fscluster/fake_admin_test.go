@@ -53,6 +53,10 @@ type fakeAdmin struct {
 	rebalanceRunning bool
 	repairQueue      map[string]int
 
+	// diskWeights are the placement-weight overrides set through the admin
+	// API, keyed "node/disk" (fs §11.6).
+	diskWeights map[string]fsclient.DiskWeightOverride
+
 	// live is the per-node view a v0.9.0 cluster folds into its status, and
 	// notReporting how many registered nodes did not answer. Leaving live
 	// empty models a cluster whose binaries predate the peer status endpoint:
@@ -332,4 +336,79 @@ func (c *fakeClient) SetBucketScheme(_ context.Context, _, override string) (fsc
 	}
 
 	return fsclient.BucketScheme{Scheme: override, Override: override, ClusterDefault: scheme.RF25}, nil
+}
+
+// setDiskWeight records an override the way the cluster does: it survives the
+// node re-registering, which is what makes it usable as a decommission step.
+func (c *fakeClient) SetDiskWeight(_ context.Context, node, disk string, weight float64, reason string) error {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.unreachable[c.url] {
+		return errors.New("node admin unreachable")
+	}
+
+	if f.diskWeights == nil {
+		f.diskWeights = map[string]fsclient.DiskWeightOverride{}
+	}
+
+	f.diskWeights[node+"/"+disk] = fsclient.DiskWeightOverride{
+		Node: node, Disk: disk, Weight: weight, Reason: reason,
+	}
+
+	// The override is what placement uses, so reflect it in the live view the
+	// gates read — otherwise a drain would never appear to take effect.
+	for i := range f.live {
+		if f.live[i].ID != node {
+			continue
+		}
+
+		for j := range f.live[i].Disks {
+			if f.live[i].Disks[j].ID == disk {
+				f.live[i].Disks[j].Weight = weight
+			}
+		}
+	}
+
+	return nil
+}
+
+func (c *fakeClient) ClearDiskWeight(_ context.Context, node, disk string) error {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	delete(f.diskWeights, node+"/"+disk)
+
+	return nil
+}
+
+func (c *fakeClient) ListDiskWeights(context.Context) ([]fsclient.DiskWeightOverride, error) {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]fsclient.DiskWeightOverride, 0, len(f.diskWeights))
+	for _, o := range f.diskWeights {
+		out = append(out, o)
+	}
+
+	return out, nil
+}
+
+// overrides is every disk weight override the fake currently holds.
+func (f *fakeAdmin) overrides() []fsclient.DiskWeightOverride {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]fsclient.DiskWeightOverride, 0, len(f.diskWeights))
+	for _, o := range f.diskWeights {
+		out = append(out, o)
+	}
+
+	return out
 }
