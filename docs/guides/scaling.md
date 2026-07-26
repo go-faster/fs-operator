@@ -50,26 +50,68 @@ land.
 
 ## Scale down (decommission)
 
-Removing a node means **draining it first** — moving its data elsewhere — then
-removing it. Killing a node without draining leaves the cluster to repair from
-surviving copies (allowed, but degraded), and taking a second domain down
-before the first has reconverged can make erasure-coded objects unrecoverable.
+Lower `spec.topology.nodes`, or a rack's `nodes`, or remove a rack. The operator
+decommissions the nodes it no longer finds declared — **one at a time**, highest
+index first within the affected rack:
 
-Draining requires per-node occupancy the operator cannot observe until the
-upstream fs cluster-status endpoint reports it (go-faster/fs SPEC §11.2). Until
-then, **scale-down is refused**: a spec that removes a node reports
-`SpecValid=False`, reason `ScaleDownRequiresDrain`, and the running cluster is
-left exactly as it was. This is intentional — the operator will not silently
-delete a data-bearing node.
+1. **Drain.** The node's config is re-rendered with every disk out of placement
+   and the node is restarted onto it (the same one-at-a-time machinery as an
+   upgrade). It keeps running and serving; it just stops taking new data, and
+   the auto-rebalancer begins moving what it holds onto the remaining nodes.
+2. **Wait until it is empty.** fs reports `has_data` per disk, and the operator
+   waits for every one of the node's disks to report `false`.
+3. **Remove.** Its StatefulSet and config Secret are deleted. Its PVCs follow
+   `spec.storage.reclaimPolicy` (`Retain` by default) through the StatefulSet's
+   claim retention policy.
+4. Wait for the cluster to reconverge, then start the next node.
 
-The full drain-then-remove flow (`spec.topology` decrease → weight-0 drain →
-wait drained → remove, one node at a time, highest index first) arrives in a
-later phase with the upstream observability.
+While this runs, `status.update.phase` is `Draining` with the node's name, and
+`ClusterSizeAligned` is `False` with reason `Draining` and a message saying what
+it is still waiting for — which disks still hold data, and how much.
+
+Killing a node without draining leaves the cluster to repair from surviving
+copies (allowed, but degraded), and taking a second domain down before the first
+has reconverged can make erasure-coded objects unrecoverable. That is why
+removals are serialized while joins are not.
+
+### What stops a removal
+
+A node is deleted only when *every* one of these holds. Any of them unknown
+means the operator waits — indefinitely, if that is what it takes:
+
+| Gate | Why |
+|---|---|
+| The node is running the drained config | Until it restarts, its disks still take writes |
+| Every node is ready and the cluster is converged | The rebalancer is what moves the data, and it cannot finish while the cluster is unsettled |
+| Every node is reporting | A silent node makes the cluster's view partial, and a partial view is not evidence a disk is empty |
+| Every disk reports `has_data: false` | The direct answer, from the node itself |
+
+Note the last two. fs omits `has_data` when a node did not report or could not
+read a disk — absent means **unknown**, never drained. A cluster running fs
+older than **v0.10.0** reports no occupancy at all, so a decommission on it will
+drain the node and then wait forever rather than delete on a signal that is not
+there. Upgrade the cluster first.
+
+Occupancy is not inferred from capacity, and neither should you: `total_bytes` /
+`free_bytes` come from `statfs`, so they describe the filesystem. A disk holding
+no fragments still reports bytes in use. The byte figures in the drain message
+are progress, not the test.
+
+### A stalled drain
+
+If the rebalancer cannot place the data — no room on the remaining nodes, or a
+topology that cannot host the scheme without this node — the drain never
+finishes and the operator keeps waiting, reporting `Converged=False` with reason
+`ConvergenceTimeout` past `spec.updatePolicy.convergenceTimeout`. Nothing is
+forced and nothing is deleted. Restore the node count to undo it: a node that is
+declared again stops draining and returns to placement.
 
 ## Total nodes may never drop below the scheme minimum
 
-Even once decommission ships, a spec whose remaining node count would fall
-below the scheme's domain requirement is refused outright.
+A spec whose remaining node count would fall below the scheme's domain
+requirement is refused outright (`SpecValid=False`, reason
+`SchemeTopologyMismatch`) — no node is drained on the way to a cluster that
+cannot host its own data.
 
 ## Related
 

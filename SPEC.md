@@ -611,15 +611,35 @@ target revision; `ConfigurationInSync` flips True when every node does.
      with a *negative* weight, not 0: fs's config layer reads 0 as "unset"
      and substitutes 1, while placement skips any disk whose weight is not
      positive. §11.6 replaces this with an API call.
-  2. **Wait drained**: the node holds no object data (needs per-node
-     occupancy from the cluster status endpoint, §11.2 — until it exists,
-     scale-down is refused with `SpecValid=False/ScaleDownRequiresDrain`).
+  2. **Wait drained**: every one of the node's disks reports `has_data:
+     false` in the cluster status (fs ≥ v0.10.0, §11.2). Occupancy is *not*
+     inferred from capacity: `total_bytes`/`free_bytes` come from statfs, so
+     they describe the filesystem and a disk holding no fragments still
+     reports bytes in use.
   3. **Remove**: delete the node's StatefulSet (graceful stop deregisters
      it from etcd) and config Secret; apply `storage.reclaimPolicy` to its
-     PVCs.
+     PVCs — carried by the StatefulSet's claim retention policy, so the
+     volumes follow the same rule as any other deletion.
   4. Wait Converged, repeat for the next node.
+
+  Every gate resolves unknown to *wait*, never to *proceed*: the node must be
+  running the drained config (until it restarts its disks still take writes),
+  the cluster must be converged and **fully reporting** (a silent node makes
+  the view partial, and a partial view is not evidence a disk is empty), and
+  every disk must answer. fs omits `has_data` for a node that did not report
+  or a disk it could not read, so a cluster on a pre-v0.10.0 binary drains
+  and then waits indefinitely rather than deleting on a signal that is not
+  there. A stalled decommission is recoverable; a node deleted while it still
+  held the only copy of something is not.
+
+  The decommissioning node stays in the pass — counted by the health, rollout
+  and disruption-budget gates — until it is removed, and keeps the
+  StatefulSet it is already running, restamped onto the drained config. It is
+  never rebuilt from a spec that no longer describes it, which would risk
+  moving the pod away from its own data.
+
   Total nodes may never drop below the scheme's domain requirement; such a
-  spec is refused outright.
+  spec is refused outright, and no node is drained on the way to it.
 
 ### 8.5 Storage changes
 
@@ -742,13 +762,27 @@ rest remain:
    (misplaced-object estimate, as `fs cluster rebalance --dry-run`
    computes), repair queue depth, last scrub summary. Unblocks: the §8.2
    convergence gate, §8.3 reload verification, §8.4 drain-complete
-   detection. **DONE** (go-faster/fs PR #90, passive-state slice): schema
-   versions, per-node/-disk capacity (bytes, fullness), placement skew and
-   rebalance state. Per-node **object count** and an aggregate cluster-wide
-   repair-queue depth are still deferred upstream; until then the operator
-   reads `repair_queue_depth` per node from the rebalance endpoint and
-   infers drain-complete from per-disk bytes. The config-revision echo
-   ships on the per-node admin via item 1 (`GET /api/v1/info`).
+   detection. **DONE**, in three parts:
+   - fs PR #90 (passive state): schema versions, per-node/-disk capacity
+     (bytes, fullness), placement skew, rebalance state.
+   - fs PR #97, v0.9.0 (live state): per-node `live` — repair queue,
+     rebalance runner, scrub totals — plus a cluster-wide
+     `repair_queue_depth` and `nodes_reporting`/`nodes_not_reporting`. A node
+     that does not answer carries `live_error` rather than zeroed counters,
+     so "not reporting" stays distinguishable from "idle". This retired the
+     operator's fan-out over each node's rebalance endpoint, kept now only as
+     the fallback for pre-v0.9.0 binaries — they serve no live state, and
+     their zeroed aggregate would otherwise read as an empty repair queue.
+   - fs PR #102, v0.10.0 (occupancy): per-disk `has_data`, the drain signal
+     §8.4 needs. A boolean rather than the object count first sketched here:
+     fs keeps no index, so counting means walking the tree, while the status
+     path is contracted to be cheap — and the boolean is exact *and*
+     constant-time on a drained disk, the case a drain polls hardest.
+     `data_error` carries a disk the node could not probe; both absences mean
+     unknown, never drained.
+
+   The config-revision echo ships on the per-node admin via item 1
+   (`GET /api/v1/info`).
 3. **Bucket scheme via admin API** — `GET/PUT /api/v1/buckets/{name}/scheme`
    (today CLI-only `fs cluster scheme`). Unblocks: `FSBucket.spec.scheme`.
 4. **etcd client TLS + auth** — `cluster.etcd.{ca,cert,key,username,

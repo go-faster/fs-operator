@@ -934,7 +934,7 @@ spec:
                 description: update is present while a rolling change is in flight.
                 properties:
                   node:
-                    description: node is the node currently being replaced.
+                    description: node is the node currently being replaced or decommissioned.
                     type: string
                   phase:
                     description: phase is the state-machine phase.
@@ -942,6 +942,7 @@ spec:
                     - Preflight
                     - RollingNodes
                     - Migrating
+                    - Draining
                     type: string
                   startedAt:
                     description: startedAt is when the rolling change started.

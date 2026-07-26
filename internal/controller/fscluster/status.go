@@ -265,7 +265,14 @@ func (r *Reconciler) summarizeAlignment(p *pass) {
 
 	// ClusterSizeAligned reflects the node *set*: every declared node exists
 	// and its pod is the current template.
+	//
+	// A decommission in flight has already set it, and says something this
+	// cannot: which node is draining and what it is still waiting for. "3 of 4
+	// nodes run the desired pod template" would describe a node being removed
+	// as one lagging behind a rollout.
 	switch {
+	case p.hasCondition(fsv1alpha1.ConditionClusterSizeAligned):
+		// Left as the decommission set it.
 	case int32(len(p.live)) < desired: //nolint:gosec // the topology is bounded at 16 nodes
 		p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
 			fsv1alpha1.ReasonScalingUp,

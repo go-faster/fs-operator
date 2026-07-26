@@ -584,16 +584,21 @@ const (
 	UpdatePhasePreflight    UpdatePhase = "Preflight"
 	UpdatePhaseRollingNodes UpdatePhase = "RollingNodes"
 	UpdatePhaseMigrating    UpdatePhase = "Migrating"
+
+	// UpdatePhaseDraining is a node being decommissioned: taken out of
+	// placement and waiting for the cluster to move its data off, before it is
+	// removed (SPEC §8.4).
+	UpdatePhaseDraining UpdatePhase = "Draining"
 )
 
 // UpdateStatus describes the rolling change in flight.
 type UpdateStatus struct {
 	// phase is the state-machine phase.
-	// +kubebuilder:validation:Enum=Preflight;RollingNodes;Migrating
+	// +kubebuilder:validation:Enum=Preflight;RollingNodes;Migrating;Draining
 	// +optional
 	Phase UpdatePhase `json:"phase,omitempty"`
 
-	// node is the node currently being replaced.
+	// node is the node currently being replaced or decommissioned.
 	// +optional
 	Node string `json:"node,omitempty"`
 

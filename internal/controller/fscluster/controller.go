@@ -151,6 +151,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
 	return pipeline.Pipeline[*pass]{
 		{Name: "validate", Run: r.validate},
+		{Name: "decommission", Run: r.planDecommission},
 		{Name: "render", Run: r.render},
 		{Name: "observe", AlwaysRun: true, Run: r.observe},
 		{Name: "secrets", Run: r.reconcileSecrets},
@@ -159,6 +160,7 @@ func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
 		{Name: "convergence", Run: r.gatherConvergence},
 		{Name: "storage", Run: r.reconcileStorage},
 		{Name: "nodes", Run: r.reconcileNodes},
+		{Name: "drain", Run: r.reconcileDecommission},
 		{Name: "reload", Run: r.reconcileReload},
 		{Name: "publicread", Run: r.reconcilePublicRead},
 		{Name: "rootcredential", Run: r.reconcileRootCredential},
@@ -201,6 +203,10 @@ type pass struct {
 	// convergence is what the admin API reports about reconvergence; the
 	// rollout gates on it and the status reports Converged from it.
 	convergence convergence
+
+	// decommission is the node the spec no longer declares that is being
+	// drained and removed, if any (SPEC §8.4).
+	decommission decommission
 
 	// schema is the cluster's observed schema versions, filled by the
 	// migration step for the status.
@@ -293,17 +299,6 @@ func (r *Reconciler) validate(ctx context.Context, p *pass) (pipeline.Outcome, e
 			total, devClusterNodes)
 	}
 
-	removed, err := r.removedNodes(ctx, p)
-	if err != nil {
-		return pipeline.Outcome{}, err
-	}
-
-	if len(removed) > 0 {
-		return r.refuse(p, fsv1alpha1.ReasonScaleDownRequiresDrain, fmt.Sprintf(
-			"the spec removes node(s) %v; draining is not observable yet, so the cluster is left as it is",
-			removed))
-	}
-
 	p.setCondition(fsv1alpha1.ConditionSpecValid, metav1.ConditionTrue, fsv1alpha1.ReasonSpecValid,
 		"Spec passes cross-field validation")
 
@@ -318,37 +313,6 @@ func (r *Reconciler) refuse(p *pass, reason, message string) (pipeline.Outcome, 
 	r.Recorder.Event(p.object, corev1.EventTypeWarning, reason, message)
 
 	return pipeline.Block(reason)
-}
-
-// removedNodes reports which of the cluster's existing nodes the spec no
-// longer declares.
-//
-// Removing a node means draining it first — moving its data elsewhere — and
-// the operator cannot yet see when a node holds nothing (fs §11.2). Deleting
-// an undrained node would leave the cluster to repair from surviving copies,
-// so a shrinking topology is refused rather than obeyed (SPEC §8.4).
-func (r *Reconciler) removedNodes(ctx context.Context, p *pass) ([]string, error) {
-	existing, err := r.nodeSets(ctx, p.cluster)
-	if err != nil {
-		return nil, err
-	}
-
-	desired := make(map[string]bool, len(p.nodes))
-	for _, node := range p.nodes {
-		desired[node.Name] = true
-	}
-
-	var removed []string
-
-	for _, set := range existing {
-		if !desired[set.Name] {
-			removed = append(removed, set.Name)
-		}
-	}
-
-	slices.Sort(removed)
-
-	return removed, nil
 }
 
 // nodeSets lists the StatefulSets the operator manages for a cluster.
@@ -457,7 +421,13 @@ func (r *Reconciler) render(_ context.Context, p *pass) (pipeline.Outcome, error
 	// Credentials are cluster-wide in etcd (fs §6.8), managed through the admin
 	// API by the FSAccessKey controller and the public-read step — none are
 	// rendered into the config here (SPEC §7).
+	//
+	// A node being decommissioned renders with every disk drained, which is
+	// what makes the rebalancer move its data off (SPEC §8.4).
 	opts := RenderOptions{}
+	if p.decommission.active() {
+		opts.Drained = map[string]bool{p.decommission.node.Name: true}
+	}
 
 	configs, err := RenderNodeConfigs(p.cluster, p.nodes, opts)
 	if err != nil {
@@ -475,9 +445,21 @@ func (r *Reconciler) render(_ context.Context, p *pass) (pipeline.Outcome, error
 
 		restarts[node.Name] = revision
 
-		set := NewStatefulSet(p.cluster, node, revision)
-		if err := stampTemplateRevision(set); err != nil {
-			return pipeline.Outcome{}, err
+		// A decommissioning node keeps the StatefulSet it is already running,
+		// restamped onto the drained configuration: the spec no longer
+		// describes where it runs, so rebuilding it from the spec could move
+		// the pod away from its own data.
+		var set *appsv1.StatefulSet
+
+		if p.decommission.draining(node.Name) {
+			if set, err = drainedStatefulSet(p.decommission.set, revision); err != nil {
+				return pipeline.Outcome{}, err
+			}
+		} else {
+			set = NewStatefulSet(p.cluster, node, revision)
+			if err := stampTemplateRevision(set); err != nil {
+				return pipeline.Outcome{}, err
+			}
 		}
 
 		desired = append(desired, set)

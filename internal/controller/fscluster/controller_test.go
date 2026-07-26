@@ -234,42 +234,6 @@ func TestReconcileRefusesSchemeTopologyMismatch(t *testing.T) {
 	}
 }
 
-// TestReconcileRefusesScaleDown covers SPEC §8.4: until the operator can see
-// that a node holds no data, shrinking a topology is refused and the running
-// nodes are left alone.
-func TestReconcileRefusesScaleDown(t *testing.T) {
-	r, _ := reconciler(t)
-	key := createCluster(t, r, "scale-down", func(c *fsv1alpha1.FSCluster) {
-		nodes := int32(4)
-		c.Spec.Topology.Nodes = &nodes
-	})
-
-	reconcile(t, r, key)
-
-	var cluster fsv1alpha1.FSCluster
-	get(t, r, key.Namespace, key.Name, &cluster)
-
-	// Down to three, which the scheme can still host: what is refused here is
-	// the removal itself, not a topology too small for the scheme.
-	smaller := int32(3)
-	cluster.Spec.Topology.Nodes = &smaller
-
-	if err := r.Update(t.Context(), &cluster); err != nil {
-		t.Fatalf("shrink the topology: %v", err)
-	}
-
-	reconcile(t, r, key)
-
-	c := condition(t, r, key, fsv1alpha1.ConditionSpecValid)
-	if c == nil || c.Reason != fsv1alpha1.ReasonScaleDownRequiresDrain {
-		t.Fatalf("SpecValid = %v, want False/%s", c, fsv1alpha1.ReasonScaleDownRequiresDrain)
-	}
-
-	if got, want := len(statefulSets(t, r, key)), 4; got != want {
-		t.Errorf("%d node statefulsets, want the original %d left untouched", got, want)
-	}
-}
-
 // TestReconcileScalesUp covers the additive half: new nodes may all join at
 // once, since joining is what the rebalancer converges.
 func TestReconcileScalesUp(t *testing.T) {

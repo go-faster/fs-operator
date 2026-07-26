@@ -34,7 +34,6 @@ The `reason` names the specific cause; these are stable.
 | `SpecValid` / `SpecInvalid` | `SpecValid` | Spec passed / an unparseable value (e.g. bad scheme). |
 | `SchemeTopologyMismatch` | `SpecValid` | The scheme needs more failure domains than the topology has. |
 | `UnsupportedTopology` | `SpecValid` | Node count outside the 3–16 envelope. |
-| `ScaleDownRequiresDrain` | `SpecValid` | The spec removes a node; draining is not observable yet, so it is refused. |
 | `DiskShrinkForbidden` | `SpecValid` | A disk would shrink; disks may only grow. |
 | `SecretNotFound` / `SecretInvalid` | `SpecValid` | A referenced Secret is missing or lacks the expected keys. |
 | `ReconcileFinished` / `ReconcileError` | `ReconcileSucceeded` | The pass finished / the pass failed (message carries the error). |
@@ -43,6 +42,7 @@ The `reason` names the specific cause; these are stable.
 | `AllNodesReady` / `NodesNotReady` | `NodesHealthy` | All / not all node pods are Ready. |
 | `UpToDate` | `ClusterSizeAligned`, `ConfigurationInSync` | Everything matches the spec. |
 | `ScalingUp` | `ClusterSizeAligned` | New nodes are joining. |
+| `Draining` | `ClusterSizeAligned` | A node is being decommissioned; the message says what the drain is still waiting for. See [scaling.md](scaling.md). |
 | `StorageExpanding` | `ClusterSizeAligned` | A node's storage is being grown. |
 | `RollingNodes` | `ClusterSizeAligned` | A pod-template rollout is in flight. |
 | `ConfigReloadPending` | `ConfigurationInSync` | Some node has not applied the target configuration yet. |
@@ -70,8 +70,11 @@ kubectl get events --field-selector involvedObject.name=prod --sort-by=.lastTime
 | `ConfigReloaded` | Normal | A node hot-reloaded to a new configuration. |
 | `ReloadFailed` | Warning | A node's reload failed. |
 | `StorageExpanding` | Normal | A node's PVCs are being grown and its StatefulSet recreated. |
+| `NodeDraining` | Normal | A decommission started: the node is being taken out of placement. |
+| `NodeDrained` | Normal | A decommissioning node reports no data left; it is being removed. |
+| `NodeRemoved` | Normal | A decommissioned node's StatefulSet and config were deleted. |
 | `MigrationFailed` | Warning | The schema migration Job failed. |
-| `SchemeTopologyMismatch`, `ScaleDownRequiresDrain`, `UnsupportedTopology`, … | Warning | A spec was refused (same names as the condition reasons). |
+| `SchemeTopologyMismatch`, `UnsupportedTopology`, … | Warning | A spec was refused (same names as the condition reasons). |
 | `PodMonitorUnavailable` | Warning | `observability.podMonitor` is set but the Prometheus-operator CRDs are absent. |
 | `RootCredentialUnregistered` | Warning | The cluster's key store does not hold its root credential. |
 | `EtcdCleanup` | Normal | A deleted cluster's nodes are being stopped before its etcd keys go. |

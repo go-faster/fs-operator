@@ -71,6 +71,18 @@ type convergence struct {
 	schemaVersion, binarySchema int
 }
 
+// allReporting is true when every registered node answered the live-state
+// fetch, so repairQueue is a complete count and each node's occupancy is
+// current.
+//
+// The decommission gate requires it: deleting a node on the strength of a
+// partial view is the one mistake it cannot take back. The rollout gate
+// deliberately does not, or a cluster being upgraded from a pre-v0.9.0 image —
+// where no node serves live state — could never proceed.
+func (c convergence) allReporting() bool {
+	return c.nodesNotReporting == 0 && c.nodesReporting > 0
+}
+
 // gatherConvergence reads the cluster's reconvergence state from the admin
 // API. It runs before the rollout, which gates on the result, and leaves the
 // convergence unknown (so the rollout holds) when no node can be reached.
