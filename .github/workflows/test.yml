@@ -43,6 +43,15 @@ jobs:
           git diff --exit-code config dist/chart api
           make check-fs-version
 
+      - name: The API reference matches the types
+        # docs/reference/api.md is generated from the field comments in api/,
+        # so a new field is documented by the act of commenting it — and an
+        # uncommented one shows up here rather than as a blank cell someone
+        # notices months later (SPEC §13).
+        run: |
+          make docs-api-ref
+          git diff --exit-code docs/reference/api.md
+
       - name: CRDs stay compatible with what is already stored
         # The CRDs are the operator's API. Dropping a field prunes it out of
         # stored objects, and tightening a rule leaves objects the API server

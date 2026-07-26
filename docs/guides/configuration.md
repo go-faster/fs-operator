@@ -1,15 +1,27 @@
 # Configuration
 
-<!-- TODO: fill in the remaining sections per SPEC §13 — one per spec field
-group. `etcd` is written; the rest still defer to the API reference. -->
+<!-- TODO: prose sections per SPEC §13 for the field groups not covered here.
+`etcd` is written; the rest are covered field-by-field in the generated API
+reference and by topic in the guides linked below. -->
 
-This guide covers each `FSCluster` spec section: `image`, `scheme`, `topology`
-(flat nodes vs racks, anti-affinity), `storage` (disks, weights, reclaim),
-`etcd`, `clusterSecretRef`, `auth`, `s3` (service, TLS), `rebalance`,
-`integrity`, `updatePolicy`, `observability`, `networkPolicy`, `podTemplate`.
+The `FSCluster` spec has these sections. Every field of every one is described
+in the **[API reference](../reference/api.md)**, which is generated from the
+types themselves and therefore cannot fall behind them.
 
-For the sections not yet written, the [API reference](../reference/api.md) and
-[examples](../../examples/) are the source of truth.
+| Section | Where it is explained |
+|---|---|
+| `topology` (flat nodes, racks, anti-affinity) | [scaling.md](scaling.md) |
+| `storage` (disks, weights, expansion, reclaim) | [storage.md](storage.md) |
+| `image`, `updatePolicy` | [upgrades.md](upgrades.md) |
+| `etcd` | below |
+| `clusterSecretRef`, `auth`, `s3.tls`, `networkPolicy` | [security.md](security.md) |
+| `observability` | [monitoring.md](monitoring.md) |
+| `scheme`, `rebalance`, `integrity`, `s3.service`, `podTemplate` | the API reference |
+
+The [examples](../../examples/) are working shapes for the common cases. Every
+one is validated against a live API server on each run — schema, CEL rules and
+the admission webhook — so an example the operator would now reject cannot sit
+in the gallery unnoticed.
 
 ## etcd
 

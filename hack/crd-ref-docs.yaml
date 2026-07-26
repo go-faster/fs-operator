@@ -1,0 +1,20 @@
+# Configuration for crd-ref-docs, which generates docs/reference/api.md from
+# the field comments in api/v1alpha1 (SPEC §13).
+#
+# The reference is generated rather than written so it cannot drift from the
+# types: CI regenerates it and fails on a diff, which means a new field is
+# documented by the act of adding its comment.
+
+processor:
+  # Kubernetes and apimachinery types are linked to the upstream reference
+  # rather than expanded — expanding ObjectMeta once, let alone per type,
+  # buries the fields that are actually ours.
+  ignoreTypes:
+    - "(FSCluster|FSBucket|FSAccessKey)List$"
+  ignoreFields:
+    - "TypeMeta$"
+
+render:
+  # Substituted by `make docs-api-ref` from the k8s.io/api version in go.mod,
+  # so the upstream links cannot drift from what the CRDs are built against.
+  kubernetesVersion: "@K8S_VERSION@"

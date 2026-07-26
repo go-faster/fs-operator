@@ -89,7 +89,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 test-e2e: setup-test-e2e manifests generate fmt vet ginkgo ## Run the e2e tests. Expected an isolated environment using Kind.
 	# Run the top-level containers concurrently. Each owns its own namespace and
 	# its own FSCluster, and the specs inside one are Ordered, so the unit of
-	# parallelism is the container: three is the number there are. The shared
+	# parallelism is the container: four is the number there are. The shared
 	# setup (image build, cert-manager, the chart) happens once, on process 1,
 	# which is what SynchronizedBeforeSuite is for.
 	#
@@ -200,6 +200,7 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 GINKGO ?= $(LOCALBIN)/ginkgo
+CRD_REF_DOCS ?= $(LOCALBIN)/crd-ref-docs
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -223,7 +224,9 @@ GINKGO_VERSION ?= $(call gomodver,github.com/onsi/ginkgo/v2)
 
 # One process per top-level container. More than that idles: the specs inside a
 # container are Ordered and cannot be split across processes.
-E2E_PROCS ?= 3
+E2E_PROCS ?= 4
+
+CRD_REF_DOCS_VERSION ?= v0.3.0
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -252,6 +255,11 @@ $(ENVTEST): $(LOCALBIN)
 ginkgo: $(GINKGO) ## Download the ginkgo CLI locally if necessary.
 $(GINKGO): $(LOCALBIN)
 	$(call go-install-tool,$(GINKGO),github.com/onsi/ginkgo/v2/ginkgo,$(GINKGO_VERSION))
+
+.PHONY: crd-ref-docs
+crd-ref-docs: $(CRD_REF_DOCS) ## Download crd-ref-docs locally if necessary.
+$(CRD_REF_DOCS): $(LOCALBIN)
+	$(call go-install-tool,$(CRD_REF_DOCS),github.com/elastic/crd-ref-docs,$(CRD_REF_DOCS_VERSION))
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
@@ -319,6 +327,22 @@ check-fs-version: ## Fail if the pinned fs release is not spelled the same every
 .PHONY: check-crd-compat
 check-crd-compat: manifests ## Fail if a CRD change would break objects already stored. Usage: make check-crd-compat [CRD_COMPAT_BASE=v0.4.0]
 	./hack/check-crd-compat.py $(CRD_COMPAT_BASE)
+
+.PHONY: docs-api-ref
+docs-api-ref: crd-ref-docs ## Regenerate docs/reference/api.md from the api/ field comments (SPEC §13).
+	@sed 's/@K8S_VERSION@/$(ENVTEST_K8S_VERSION)/' hack/crd-ref-docs.yaml > "$(LOCALBIN)/crd-ref-docs.rendered.yaml"
+	@printf '%s\n' \
+		'<!--' \
+		'GENERATED FILE — DO NOT EDIT.' \
+		'' \
+		'Produced from the field comments in api/v1alpha1 by `make docs-api-ref`.' \
+		'Document a field by writing its Go comment; CI fails when this is stale.' \
+		'-->' \
+		'' > "$(LOCALBIN)/api-ref-header.md"
+	$(CRD_REF_DOCS) --source-path=./api --config="$(LOCALBIN)/crd-ref-docs.rendered.yaml" \
+		--renderer=markdown --output-path="$(LOCALBIN)/api-ref-body.md"
+	@cat "$(LOCALBIN)/api-ref-header.md" "$(LOCALBIN)/api-ref-body.md" > docs/reference/api.md
+	@echo "Wrote docs/reference/api.md"
 
 .PHONY: helm-lint
 helm-lint: install-helm ## Lint the Helm chart.
