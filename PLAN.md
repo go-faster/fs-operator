@@ -1,8 +1,11 @@
 # PLAN — current work plan
 
-**P1 (core) of [SPEC.md](SPEC.md) §16 is complete and released as `v0.1.0`.**
-This file now tracks the P2 day-2 work and the upstream fs endpoints it is
-gated on; later phases (P3–P4) stay in the spec until they are next.
+P1–P3 of [SPEC.md](SPEC.md) §16 are complete, released through `v0.5.0`.
+This file tracks **P4 (lifecycle)** and the upstream fs changes it is gated
+on; the finished phases are kept below as the record of what shipped.
+
+Landed since `v0.5.0`, not yet released: the FSCluster deletion finalizer and
+etcd cleanup (issue #4, below) and image pinning by digest.
 
 ## P1 — done (shipped in v0.1.0)
 
@@ -207,8 +210,60 @@ on `cluster S3 not reachable yet`.
   empty key store is treated as unknown (a starting cluster looks like that).
 - ✅ **`docs/guides/deletion.md`**, monitoring catalogue, SPEC §8.6.
 
-Next focus is P4 (lifecycle: decommission/drain, disk add/remove, etcd TLS,
-managed dev-etcd, admission webhook, Grafana dashboards — SPEC §16).
+## P4 (lifecycle) — in progress
+
+SPEC §16: decommission/drain, disk add/remove, etcd TLS, managed dev-grade
+etcd, admission webhook, Grafana dashboards, CRD-compat CI gate.
+
+Three of these were gated on upstream fs. What v0.9.0 settled, and what it
+did not:
+
+- ✅ **Aggregate repair-queue depth + per-node live state** (fs #97) — the
+  §11.2 gap the convergence gate was working around. `GET
+  /api/v1/cluster/status` now carries `repair_queue_depth`,
+  `nodes_reporting`/`nodes_not_reporting` and a per-node `live` block, and
+  a node that does not answer carries `live_error` rather than zeroed
+  counters. Also lands `GET/POST /api/v1/cluster/migrate`, and fixes the
+  cluster-mode multipart 500 this repo recorded during P2 e2e.
+- ❌ **Per-node/per-disk object count** (§11.2 remainder) — still absent, and
+  it is what a drain gate needs. `statfs` bytes are the only occupancy
+  signal, and they include filesystem overhead, so a disk with zero objects
+  never reads zero. Being closed upstream first (see below).
+- ❌ **etcd client TLS/auth** (§11.4) — `EtcdConfig` carries only
+  `endpoints`/`prefix`/`ttl`; both `clientv3.New` call sites pass no TLS and
+  no credentials. Blocks `etcd.external.tlsSecretName`.
+- ❌ **Hot drain / weight override** (§11.6) — no admin endpoint, no CLI, no
+  etcd key. Weight reaches etcd only inside the node's own registration
+  record, republished every 30s, so an external writer is overwritten.
+  Draining still means: render a negative weight, restart the node.
+
+Upstream bug found on the way, worth fixing with §11.6: fs substitutes `1`
+for a disk weight of `0` (`weight == 0` reads as "unset"), while three
+places in its own tree — the config struct comment, `config.yaml` and the
+admin OpenAPI description — document `0` as draining. So the documented
+drain is unreachable, and a user who writes `weight: 0` gets **full** weight.
+Only a negative weight drains, which is why `DrainWeight = -1.0`.
+
+### Build order
+
+1. ✅ **Pin fs v0.9.0** — `make fs-version`, and surface the new status in
+   `internal/fsclient`: aggregate repair queue, the reporting split,
+   per-node disks with capacity and weight, `Drained()`/`UsedBytes()`.
+2. ✅ **Convergence reads the aggregate** — with the per-node fan-out kept as
+   the fallback, because a cluster on a pre-v0.9.0 image serves no live
+   state and its zeroed aggregate would otherwise read as an empty queue
+   mid-upgrade. `NodesReporting` tells "nobody answered" from "nothing to
+   do".
+3. **Per-disk object count upstream** — close the §11.2 remainder in fs so
+   the drain gate is exact rather than inferred from bytes.
+4. **Decommission** (§8.4) — drain-then-remove, one node at a time, gated on
+   the object count and on a complete cluster view.
+5. **Disk add** (§8.5), and removal once §11.6 lands.
+6. **Admission webhook** — after decommission, which changes what
+   scale-down validation means.
+7. **Operator metrics** (§10, none exist yet) **+ Grafana dashboards**.
+8. **Managed dev-grade etcd**, **etcd TLS** (needs §11.4), **CRD-compat CI
+   gate**.
 
 ## Definition of done for P1 (met — v0.1.0)
 
