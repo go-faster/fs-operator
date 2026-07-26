@@ -17,6 +17,9 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          # The CRD compatibility check compares against the last release tag,
+          # which a shallow clone does not have.
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -39,3 +42,12 @@ jobs:
           make manifests generate helm-sync-crds
           git diff --exit-code config dist/chart api
           make check-fs-version
+
+      - name: CRDs stay compatible with what is already stored
+        # The CRDs are the operator's API. Dropping a field prunes it out of
+        # stored objects, and tightening a rule leaves objects the API server
+        # refuses on the next write — a cluster that reconciles fine until
+        # someone edits something unrelated. Additive changes pass silently.
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          make check-crd-compat
