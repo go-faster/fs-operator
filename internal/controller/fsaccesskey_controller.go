@@ -42,6 +42,7 @@ import (
 	"github.com/go-faster/fs-operator/internal/controller/fscluster"
 	"github.com/go-faster/fs-operator/internal/fsclient"
 	"github.com/go-faster/fs-operator/internal/keygen"
+	"github.com/go-faster/fs-operator/internal/metrics"
 )
 
 // accessKeyFinalizer keeps the FSAccessKey around until the controller has
@@ -97,6 +98,16 @@ func (r *FSAccessKeyReconciler) adminClient(baseURL, token string) (fsclient.Int
 // Reconcile resolves an FSAccessKey's credential and reconciles it into the
 // cluster's key store.
 func (r *FSAccessKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	result, err := r.reconcile(ctx, req)
+	if err != nil {
+		metrics.RecordReconcileError("fsaccesskey")
+	}
+
+	return result, err
+}
+
+// reconcile is the pass itself; Reconcile wraps it to count failures.
+func (r *FSAccessKeyReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	key := &fsv1alpha1.FSAccessKey{}

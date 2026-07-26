@@ -28,6 +28,7 @@ import (
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller/pipeline"
+	"github.com/go-faster/fs-operator/internal/metrics"
 )
 
 // health is what one pass observed of the running cluster: pod state from
@@ -160,6 +161,20 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (pipeline.Out
 
 	if err := r.Status().Patch(ctx, p.object, client.MergeFrom(base)); err != nil {
 		return pipeline.Outcome{}, errors.Wrap(err, "update status")
+	}
+
+	// Published after the write, so the series report the status that was
+	// actually stored rather than one a failed patch never applied (SPEC §10).
+	metrics.RecordCluster(p.object)
+
+	// A rolling change that has just finished: the previous pass had one in
+	// flight and this one does not.
+	if base.Status.Update != nil && p.update == nil && base.Status.Update.StartedAt != nil {
+		metrics.RecordUpdateFinished(p.object, base.Status.Update.StartedAt.Time)
+	}
+
+	if p.failure != nil {
+		metrics.RecordReconcileError("fscluster")
 	}
 
 	return pipeline.Continue()

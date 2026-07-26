@@ -724,12 +724,23 @@ removed deliberately wants the opposite. A key store that is merely
 
 ## 10. Observability
 
-- Operator metrics (controller-runtime plus):
-  `fsoperator_cluster_ready{cluster}`,
-  `fsoperator_cluster_nodes{cluster,state}`,
-  `fsoperator_update_phase{cluster,phase}`,
-  `fsoperator_update_duration_seconds`,
+- Operator metrics (controller-runtime plus), in `internal/metrics`:
+  `fsoperator_cluster_ready{namespace,cluster}`,
+  `fsoperator_cluster_nodes{namespace,cluster,state}` (`declared`, `ready`,
+  `registered`), `fsoperator_update_phase{namespace,cluster,phase}`,
+  `fsoperator_update_duration_seconds{namespace,cluster}`,
   `fsoperator_reconcile_errors_total{controller}`.
+
+  Every series carries `namespace` as well as `cluster`: the operator is
+  cluster-wide, so two namespaces may hold an FSCluster of the same name and
+  a `cluster`-only label would silently merge them.
+
+  `update_phase` publishes 0 for the phases a cluster is *not* in rather than
+  omitting them — an absent series and a false one read the same to an alert
+  that has never seen the cluster. And every cluster-keyed series is dropped
+  when its FSCluster is deleted: a gauge that outlives its object reports
+  `ready=0` forever, on a name nothing will reconcile again, which is
+  indistinguishable from an outage that never resolves.
 - Events on every transition: rollout started/gated/halted/finished,
   migration run, drain progress, refused spec changes, reload verified.
   Event reasons are part of the documented API surface (§13).

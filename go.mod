@@ -9,6 +9,8 @@ require (
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.39.0
+	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
 	go.etcd.io/etcd/client/v3 v3.7.1
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.36.0
@@ -71,8 +73,6 @@ require (
 	github.com/ogen-go/ogen v1.23.0 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_golang v1.23.2 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/rs/xid v1.6.0 // indirect

@@ -116,9 +116,41 @@ Prometheus scraping still works.
 
 The controller-manager serves controller-runtime's standard metrics
 (reconcile counts and latencies, work-queue depth, per-controller errors) on
-its HTTPS metrics service — enough to alert on reconcile errors or a backed-up
-queue. The metrics service and an optional operator `ServiceMonitor` ship with
-the [chart](../install/helm.md).
+its HTTPS metrics service, plus the operator's own. The metrics service and an
+optional operator `ServiceMonitor` ship with the
+[chart](../install/helm.md).
+
+Controller-runtime describes how the *reconciler* is behaving. These describe
+the clusters it is reconciling:
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `fsoperator_cluster_ready` | `namespace`, `cluster` | 1 when the cluster can serve writes, 0 otherwise — the `Ready` condition, alertable. |
+| `fsoperator_cluster_nodes` | `namespace`, `cluster`, `state` | Node counts by `declared` (the topology asks for), `ready` (pod is up) and `registered` (present in the cluster's own etcd topology). |
+| `fsoperator_update_phase` | `namespace`, `cluster`, `phase` | 1 for the phase a rolling change is in, 0 for the others. |
+| `fsoperator_update_duration_seconds` | `namespace`, `cluster` | Histogram of *completed* rolling changes. |
+| `fsoperator_reconcile_errors_total` | `controller` | Passes that ended in an error. |
+
+Two things worth knowing about them:
+
+- **Every series carries `namespace`.** One operator serves the whole cluster,
+  so two namespaces may hold an `FSCluster` of the same name; a `cluster`-only
+  label would merge them silently.
+- **`update_phase` publishes 0 for the phases a cluster is not in**, rather
+  than omitting them. An absent series and a false one look the same to an
+  alert that has never seen the cluster before.
+- **A deleted cluster stops reporting**, immediately. A gauge that outlives its
+  object would report `ready=0` forever on a name nothing will ever reconcile
+  again — indistinguishable from an outage that never resolves.
+
+A rolling change that is *stuck* never reaches `update_duration_seconds`,
+which only observes completed ones. Alert on `update_phase` staying at 1
+instead:
+
+```promql
+# A rolling change in the same phase for over an hour.
+max by (namespace, cluster, phase) (fsoperator_update_phase) == 1
+```
 
 ## Suggested alerts
 
@@ -129,3 +161,9 @@ the [chart](../install/helm.md).
 - `SchemaCurrent=False` (reason `MigrationPending`) under the Manual policy —
   a migration is waiting for you.
 - A rising fs repair-queue metric — nodes are failing or disks filling.
+- `fsoperator_cluster_ready == 0` — the same signal as `Ready=False`, without
+  needing to read conditions.
+- `fsoperator_cluster_nodes{state="ready"} < fsoperator_cluster_nodes{state="declared"}`
+  for long — a node is not coming back.
+- `fsoperator_update_phase{phase="Draining"} == 1` for hours — a decommission
+  cannot move a node's data off. See [scaling.md](scaling.md).

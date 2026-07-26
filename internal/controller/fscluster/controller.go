@@ -41,6 +41,7 @@ import (
 	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 	"github.com/go-faster/fs-operator/internal/etcdstore"
 	"github.com/go-faster/fs-operator/internal/fsclient"
+	"github.com/go-faster/fs-operator/internal/metrics"
 )
 
 // resyncInterval refreshes the health-derived part of the status even when no
@@ -126,6 +127,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	if !object.DeletionTimestamp.IsZero() {
+		// Stop reporting on it now rather than when the finalizer releases: a
+		// gauge that outlives its cluster reports ready=0 forever, on a name
+		// nothing will reconcile again, which reads exactly like an outage that
+		// never resolves (SPEC §10).
+		metrics.Forget(object.Namespace, object.Name)
+
 		// Everything the operator creates carries an owner reference, so
 		// garbage collection takes it down, and each node's claim retention
 		// policy decides the fate of its data. Only etcd state outlives that,
