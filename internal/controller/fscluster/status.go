@@ -29,6 +29,7 @@ import (
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 	"github.com/go-faster/fs-operator/internal/metrics"
+	"github.com/go-faster/fs-operator/internal/scheme"
 )
 
 // health is what one pass observed of the running cluster: pod state from
@@ -236,13 +237,13 @@ func (r *Reconciler) summarizeConvergence(p *pass) {
 // shards for erasure coding — so the question is how many domains are serving,
 // not how many pods are up.
 func (r *Reconciler) summarizeReadiness(p *pass) {
-	scheme, err := ParseScheme(p.cluster.Spec.Scheme)
+	parsed, err := scheme.Parse(p.cluster.Spec.Scheme)
 	if err != nil {
 		// An unparseable scheme was already refused by validation.
 		return
 	}
 
-	quorum := scheme.WriteQuorumDomains()
+	quorum := parsed.WriteQuorumDomains()
 	message := fmt.Sprintf("%d failure domains are serving, %d needed to acknowledge a write",
 		p.health.readyDomains, quorum)
 

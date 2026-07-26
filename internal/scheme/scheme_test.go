@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fscluster
+package scheme
 
 import "testing"
 
-func TestParseScheme(t *testing.T) {
+func TestParse(t *testing.T) {
 	for _, tc := range []struct {
 		scheme  string
 		domains int
@@ -26,15 +26,15 @@ func TestParseScheme(t *testing.T) {
 	}{
 		// Two full replicas are acknowledged synchronously; the third target
 		// — parity or the third replica — follows behind the async queue.
-		{scheme: SchemeRF25, domains: 3, quorum: 2},
-		{scheme: SchemeRF3, domains: 3, quorum: 2},
+		{scheme: RF25, domains: 3, quorum: 2},
+		{scheme: RF3, domains: 3, quorum: 2},
 		// Erasure coding has no async path to complete a shard set, so every
 		// shard is placed and acknowledged synchronously.
-		{scheme: schemeEC, domains: 6, quorum: 6},
+		{scheme: "ec:4,2", domains: 6, quorum: 6},
 		{scheme: "ec:8,3", domains: 11, quorum: 11},
 	} {
 		t.Run(tc.scheme, func(t *testing.T) {
-			scheme, err := ParseScheme(tc.scheme)
+			scheme, err := Parse(tc.scheme)
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
@@ -50,10 +50,10 @@ func TestParseScheme(t *testing.T) {
 	}
 }
 
-func TestParseSchemeRejects(t *testing.T) {
+func TestParseRejects(t *testing.T) {
 	for _, scheme := range []string{"", "rf4", "rf2", "ec", "ec:", "ec:4", "ec:4,", "ec:0,2", "ec:4,0", "ec:x,2"} {
 		t.Run(scheme, func(t *testing.T) {
-			if _, err := ParseScheme(scheme); err == nil {
+			if _, err := Parse(scheme); err == nil {
 				t.Error("parse succeeded, want an error")
 			}
 		})

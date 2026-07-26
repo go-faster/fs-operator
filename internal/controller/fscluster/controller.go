@@ -42,20 +42,13 @@ import (
 	"github.com/go-faster/fs-operator/internal/etcdstore"
 	"github.com/go-faster/fs-operator/internal/fsclient"
 	"github.com/go-faster/fs-operator/internal/metrics"
+	"github.com/go-faster/fs-operator/internal/validation"
 )
 
 // resyncInterval refreshes the health-derived part of the status even when no
 // watch fires: a pod that stops being ready is an event, but a cluster slowly
 // falling behind is not.
 const resyncInterval = 5 * time.Minute
-
-// maxNodes is the largest cluster fs supports. The CRD bounds each rack, but
-// only the controller sees the total.
-const maxNodes = 16
-
-// devClusterNodes is the smallest cluster that can host a replicated scheme;
-// below it a cluster is a development toy and says so.
-const devClusterNodes = 3
 
 // Reconciler reconciles an FSCluster into the resources of a running fs
 // cluster.
@@ -289,32 +282,27 @@ func (p *pass) hasCondition(conditionType string) bool {
 }
 
 // validate performs the cross-field checks CEL cannot express, and refuses the
-// spec rather than half-applying it (SPEC §5.1). In v1alpha1 this lives in the
-// controller; §16 moves it to an admission webhook, where a user would find
-// out at apply time instead.
-func (r *Reconciler) validate(ctx context.Context, p *pass) (pipeline.Outcome, error) {
+// spec rather than half-applying it (SPEC §5.1).
+//
+// The admission webhook runs the same checks at apply time, which is where a
+// user should find out (§16). This is not a leftover: a webhook can be
+// disabled, unreachable behind a Fail policy that an admin relaxed, or simply
+// not have existed when the object was stored — and a spec that reaches the
+// controller unchecked is one that could build a cluster unable to host its own
+// data. Both call internal/validation, so the two can never disagree.
+func (r *Reconciler) validate(_ context.Context, p *pass) (pipeline.Outcome, error) {
 	spec := &p.cluster.Spec
 
-	scheme, err := ParseScheme(spec.Scheme)
-	if err != nil {
-		return r.refuse(p, fsv1alpha1.ReasonSpecInvalid, err.Error())
+	if failure := validation.Cluster(spec); failure != nil {
+		return r.refuse(p, failure.Reason, failure.Message)
 	}
 
-	if domains := int(spec.FailureDomains()); domains < scheme.MinDomains() {
-		return r.refuse(p, fsv1alpha1.ReasonSchemeTopologyMismatch, fmt.Sprintf(
-			"scheme %q places copies on %d distinct failure domains, the topology provides %d",
-			spec.Scheme, scheme.MinDomains(), domains))
-	}
-
-	if total := int(spec.TotalNodes()); total > maxNodes {
-		return r.refuse(p, fsv1alpha1.ReasonUnsupportedTopology, fmt.Sprintf(
-			"the topology declares %d nodes; fs supports at most %d", total, maxNodes))
-	}
-
-	if total := int(spec.TotalNodes()); total < devClusterNodes {
-		r.Recorder.Eventf(p.object, corev1.EventTypeWarning, fsv1alpha1.ReasonUnsupportedTopology,
-			"Cluster has %d nodes, below the supported minimum of %d: suitable for development only",
-			total, devClusterNodes)
+	// Allowed, but worth saying out loud. The webhook returns these as
+	// admission warnings; here they are events, for a cluster that predates the
+	// webhook or was applied while it was off.
+	for _, warning := range validation.ClusterWarnings(spec) {
+		r.Recorder.Event(p.object, corev1.EventTypeWarning,
+			fsv1alpha1.ReasonUnsupportedTopology, warning)
 	}
 
 	p.setCondition(fsv1alpha1.ConditionSpecValid, metav1.ConditionTrue, fsv1alpha1.ReasonSpecValid,

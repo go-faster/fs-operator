@@ -32,6 +32,7 @@ import (
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/fsconfig"
+	"github.com/go-faster/fs-operator/internal/scheme"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files in testdata")
@@ -381,7 +382,7 @@ func TestRestartRevisionTracksConfig(t *testing.T) {
 	}
 
 	// The scheme lives in the config and is restart-requiring: both move.
-	cluster.Spec.Scheme = SchemeRF3
+	cluster.Spec.Scheme = scheme.RF3
 	schemeCfg := mustRender(t, cluster, node, base)
 	schemeRestart := mustRestart(t, cluster, node, base)
 

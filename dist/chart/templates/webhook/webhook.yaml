@@ -1,0 +1,98 @@
+{{- if .Values.webhook.enabled }}
+{{- /*
+The validating webhook is what turns a bad spec into a rejected `kubectl
+apply` instead of an object the operator stores and then refuses (SPEC §5.1).
+It needs a serving certificate the API server trusts, which is why it is
+opt-in: there is no way to synthesize one from a chart alone.
+
+Two ways to get one:
+  - cert-manager (certManager.enabled), which issues the Secret below and
+    injects the CA bundle through the annotation;
+  - a Secret you supply, named by webhook.certSecretName, with
+    webhook.caBundle set to its CA.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fs-operator.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "fs-operator.name" . }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  ports:
+  - port: 443
+    protocol: TCP
+    targetPort: 9443
+  selector:
+    control-plane: controller-manager
+    app.kubernetes.io/name: {{ include "fs-operator.name" . }}
+---
+{{- if and .Values.certManager.enabled (not .Values.webhook.certSecretName) }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "fs-operator.resourceName" (dict "suffix" "selfsigned-issuer" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "fs-operator.resourceName" (dict "suffix" "serving-cert" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  dnsNames:
+  - {{ include "fs-operator.resourceName" (dict "suffix" "webhook-service" "context" $) }}.{{ .Release.Namespace }}.svc
+  - {{ include "fs-operator.resourceName" (dict "suffix" "webhook-service" "context" $) }}.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: {{ include "fs-operator.resourceName" (dict "suffix" "selfsigned-issuer" "context" $) }}
+  secretName: {{ include "fs-operator.resourceName" (dict "suffix" "webhook-server-cert" "context" $) }}
+---
+{{- end }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "fs-operator.resourceName" (dict "suffix" "validating-webhook-configuration" "context" $) }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "fs-operator.name" . }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  {{- if and .Values.certManager.enabled (not .Values.webhook.certSecretName) }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "fs-operator.resourceName" (dict "suffix" "serving-cert" "context" $) }}
+  {{- end }}
+webhooks:
+- name: vfscluster.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  # Fail, deliberately. These checks are what stands between a typo and a
+  # cluster that cannot host its own data, so admitting specs unchecked because
+  # the webhook is unreachable is the wrong trade. The controller re-runs them
+  # either way, but by then the object is stored.
+  failurePolicy: {{ .Values.webhook.failurePolicy }}
+  clientConfig:
+    service:
+      name: {{ include "fs-operator.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-fs-go-faster-org-v1alpha1-fscluster
+    {{- with .Values.webhook.caBundle }}
+    caBundle: {{ . }}
+    {{- end }}
+  rules:
+  - apiGroups:
+    - fs.go-faster.org
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - fsclusters
+{{- end }}

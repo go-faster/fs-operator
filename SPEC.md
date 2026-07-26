@@ -348,8 +348,24 @@ spec:
   controller cross-checks it against the topology (distinct failure domains
   ≥ scheme requirement: 3 for rf2.5/rf3, k+m for EC) and refuses to apply a
   violating change: `SpecValid=False`, reason `SchemeTopologyMismatch`, no
-  resource mutation. Cross-field checks live in the controller in v1alpha1
-  (no admission webhook; §16 adds one).
+  resource mutation.
+
+  **Where the cross-field checks run.** They live in `internal/validation`
+  and are called from two places. The **validating webhook** runs them at
+  admission, so `kubectl apply` reports the problem and the object is never
+  stored; it is opt-in (`webhook.enabled`) because it needs a serving
+  certificate the chart cannot conjure, and its `failurePolicy` is `Fail`.
+  The **controller** runs them again before it touches anything — not as a
+  leftover, but because a webhook can be disabled, unreachable behind a
+  policy an admin relaxed, or simply not have existed when the object was
+  stored. One implementation, two callers: two would eventually disagree,
+  and the disagreement would surface as a spec the API accepted and the
+  operator refuses to build.
+
+  Checks that need to read cluster state (a referenced Secret existing, a
+  live StatefulSet's disks) stay in the controller only: the admission path
+  must not call the API server, and a Secret created after the cluster is a
+  legitimate order of operations.
 - Immutable (CEL `self == oldSelf`): `etcd.prefix`, `storage.disks[].name`,
   `clusterSecretRef`, rack `name`s.
 - `storage.disks`: entries may be **added** (§8.5); entries may not be
@@ -393,7 +409,7 @@ condition and event vocabulary is API surface, §13):
 
 | Type | Meaning |
 |---|---|
-| `SpecValid` | Spec passes controller-side cross-field validation. |
+| `SpecValid` | Spec passes cross-field validation (§5.1; the webhook rejects most of it at apply time, this covers specs stored without it). |
 | `ReconcileSucceeded` | The last reconcile pass completed without error. |
 | `Ready` | The cluster serves S3 at write quorum. |
 | `NodesHealthy` | Every node pod is Ready and registered in etcd. |

@@ -38,6 +38,7 @@ import (
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller"
 	"github.com/go-faster/fs-operator/internal/controller/fscluster"
+	webhookv1alpha1 "github.com/go-faster/fs-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -219,6 +220,22 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "fsaccesskey")
 		os.Exit(1)
 	}
+
+	// The webhook is only registered when the manager was given a certificate:
+	// without one the server cannot serve, and a manager that fails to start is
+	// worse than an operator whose validation runs only in the controller,
+	// which it does anyway (SPEC §5.1). ENABLE_WEBHOOKS=false turns it off for
+	// a local `make run`, where there is no API server to call back.
+	if len(webhookCertPath) > 0 && os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupFSClusterWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "fscluster")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("Admission webhook disabled; cross-field validation runs in the controller only",
+			"webhook-cert-path", webhookCertPath)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

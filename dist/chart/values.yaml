@@ -176,6 +176,24 @@ metrics:
   # Note: Metrics authn/authz needs ClusterRole access.
   secure: true
 
+## Validating admission webhook: rejects an FSCluster whose spec cannot work
+## at apply time, instead of storing it and letting the operator refuse it.
+## Needs a serving certificate the API server trusts, which is why it is
+## opt-in — either cert-manager (certManager.enabled) or a Secret you supply.
+##
+webhook:
+  enabled: false
+  ## Fail is deliberate: these checks are what stands between a typo and a
+  ## cluster that cannot host its own data. Ignore admits specs unchecked when
+  ## the webhook is unreachable; the controller still refuses them, but by then
+  ## the object is stored.
+  failurePolicy: Fail
+  ## Bring your own certificate instead of cert-manager: the name of a Secret
+  ## with tls.crt/tls.key, plus the base64 CA bundle to put in the webhook
+  ## configuration. Leave both empty to let cert-manager issue one.
+  certSecretName: ""
+  caBundle: ""
+
 ## Cert-manager integration for TLS certificates.
 ## Required for webhook certificates and metrics endpoint certificates.
 ##

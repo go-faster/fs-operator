@@ -25,6 +25,52 @@ Then create an [`FSCluster`](../guides/configuration.md) — see
 [`examples/01-minimal.yaml`](../../examples/01-minimal.yaml) for a starting
 point.
 
+## Admission webhook
+
+Off by default. With it on, an `FSCluster` whose spec cannot work is rejected
+by `kubectl apply` — you find out where you made the mistake, instead of the
+object being stored and the operator refusing to build it:
+
+```console
+$ kubectl apply -f cluster.yaml
+The FSCluster "prod" is invalid: spec: Invalid value: "":
+  SchemeTopologyMismatch: scheme "rf3" places copies on 3 distinct failure
+  domains, the topology provides 2
+```
+
+It needs a serving certificate the API server trusts, which is why it is
+opt-in — a chart cannot conjure one. With
+[cert-manager](https://cert-manager.io) installed:
+
+```sh
+helm upgrade --install fs-operator oci://ghcr.io/go-faster/charts/fs-operator \
+  --set webhook.enabled=true \
+  --set certManager.enabled=true
+```
+
+The chart then issues a self-signed CA and certificate, and annotates the
+webhook configuration so cert-manager injects the CA bundle.
+
+To bring your own certificate instead, put `tls.crt`/`tls.key` in a Secret and
+point the chart at it:
+
+```sh
+--set webhook.enabled=true \
+--set webhook.certSecretName=my-webhook-cert \
+--set webhook.caBundle=$(base64 -w0 < ca.crt)
+```
+
+**`failurePolicy` is `Fail`.** If the webhook is unreachable, applies are
+rejected rather than admitted unchecked — these checks are what stands between
+a typo and a cluster that cannot host its own data. `webhook.failurePolicy:
+Ignore` relaxes that if you would rather trade the guarantee for availability;
+the operator still refuses the spec, but only after it has been stored.
+
+Everything the webhook checks, the controller checks again before it touches
+anything, so turning the webhook off costs you the early error message and
+nothing else. That is deliberate: a webhook can be disabled, unreachable, or
+simply not have existed when an object was stored.
+
 ## Air-gapped / mirrored registries
 
 Set `global.imageRegistry` to pull every image from a private mirror. It

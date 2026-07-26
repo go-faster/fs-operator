@@ -23,6 +23,7 @@ import (
 	"github.com/go-faster/errors"
 
 	"github.com/go-faster/fs-operator/internal/fsclient"
+	"github.com/go-faster/fs-operator/internal/scheme"
 )
 
 // fakeAdmin is an in-memory fs admin API for the controller tests, keyed by a
@@ -322,13 +323,13 @@ func (c *fakeClient) SetPublicReadBuckets(_ context.Context, buckets []string) e
 }
 
 func (c *fakeClient) GetBucketScheme(_ context.Context, _ string) (fsclient.BucketScheme, error) {
-	return fsclient.BucketScheme{Scheme: SchemeRF25, ClusterDefault: SchemeRF25, IsDefault: true}, nil
+	return fsclient.BucketScheme{Scheme: scheme.RF25, ClusterDefault: scheme.RF25, IsDefault: true}, nil
 }
 
-func (c *fakeClient) SetBucketScheme(_ context.Context, _, scheme string) (fsclient.BucketScheme, error) {
-	if scheme == "" {
-		return fsclient.BucketScheme{Scheme: SchemeRF25, ClusterDefault: SchemeRF25, IsDefault: true}, nil
+func (c *fakeClient) SetBucketScheme(_ context.Context, _, override string) (fsclient.BucketScheme, error) {
+	if override == "" {
+		return fsclient.BucketScheme{Scheme: scheme.RF25, ClusterDefault: scheme.RF25, IsDefault: true}, nil
 	}
 
-	return fsclient.BucketScheme{Scheme: scheme, Override: scheme, ClusterDefault: SchemeRF25}, nil
+	return fsclient.BucketScheme{Scheme: override, Override: override, ClusterDefault: scheme.RF25}, nil
 }

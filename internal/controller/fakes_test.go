@@ -23,8 +23,8 @@ import (
 	"github.com/go-faster/errors"
 	"github.com/minio/minio-go/v7"
 
-	"github.com/go-faster/fs-operator/internal/controller/fscluster"
 	"github.com/go-faster/fs-operator/internal/fsclient"
+	"github.com/go-faster/fs-operator/internal/scheme"
 )
 
 // fakeAdmin is a shared in-memory admin API for the controller tests. It models
@@ -154,27 +154,27 @@ func (c *fakeAdminClient) GetBucketScheme(_ context.Context, bucket string) (fsc
 	return schemeResult(f.schemes[bucket]), nil
 }
 
-func (c *fakeAdminClient) SetBucketScheme(_ context.Context, bucket, scheme string) (fsclient.BucketScheme, error) {
+func (c *fakeAdminClient) SetBucketScheme(_ context.Context, bucket, override string) (fsclient.BucketScheme, error) {
 	f := c.admin
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if scheme != "" && scheme == f.rejectScheme {
-		return fsclient.BucketScheme{}, errors.Wrap(fsclient.ErrSchemeRejected, "topology cannot host scheme "+scheme)
+	if override != "" && override == f.rejectScheme {
+		return fsclient.BucketScheme{}, errors.Wrap(fsclient.ErrSchemeRejected, "topology cannot host scheme "+override)
 	}
 
-	f.schemes[bucket] = scheme
+	f.schemes[bucket] = override
 
-	return schemeResult(scheme), nil
+	return schemeResult(override), nil
 }
 
 func schemeResult(override string) fsclient.BucketScheme {
 	if override == "" {
-		return fsclient.BucketScheme{Scheme: fscluster.SchemeRF25, ClusterDefault: fscluster.SchemeRF25, IsDefault: true}
+		return fsclient.BucketScheme{Scheme: scheme.RF25, ClusterDefault: scheme.RF25, IsDefault: true}
 	}
 
-	return fsclient.BucketScheme{Scheme: override, Override: override, ClusterDefault: fscluster.SchemeRF25}
+	return fsclient.BucketScheme{Scheme: override, Override: override, ClusterDefault: scheme.RF25}
 }
 
 // fakeS3 is an in-memory S3 backend for the bucket controller tests.

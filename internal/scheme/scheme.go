@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package fscluster
+package scheme
 
 import (
 	"strconv"
@@ -39,8 +39,8 @@ type Scheme struct {
 
 // Scheme names in their config and CLI form.
 const (
-	SchemeRF25 = "rf2.5"
-	SchemeRF3  = "rf3"
+	RF25 = "rf2.5"
+	RF3  = "rf3"
 
 	// ecPrefix introduces an erasure-coded scheme: "ec:k,m".
 	ecPrefix = "ec:"
@@ -54,11 +54,11 @@ const replicaSchemeCopies = 3
 // acknowledges a write; the third target is produced behind the async queue.
 const replicaSchemeWriteQuorum = 2
 
-// ParseScheme reads a scheme from the form the API and the config file use:
+// Parse reads a scheme from the form the API and the config file use:
 // "rf2.5", "rf3" or "ec:k,m".
-func ParseScheme(s string) (Scheme, error) {
+func Parse(s string) (Scheme, error) {
 	switch s {
-	case SchemeRF25, SchemeRF3:
+	case RF25, RF3:
 		return Scheme{}, nil
 	}
 
