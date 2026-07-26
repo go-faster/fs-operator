@@ -44,6 +44,11 @@ const (
 	namespace = "fs-operator-system"
 )
 
+// tenantNamespaces are the per-container namespaces the suite creates, each
+// owned by one top-level container and torn down asynchronously by its
+// AfterAll. The suite waits for them together at the end.
+var tenantNamespaces = []string{clusterNamespace, managedNamespace}
+
 // TestE2E runs the e2e suite against a Kind cluster.
 //
 // The operator is installed the way a user installs it: the owned Helm chart
@@ -55,7 +60,36 @@ func TestE2E(t *testing.T) {
 	RunSpecs(t, "e2e suite")
 }
 
-var _ = BeforeSuite(func() {
+// The suite runs its top-level containers in parallel, so this setup has to
+// happen exactly once no matter how many processes there are: building an image
+// three times is waste, but installing cert-manager or the chart three times
+// concurrently is a race. SynchronizedBeforeSuite runs the first function on
+// process 1 alone and blocks the others until it returns.
+var _ = SynchronizedBeforeSuite(func() []byte {
+	// Before any kubectl call, including the ones below.
+	configureKubectlKubeRC()
+
+	// The build talks to docker and everything below it talks to the cluster,
+	// so the two have no reason to take turns: the build is the single longest
+	// step here and the cluster-side setup is almost all waiting. Start it now
+	// and collect it once there is something that actually needs the image.
+	By("building the manager image")
+
+	built := make(chan error, 1)
+
+	go func() {
+		defer GinkgoRecover()
+
+		cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
+		// Some sandboxes give the build container no working DNS, which the Go
+		// module proxy needs; DOCKER_BUILD_FLAGS=--network=host is the escape
+		// hatch, and passing the environment through is what makes it reach make.
+		cmd.Env = os.Environ()
+
+		_, err := utils.Run(cmd)
+		built <- err
+	}()
+
 	// The suite starts as soon as the kind cluster answers, which can be
 	// before CoreDNS is serving. A spec that resolves a Service name then
 	// fails with "could not resolve host" — observed once, on the metrics
@@ -66,14 +100,17 @@ var _ = BeforeSuite(func() {
 		"deployment/coredns", "-n", "kube-system", "--timeout", "5m"))
 	Expect(err).NotTo(HaveOccurred(), "CoreDNS did not become ready")
 
-	By("building the manager image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	// Some sandboxes give the build container no working DNS, which the Go
-	// module proxy needs; DOCKER_BUILD_FLAGS=--network=host is the escape
-	// hatch, and passing the environment through is what makes it reach make.
-	cmd.Env = os.Environ()
-	_, err = utils.Run(cmd)
-	Expect(err).NotTo(HaveOccurred(), "Failed to build the manager image")
+	// The admission webhook needs a certificate the API server trusts, so the
+	// suite installs cert-manager and turns the webhook on. It is the half of
+	// the webhook unit tests cannot reach: the Service selector matching the
+	// manager pod, the CA bundle being injected, and the manager actually
+	// serving TLS on 9443.
+	//
+	// It goes before the chart, which asks for an Issuer and a Certificate.
+	By("installing cert-manager")
+	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install cert-manager")
+
+	Expect(<-built).NotTo(HaveOccurred(), "Failed to build the manager image")
 
 	By("loading the manager image on Kind")
 	Expect(utils.LoadImageToKindClusterWithName(managerImage)).To(Succeed(),
@@ -85,18 +122,8 @@ var _ = BeforeSuite(func() {
 	By("loading the fs image on Kind")
 	Expect(loadFSImage()).To(Succeed(), "Failed to load the fs image into Kind")
 
-	configureKubectlKubeRC()
-
-	// The admission webhook needs a certificate the API server trusts, so the
-	// suite installs cert-manager and turns the webhook on. It is the half of
-	// the webhook unit tests cannot reach: the Service selector matching the
-	// manager pod, the CA bundle being injected, and the manager actually
-	// serving TLS on 9443.
-	By("installing cert-manager")
-	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install cert-manager")
-
 	By("installing the operator from dist/chart")
-	cmd = exec.Command("helm", "upgrade", "--install", releaseName, "dist/chart",
+	cmd := exec.Command("helm", "upgrade", "--install", releaseName, "dist/chart",
 		"--namespace", namespace,
 		"--create-namespace",
 		"--set", "manager.image.repository="+imageRepository(managerImage),
@@ -127,10 +154,37 @@ var _ = BeforeSuite(func() {
 		g.Expect(err).NotTo(HaveOccurred())
 	}).WithTimeout(2*time.Minute).WithPolling(2*time.Second).Should(Succeed(),
 		"the admission webhook never became reachable")
+
+	return nil
+}, func(_ []byte) {
+	// Every process: KUBECTL_KUBERC is process state, so setting it on process
+	// 1 leaves the others reading the developer's own kuberc.
+	configureKubectlKubeRC()
 })
 
-var _ = AfterSuite(func() {
+var _ = SynchronizedAfterSuite(func() {}, func() {
+	// Process 1, after every other process has finished.
+	//
+	// Each container's AfterAll asks for its namespace to go but does not wait
+	// (see the note there). What has to happen before the operator is
+	// uninstalled is narrower than the whole namespace: an FSCluster carries a
+	// finalizer only the operator clears, so uninstalling with one still around
+	// strands the object, and the namespace holding it, in Terminating for
+	// ever.
+	//
+	// The rest of the namespace is not worth waiting for. Terminating pods and
+	// releasing PVCs are the bulk of the ~45s it takes, and neither needs an
+	// operator to finish — so let them run down on their own, whether that is
+	// under a kind cluster about to be deleted or before the next run.
+	By("waiting for the FSClusters to finalize")
+
+	for _, ns := range tenantNamespaces {
+		_, _ = utils.Run(exec.Command("kubectl", "wait", "--for=delete",
+			"fsclusters", "--all", "-n", ns, "--timeout=5m"))
+	}
+
 	By("uninstalling the operator")
+
 	cmd := exec.Command("helm", "uninstall", releaseName, "--namespace", namespace, "--ignore-not-found")
 	_, _ = utils.Run(cmd)
 

@@ -86,9 +86,14 @@ var _ = Describe("FSCluster", Ordered, func() {
 			dumpCluster()
 		}
 
+		// Ask, but do not wait: emptying this namespace takes ~45s (three
+		// StatefulSets, their PVCs, an etcd, and the cluster finalizer), and
+		// nothing after this point needs it gone. The suite collects every
+		// tenant namespace once, in SynchronizedAfterSuite, where the wait
+		// overlaps the other containers instead of blocking them.
 		By("deleting the tenant namespace")
 		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", clusterNamespace,
-			"--ignore-not-found", "--timeout", "5m"))
+			"--ignore-not-found", "--wait=false"))
 	})
 
 	It("provisions a cluster from the published example", func() {

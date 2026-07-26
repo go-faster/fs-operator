@@ -86,12 +86,18 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	esac
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	# The default 10m go-test timeout is shorter than this suite: it provisions
-	# a cluster, decommissions a node, and adds and removes a disk, each gated
-	# on a real rebalance. Hitting it kills the run mid-spec with a goroutine
-	# dump rather than a failure, which reads as a hang.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 45m
+test-e2e: setup-test-e2e manifests generate fmt vet ginkgo ## Run the e2e tests. Expected an isolated environment using Kind.
+	# Run the top-level containers concurrently. Each owns its own namespace and
+	# its own FSCluster, and the specs inside one are Ordered, so the unit of
+	# parallelism is the container: three is the number there are. The shared
+	# setup (image build, cert-manager, the chart) happens once, on process 1,
+	# which is what SynchronizedBeforeSuite is for.
+	#
+	# The default 10m timeout is shorter than this suite: it provisions a
+	# cluster, decommissions a node, and adds and removes a disk, each gated on
+	# a real rebalance. Hitting it kills the run mid-spec with a goroutine dump
+	# rather than a failure, which reads as a hang.
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) $(GINKGO) --tags=e2e --procs=$(E2E_PROCS) -v --timeout=45m ./test/e2e/
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
@@ -193,6 +199,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GINKGO ?= $(LOCALBIN)/ginkgo
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -209,6 +216,15 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.12.2
+
+# The ginkgo CLI has to match the library the suite is compiled against, so it
+# is derived from go.mod rather than pinned separately.
+GINKGO_VERSION ?= $(call gomodver,github.com/onsi/ginkgo/v2)
+
+# One process per top-level container. More than that idles: the specs inside a
+# container are Ordered and cannot be split across processes.
+E2E_PROCS ?= 3
+
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -231,6 +247,11 @@ setup-envtest: envtest ## Download the binaries required for ENVTEST in the loca
 envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
+
+.PHONY: ginkgo
+ginkgo: $(GINKGO) ## Download the ginkgo CLI locally if necessary.
+$(GINKGO): $(LOCALBIN)
+	$(call go-install-tool,$(GINKGO),github.com/onsi/ginkgo/v2/ginkgo,$(GINKGO_VERSION))
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.

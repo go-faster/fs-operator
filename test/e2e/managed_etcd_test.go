@@ -60,9 +60,11 @@ var _ = Describe("Managed etcd", Ordered, func() {
 			dumpManagedCluster()
 		}
 
+		// Asked for here, waited for in SynchronizedAfterSuite; see the note in
+		// the FSCluster container's AfterAll.
 		By("deleting the tenant namespace")
 		_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", managedNamespace,
-			"--ignore-not-found", "--timeout", "5m"))
+			"--ignore-not-found", "--wait=false"))
 	})
 
 	It("brings up a cluster with no external etcd", func() {
