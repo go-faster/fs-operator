@@ -226,7 +226,8 @@ func main() {
 	// worse than an operator whose validation runs only in the controller,
 	// which it does anyway (SPEC §5.1). ENABLE_WEBHOOKS=false turns it off for
 	// a local `make run`, where there is no API server to call back.
-	if len(webhookCertPath) > 0 && os.Getenv("ENABLE_WEBHOOKS") != "false" {
+	webhookEnabled := len(webhookCertPath) > 0 && os.Getenv("ENABLE_WEBHOOKS") != "false"
+	if webhookEnabled {
 		if err := webhookv1alpha1.SetupFSClusterWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "fscluster")
 			os.Exit(1)
@@ -245,6 +246,18 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up ready check")
 		os.Exit(1)
+	}
+
+	// Readiness has to include the webhook server, not just the manager.
+	// Without this the pod reports Ready as soon as /readyz answers, while the
+	// webhook is not yet listening on 9443 — and with failurePolicy: Fail that
+	// window is one where every FSCluster apply is rejected with "connection
+	// refused" by an operator whose Deployment says it is Available.
+	if webhookEnabled {
+		if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+			setupLog.Error(err, "Failed to set up webhook ready check")
+			os.Exit(1)
+		}
 	}
 
 	setupLog.Info("Starting manager")
