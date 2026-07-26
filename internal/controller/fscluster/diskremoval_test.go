@@ -18,6 +18,7 @@ package fscluster
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -283,5 +284,53 @@ func TestDiskRemovalRestoredWhenDeclaredAgain(t *testing.T) {
 
 	if got := fake.overrides(); len(got) != 0 {
 		t.Errorf("overrides = %+v, want them cleared once the disk is declared again", got)
+	}
+}
+
+// TestRetainedDiskStaysFullyPresent covers what a live cluster caught and no
+// unit test had: a disk being removed has to keep its claim template, its
+// volume mount AND its config entry, together.
+//
+// Retaining the claim and the config but not the mount is what shipped first,
+// and fs crash-looped on it: it creates each configured disk's root at boot,
+// and on a read-only root filesystem a disk it was told about but not given
+// fails with "mkdir: read-only file system". The node never comes back, so the
+// drain it was retained for can never finish.
+func TestRetainedDiskStaysFullyPresent(t *testing.T) {
+	cluster := testCluster()
+	cluster.Name, cluster.Namespace = "retain", testNamespace
+	cluster.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{
+		{Name: "d0", Size: resource.MustParse("10Gi")},
+	}
+	cluster.Spec.WithDefaults()
+
+	node := Nodes(cluster)[0]
+	set := NewStatefulSet(cluster, node, "rev", "d1")
+
+	if !slices.Contains(claimNames(*set), "d1") {
+		t.Error("the retained disk has no claim template, so its volume is released early")
+	}
+
+	mounted := false
+
+	for _, mount := range set.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if mount.Name == "d1" && mount.MountPath == DiskPath("d1") {
+			mounted = true
+		}
+	}
+
+	if !mounted {
+		t.Error("the retained disk is not mounted; fs will be told to use a volume it does not have")
+	}
+
+	configs, err := RenderNodeConfigs(cluster, []Node{node},
+		RenderOptions{RetainDisks: map[string][]string{node.Name: {"d1"}}})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	rendered := string(configs[node.Name].Data)
+	if !strings.Contains(rendered, DiskPath("d1")) {
+		t.Errorf("the retained disk is not in the config, so fs cannot move its data off:\n%s", rendered)
 	}
 }

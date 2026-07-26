@@ -136,7 +136,7 @@ func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision st
 			Selector: &metav1.LabelSelector{
 				MatchLabels: NodeSelectorLabels(cluster.Name, node.Name),
 			},
-			Template:                             podTemplate(cluster, node, restartRevision),
+			Template:                             podTemplate(cluster, node, restartRevision, retain),
 			VolumeClaimTemplates:                 volumeClaimTemplates(cluster, node, retain),
 			PersistentVolumeClaimRetentionPolicy: claimRetentionPolicy(cluster),
 		},
@@ -176,7 +176,7 @@ func PodTemplateRevision(sets []*appsv1.StatefulSet) (string, error) {
 }
 
 // podTemplate builds the pod that runs one node.
-func podTemplate(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string) corev1.PodTemplateSpec {
+func podTemplate(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string, retain []string) corev1.PodTemplateSpec {
 	spec := &cluster.Spec
 
 	labels := NodeObjectLabels(cluster.Name, node)
@@ -198,7 +198,7 @@ func podTemplate(cluster *fsv1alpha1.FSCluster, node Node, restartRevision strin
 			Annotations: annotations,
 		},
 		Spec: corev1.PodSpec{
-			Containers:                    []corev1.Container{fsContainer(cluster, node)},
+			Containers:                    []corev1.Container{fsContainer(cluster, node, retain)},
 			Volumes:                       volumes(cluster, node),
 			ImagePullSecrets:              spec.Image.PullSecrets,
 			NodeSelector:                  nodeSelector(cluster, node),
@@ -215,7 +215,7 @@ func podTemplate(cluster *fsv1alpha1.FSCluster, node Node, restartRevision strin
 }
 
 // fsContainer builds the fs container itself.
-func fsContainer(cluster *fsv1alpha1.FSCluster, node Node) corev1.Container {
+func fsContainer(cluster *fsv1alpha1.FSCluster, node Node, retain []string) corev1.Container {
 	spec := &cluster.Spec
 
 	return corev1.Container{
@@ -231,7 +231,7 @@ func fsContainer(cluster *fsv1alpha1.FSCluster, node Node) corev1.Container {
 			containerPort(PortNamePprof, PprofPort),
 		},
 		Env:            env(cluster, node),
-		VolumeMounts:   volumeMounts(cluster),
+		VolumeMounts:   volumeMounts(cluster, retain),
 		Resources:      spec.PodTemplate.Resources,
 		StartupProbe:   probe(cluster, healthPath, startupPeriodSeconds, startupFailureThreshold),
 		LivenessProbe:  probe(cluster, healthPath, livenessPeriodSeconds, livenessFailureThreshold),
@@ -430,8 +430,18 @@ func volumes(cluster *fsv1alpha1.FSCluster, node Node) []corev1.Volume {
 	return vols
 }
 
+// diskNames are the disks the spec declares.
+func diskNames(cluster *fsv1alpha1.FSCluster) []string {
+	names := make([]string, 0, len(cluster.Spec.Storage.Disks))
+	for _, disk := range cluster.Spec.Storage.Disks {
+		names = append(names, disk.Name)
+	}
+
+	return names
+}
+
 // volumeMounts mounts the configuration, the certificate and every disk.
-func volumeMounts(cluster *fsv1alpha1.FSCluster) []corev1.VolumeMount {
+func volumeMounts(cluster *fsv1alpha1.FSCluster, retain []string) []corev1.VolumeMount {
 	mounts := []corev1.VolumeMount{{
 		Name:      configVolumeName,
 		MountPath: ConfigDir,
@@ -454,10 +464,15 @@ func volumeMounts(cluster *fsv1alpha1.FSCluster) []corev1.VolumeMount {
 		})
 	}
 
-	for _, disk := range cluster.Spec.Storage.Disks {
+	// A disk being removed keeps its mount for as long as it keeps its claim
+	// template and its config entry. All three go together or the node will
+	// not start: fs creates each configured disk's root at boot, and on a
+	// read-only root filesystem a disk it was told about but not given fails
+	// with "mkdir: read-only file system" — a crash loop, not a degraded node.
+	for _, disk := range append(diskNames(cluster), retain...) {
 		mounts = append(mounts, corev1.VolumeMount{
-			Name:      disk.Name,
-			MountPath: DiskPath(disk.Name),
+			Name:      disk,
+			MountPath: DiskPath(disk),
 		})
 	}
 

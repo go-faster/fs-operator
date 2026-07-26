@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -44,10 +45,14 @@ const (
 
 	// clusterName is the FSCluster of examples/01-minimal.yaml.
 	clusterName = "fs-dev"
-
-	// forwardPort is the local port the S3 endpoint is forwarded to.
-	forwardPort = "18080"
 )
+
+// forwardPort is the local port the S3 endpoint is currently forwarded to.
+// Chosen per forward rather than fixed: a developer machine may already have
+// something on any given port, and a forward that cannot bind is silent — the
+// test then talks to whatever else owns it. That happened, and the symptom was
+// an HTTP/2 frame arriving where an S3 response should be.
+var forwardPort string
 
 // This is the end-to-end claim of P1: `kubectl apply` one FSCluster on a
 // cluster with etcd produces a running fs cluster serving S3. Everything below
@@ -272,6 +277,70 @@ var _ = Describe("FSCluster", Ordered, func() {
 			"the object came back different after the decommission")
 	})
 
+	It("adds and removes a disk without losing data", func() {
+		By("adding a second disk to every node")
+		_, err := utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
+			"-n", clusterNamespace, "--type", "merge",
+			"-p", `{"spec":{"storage":{"disks":[{"name":"d0","size":"10Gi"},{"name":"d1","size":"10Gi"}]}}}`))
+		Expect(err).NotTo(HaveOccurred(), "Failed to add the disk")
+
+		// Adding a disk recreates each node's StatefulSet, one at a time, so
+		// this waits on the whole roll rather than on the patch.
+		By("waiting for every node to carry it")
+		Eventually(func(g Gomega) {
+			g.Expect(nodesWithDisk("d1")).To(Equal(3), "not every node has the new disk")
+			g.Expect(readyNodes()).To(HaveLen(3))
+			g.Expect(clusterCondition("Ready")).To(Equal("True"))
+		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
+
+		By("removing it again")
+		_, err = utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
+			"-n", clusterNamespace, "--type", "merge",
+			"-p", `{"spec":{"storage":{"disks":[{"name":"d0","size":"10Gi"}]}}}`))
+		Expect(err).NotTo(HaveOccurred(), "Failed to remove the disk")
+
+		// The drain has to be observed starting, or "the disk is gone" below
+		// would also be satisfied by a removal that never happened.
+		By("waiting for the operator to start draining it")
+		Eventually(func(g Gomega) {
+			g.Expect(resourceField("fscluster", clusterName, "{.status.update.phase}")).
+				To(Equal("Draining"))
+		}).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+
+		// It leaves only once fs reports it empty on every node, so this waits
+		// on a real drain rather than on a delete (SPEC §8.5).
+		By("waiting for the disk to drain and be removed from every node")
+		Eventually(func(g Gomega) {
+			g.Expect(nodesWithDisk("d1")).To(BeZero(), "the disk is still on some node")
+		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
+
+		By("waiting for the cluster to settle without it")
+		Eventually(func(g Gomega) {
+			g.Expect(readyNodes()).To(HaveLen(3))
+			g.Expect(clusterCondition("Ready")).To(Equal("True"))
+			g.Expect(clusterCondition("ClusterSizeAligned")).To(Equal("True"))
+		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
+
+		// The point of draining rather than deleting: whatever the disk held
+		// moved off it first.
+		By("reading back an object written before the disk existed")
+		stop := forwardS3()
+		defer stop()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		object, err := s3Client().GetObject(ctx, "e2e", "hello.txt", minio.GetObjectOptions{})
+		Expect(err).NotTo(HaveOccurred(), "the object did not survive the disk removal")
+
+		defer func() { _ = object.Close() }()
+
+		got, err := io.ReadAll(object)
+		Expect(err).NotTo(HaveOccurred(), "the object did not survive the disk removal")
+		Expect(got).To(Equal([]byte("fs-operator end-to-end")),
+			"the object came back different after the disk removal")
+	})
+
 	It("rejects an impossible spec at apply time", func() {
 		// The webhook's whole purpose: the API server refuses the object, so
 		// there is nothing to reconcile and nothing to clean up. Everything
@@ -317,6 +386,29 @@ func nodeSets() []string {
 	}
 
 	return strings.Fields(out)
+}
+
+// nodesWithDisk counts the node StatefulSets whose claim templates declare a
+// disk. Counting the templates is what says whether the operator has actually
+// reshaped each node, which the PVCs cannot: they outlive their template under
+// the default Retain policy.
+func nodesWithDisk(disk string) int {
+	out, err := utils.Run(exec.Command("kubectl", "get", "statefulset",
+		"-n", clusterNamespace, "-l", "fs.go-faster.org/cluster="+clusterName,
+		"-o", `jsonpath={range .items[*]}{range .spec.volumeClaimTemplates[*]}{.metadata.name} {end}{end}`))
+	if err != nil {
+		return -1
+	}
+
+	count := 0
+
+	for _, name := range strings.Fields(out) {
+		if name == disk {
+			count++
+		}
+	}
+
+	return count
 }
 
 // readyNodes names the cluster's node StatefulSets that report their pod ready.
@@ -403,24 +495,42 @@ func clusterCondition(conditionType string) string {
 // forwardS3 forwards the cluster's S3 Service to a local port and returns how
 // to stop it.
 func forwardS3() func() {
+	forwardPort = freePort()
+
 	cmd := exec.Command("kubectl", "port-forward", "-n", clusterNamespace,
 		"service/"+clusterName, forwardPort+":8080")
 
 	Expect(cmd.Start()).To(Succeed(), "Failed to start the port forward")
 
-	// Give the forward a moment to bind before the first request.
+	// Wait for the forward itself to answer, not for the Service to exist.
+	// kubectl port-forward that cannot bind exits quietly, and every later
+	// request then goes to whoever does own the port.
 	Eventually(func() error {
-		_, err := utils.Run(exec.Command("kubectl", "get", "service", clusterName, "-n", clusterNamespace))
+		conn, err := net.DialTimeout("tcp", "localhost:"+forwardPort, 2*time.Second)
+		if err != nil {
+			return err
+		}
 
-		return err
-	}).WithTimeout(time.Minute).WithPolling(2 * time.Second).Should(Succeed())
-
-	time.Sleep(3 * time.Second)
+		return conn.Close()
+	}).WithTimeout(time.Minute).WithPolling(time.Second).Should(Succeed(),
+		"the S3 port forward never started serving")
 
 	return func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}
+}
+
+// freePort reserves a local port the forward can have to itself.
+func freePort() string {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	Expect(err).NotTo(HaveOccurred(), "Failed to reserve a local port")
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(listener.Close()).To(Succeed())
+
+	return port
 }
 
 // s3Client builds an S3 client from the cluster's generated root credentials —

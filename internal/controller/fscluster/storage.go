@@ -45,6 +45,13 @@ const eventStorageExpanding = "StorageExpanding"
 // A shrink is refused outright — fs has no way to reclaim data off a smaller
 // volume, and Kubernetes cannot shrink a PVC.
 func (r *Reconciler) reconcileStorage(ctx context.Context, p *pass) (pipeline.Outcome, error) {
+	// An orphan-recreate leaves the previous pod adopted by the new
+	// StatefulSet, and finishing that is this step's business before anything
+	// else (see replaceAdoptedPod).
+	if outcome, done, err := r.finishAdoption(ctx, p); done || err != nil {
+		return outcome, err
+	}
+
 	var drifted []int
 
 	for i, node := range p.nodes {
@@ -85,6 +92,77 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, p *pass) (pipeline.Ou
 	return r.expandNode(ctx, p, p.nodes[drifted[0]], p.desired[drifted[0]])
 }
 
+// finishAdoption replaces a pod the orphan-recreate left behind, and reports
+// whether it acted.
+//
+// The StatefulSet controller re-adopts the orphaned pod but does not restamp
+// it: the pod keeps the previous revision's controller-revision-hash, so the
+// set reports updatedReplicas 0 for a pod that is running and ready. The
+// operator reads that as "not serving" (nodeServing), so the node never counts
+// as healthy again and every later storage change and rollout blocks behind
+// it — permanently, because nothing else ever replaces that pod.
+//
+// It also has to go for a plainer reason: a running pod cannot gain or lose a
+// volume mount, so a disk added or removed only takes effect when the pod is
+// replaced. SPEC §8.5 says "orphan-recreate the StatefulSet and roll the
+// node"; this is the roll.
+func (r *Reconciler) finishAdoption(ctx context.Context, p *pass) (pipeline.Outcome, bool, error) {
+	for _, node := range p.nodes {
+		live, running := p.live[node.Name]
+		if !running || !adoptedStalePod(live) {
+			continue
+		}
+
+		// Replacing this pod takes a serving node down, so hold to the same
+		// contract as any other roll: every other node must be up first.
+		if waiting := otherNodesNotReady(p, node.Name); len(waiting) > 0 {
+			outcome, err := pipeline.RequeueAfter(pollInterval, fmt.Sprintf(
+				"waiting for node(s) %v before replacing node %q's pod", waiting, node.Name))
+
+			return outcome, true, err
+		}
+
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name: PodName(node.Name), Namespace: p.cluster.Namespace,
+		}}
+
+		if err := r.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+			return pipeline.Outcome{}, true, errors.Wrapf(err, "replace pod of node %q", node.Name)
+		}
+
+		r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventStorageExpanding,
+			"Replacing node %q's pod so it picks up its new storage", node.Name)
+
+		outcome, err := pipeline.RequeueAfter(pollInterval,
+			fmt.Sprintf("replacing node %q's pod after recreating its StatefulSet", node.Name))
+
+		return outcome, true, err
+	}
+
+	return pipeline.Outcome{}, false, nil
+}
+
+// adoptedStalePod reports whether a StatefulSet's single pod is running but
+// left on a previous revision — the state an orphan-recreate produces.
+func adoptedStalePod(set *appsv1.StatefulSet) bool {
+	return set.Status.ObservedGeneration >= set.Generation &&
+		set.Status.ReadyReplicas == 1 &&
+		set.Status.UpdatedReplicas == 0
+}
+
+// otherNodesNotReady names the nodes other than one that are not serving.
+func otherNodesNotReady(p *pass, except string) []string {
+	var waiting []string
+
+	for _, name := range p.health.notReady {
+		if name != except {
+			waiting = append(waiting, name)
+		}
+	}
+
+	return waiting
+}
+
 // expandNode grows one node's PVCs and orphan-deletes its StatefulSet so the
 // next pass recreates it with the new claim templates.
 func (r *Reconciler) expandNode(ctx context.Context, p *pass, node Node, desired *appsv1.StatefulSet) (pipeline.Outcome, error) {
@@ -102,7 +180,7 @@ func (r *Reconciler) expandNode(ctx context.Context, p *pass, node Node, desired
 	}
 
 	r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventStorageExpanding,
-		"Applying storage changes to node %q (recreating its StatefulSet, pod kept)", node.Name)
+		"Applying storage changes to node %q (recreating its StatefulSet, then its pod)", node.Name)
 
 	p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
 		fsv1alpha1.ReasonStorageExpanding, fmt.Sprintf("Applying storage changes to node %q", node.Name))

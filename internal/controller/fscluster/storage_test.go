@@ -205,3 +205,62 @@ func ensureExpandableClass(t *testing.T, r *Reconciler) {
 		t.Fatalf("create storage class: %v", err)
 	}
 }
+
+// TestStorageReplacesTheAdoptedPod covers what a live cluster found and
+// envtest had been hiding.
+//
+// An orphan-recreate leaves the previous pod adopted by the new StatefulSet,
+// and the StatefulSet controller does not restamp it: the pod keeps the old
+// controller-revision-hash, so the set reports updatedReplicas 0 for a pod
+// that is running and ready. nodeServing reads that as "not serving", so the
+// node never counts as healthy again and every later storage change and
+// rollout blocks behind it — for good, because nothing else replaces that pod.
+//
+// It matters for a second reason too: a running pod cannot gain a volume
+// mount, so a disk added this way is never actually mounted until the pod goes.
+func TestStorageReplacesTheAdoptedPod(t *testing.T) {
+	r, _ := reconciler(t)
+	key := createCluster(t, r, "adopted-pod", nil)
+
+	reconcile(t, r, key)
+
+	var cluster fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	nodes := Nodes(&cluster)
+	for _, node := range nodes {
+		serving(t, r, key, node)
+	}
+
+	// The state an orphan-recreate leaves: ready, but on the previous
+	// revision. Everything else in the cluster is healthy.
+	stale := nodes[0]
+
+	var set appsv1.StatefulSet
+	get(t, r, key.Namespace, stale.Name, &set)
+
+	set.Status.UpdatedReplicas = 0
+	if err := r.Status().Update(t.Context(), &set); err != nil {
+		t.Fatalf("mark node %q as carrying an adopted pod: %v", stale.Name, err)
+	}
+
+	// The pod the StatefulSet adopted.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: PodName(stale.Name), Namespace: key.Namespace},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{
+			{Name: "fs", Image: "ghcr.io/go-faster/fs:test"},
+		}},
+	}
+
+	if err := r.Create(t.Context(), pod); err != nil {
+		t.Fatalf("create the adopted pod: %v", err)
+	}
+
+	reconcile(t, r, key)
+
+	err := r.Get(t.Context(),
+		types.NamespacedName{Namespace: key.Namespace, Name: PodName(stale.Name)}, pod)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("the adopted pod survived, so the node stays not-serving for good: %v", err)
+	}
+}
