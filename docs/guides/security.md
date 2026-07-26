@@ -51,7 +51,7 @@ the config would make **rotating a password restart every node**.
 | 9464 | Prometheus metrics | open, so it can be scraped |
 | 7080 | peer replication | cluster-internal |
 | 8090 | admin API | cluster-internal |
-| 9010 | pprof | **open unless `networkPolicy: true`** |
+| 9010 | pprof | open, deliberately — see below |
 
 **Peer traffic on 7080 is HMAC-authenticated but not encrypted.** Authenticated
 means a node cannot be impersonated without the cluster secret; it does not
@@ -64,26 +64,34 @@ token Secret never leaves the namespace.
 
 ### pprof
 
-**pprof listens on all interfaces on 9010, with no authentication, and there
-is currently no way to turn it off.** Any pod that can reach a node's IP can
-pull a heap profile, and a heap profile is a slice of the process's memory —
-the cluster secret, the admin token and object bytes among it. Goroutine and
-CPU profiles are also a cheap way to make a node do work it did not ask for.
+**pprof listens on 9010, on all interfaces, with no authentication, and the
+network policy deliberately leaves it open.** Any pod in the cluster can pull
+a profile, and there is currently no switch to turn it off.
 
-`spec.networkPolicy: true` closes it, because the policy is an allow-list and
-9010 is not on it. Until you set that, treat every pod in the cluster as
-having read access to fs's memory. This is the single strongest reason to
-turn the network policy on.
+That is a real grant, so it is worth being precise about what it gives away. A
+heap profile is a slice of the process's memory: object bytes in flight, and —
+because they are read from the environment at startup and held — the cluster
+secret, the admin token and the root credentials. Goroutine and CPU profiles
+are cheaper but still let an unauthenticated caller make a node do work.
+
+**Treat every pod in the cluster as able to read fs's memory.** If your
+namespace runs untrusted or multi-tenant workloads, that is the wrong trade,
+and the fix is one line in `NewNetworkPolicy` — moving port 9010 from the open
+ingress rule to the restricted one, alongside the peer and admin ports. It is
+open because reaching a struggling node's profiler without first arranging
+network access is worth more, in the environments this is built for, than the
+exposure costs.
 
 ### Network policy
 
 `spec.networkPolicy: true` restricts 7080 and 8090 to the cluster's own pods
-and the operator's namespace. S3 and metrics stay reachable — a NetworkPolicy
-ingress list is an allow-list, so those are stated explicitly rather than left
-out.
+and the operator's namespace. S3, metrics and pprof stay reachable — a
+NetworkPolicy ingress list is an allow-list, so anything meant to stay open is
+named explicitly rather than left out.
 
 It is off by default because a policy that silently breaks scraping is worse
-than no policy. Turn it on in production.
+than no policy. Turn it on in production: it is what stops arbitrary pods from
+replicating peer traffic or reaching the admin API.
 
 ## Pod hardening
 

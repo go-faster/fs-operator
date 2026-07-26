@@ -52,6 +52,14 @@ func TestNewNetworkPolicy(t *testing.T) {
 		t.Errorf("open rule ports = %v, want S3 (%d) and metrics (%d)", open, S3Port, MetricsPort)
 	}
 
+	// pprof is open on purpose, not by omission. It is unauthenticated and a
+	// heap profile carries whatever is in memory, so the grant is asserted
+	// here: if someone restricts it later that is a decision, and this test is
+	// where they have to make it rather than a behaviour that drifts.
+	if !open[PprofPort] {
+		t.Errorf("open rule ports = %v, want pprof (%d) reachable from any pod", open, PprofPort)
+	}
+
 	if open[PeerPort] || open[AdminPort] {
 		t.Error("the peer or admin port is open to everyone")
 	}

@@ -71,10 +71,18 @@ const namespaceNameLabel = "kubernetes.io/metadata.name"
 //
 // fs's peer traffic (7080) is HMAC-authenticated but not encrypted, and the
 // admin listener (8090) manages credentials, so both are restricted to the
-// cluster's own pods and the operator's namespace. The S3 port and the metrics
-// port stay open — S3 is the service, and metrics must be scrapeable — which,
-// because a NetworkPolicy ingress list is an allow-list, must be stated
-// explicitly or they would be denied.
+// cluster's own pods and the operator's namespace. S3, metrics and pprof stay
+// open — S3 is the service, metrics must be scrapeable, and pprof is reachable
+// from any pod by design (see below) — which, because a NetworkPolicy ingress
+// list is an allow-list, must be stated explicitly or they would be denied.
+//
+// pprof (9010) is deliberately on the open rule rather than the restricted
+// one. It is unauthenticated, and a heap profile contains whatever is in the
+// process's memory, so this is a real grant and not an oversight: it is here
+// because reaching a struggling node's profiler without first arranging
+// network access is worth more than the exposure costs in the environments
+// this runs in. Moving it to internalFrom is the one-line change if that
+// trade stops holding; docs/guides/security.md states the consequence.
 func NewNetworkPolicy(cluster *fsv1alpha1.FSCluster, operatorNamespace string) *networkingv1.NetworkPolicy {
 	clusterPods := metav1.LabelSelector{MatchLabels: SelectorLabels(cluster.Name)}
 
@@ -103,10 +111,11 @@ func NewNetworkPolicy(cluster *fsv1alpha1.FSCluster, operatorNamespace string) *
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
-					// S3 and metrics: unrestricted.
+					// S3, metrics and pprof: unrestricted.
 					Ports: []networkingv1.NetworkPolicyPort{
 						policyPort(cluster.Spec.S3.Service.Port),
 						policyPort(MetricsPort),
+						policyPort(PprofPort),
 					},
 				},
 				{
