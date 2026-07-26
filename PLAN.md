@@ -273,7 +273,15 @@ needs a pointer field to tell an absent key from an explicit zero.
 5. **Disk add** (§8.5), and removal once §11.6 lands.
 6. **Admission webhook** — after decommission, which changes what
    scale-down validation means.
-7. **Operator metrics** (§10, none exist yet) **+ Grafana dashboards**.
+7. ✅ **Operator metrics** (§10) **+ Grafana dashboard** — `internal/metrics`
+   publishes the five `fsoperator_*` series §10 has declared since P1 and
+   none of which existed. Every series carries `namespace` as well as
+   `cluster` (one operator, many namespaces, same cluster name);
+   `update_phase` publishes 0 for the phases a cluster is not in rather than
+   omitting them; and a deleted cluster is forgotten immediately, since a
+   gauge that outlives its object reports `ready=0` forever on a name nothing
+   will reconcile again. The chart ships a dashboard as a sidecar-discovered
+   ConfigMap (`grafanaDashboard.enabled`).
 8. ✅ **CRD-compat CI gate** — `hack/check-crd-compat.py` diffs the generated
    CRDs against the last release tag and fails on anything that breaks
    objects already stored (removed field or version, changed type, newly
