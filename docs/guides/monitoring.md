@@ -143,6 +143,27 @@ Two things worth knowing about them:
   object would report `ready=0` forever on a name nothing will ever reconcile
   again — indistinguishable from an outage that never resolves.
 
+### Grafana dashboard
+
+The chart ships a dashboard for these, as a ConfigMap the Grafana sidecar
+discovers by label:
+
+```sh
+helm upgrade --install fs-operator oci://ghcr.io/go-faster/charts/fs-operator \
+  --set prometheus.enabled=true \
+  --set grafanaDashboard.enabled=true
+```
+
+The sidecar's label is configurable, since deployments differ on it —
+kube-prometheus-stack watches `grafana_dashboard: "1"`, which is the default
+here. Set `grafanaDashboard.labels` for anything else, and
+`grafanaDashboard.namespace` when the sidecar only watches its own namespace.
+
+It has three rows: cluster state (readiness, node counts, the ready-vs-declared
+gap), rolling changes (the phase panel and the completed-duration quantiles),
+and the operator itself (reconcile errors and latency). The raw JSON is
+`dist/chart/dashboards/fs-operator.json` if you would rather import it by hand.
+
 A rolling change that is *stuck* never reaches `update_duration_seconds`,
 which only observes completed ones. Alert on `update_phase` staying at 1
 instead:

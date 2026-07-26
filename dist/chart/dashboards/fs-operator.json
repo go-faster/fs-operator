@@ -1,0 +1,275 @@
+{
+  "title": "fs-operator",
+  "uid": "fs-operator",
+  "tags": ["fs", "fs-operator"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(fsoperator_cluster_ready, namespace)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "cluster",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(fsoperator_cluster_ready{namespace=~\"$namespace\"}, cluster)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Clusters",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Clusters not Ready",
+      "description": "Clusters below write quorum. Anything but 0 is an outage.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 5, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "expr": "count(fsoperator_cluster_ready{namespace=~\"$namespace\", cluster=~\"$cluster\"} == 0) or vector(0)",
+          "legendFormat": "not ready",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Rolling changes in flight",
+      "description": "Clusters in any update phase: a rollout, a decommission or a schema migration.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 5, "x": 5, "y": 1 },
+      "targets": [
+        {
+          "expr": "count(max by (namespace, cluster) (fsoperator_update_phase{namespace=~\"$namespace\", cluster=~\"$cluster\"}) == 1) or vector(0)",
+          "legendFormat": "in flight",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Cluster state",
+      "description": "Ready is the write-quorum condition. A ready count below declared for long means a node is not coming back; registered below ready means a pod is up but has not joined the cluster's own topology.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 10, "w": 14, "x": 10, "y": 1 },
+      "targets": [
+        {
+          "expr": "fsoperator_cluster_ready{namespace=~\"$namespace\", cluster=~\"$cluster\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "ready"
+        },
+        {
+          "expr": "fsoperator_cluster_nodes{namespace=~\"$namespace\", cluster=~\"$cluster\", state=\"declared\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "declared"
+        },
+        {
+          "expr": "fsoperator_cluster_nodes{namespace=~\"$namespace\", cluster=~\"$cluster\", state=\"ready\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "nodesReady"
+        },
+        {
+          "expr": "fsoperator_cluster_nodes{namespace=~\"$namespace\", cluster=~\"$cluster\", state=\"registered\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "registered"
+        }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "state": true, "__name__": true, "job": true, "instance": true, "endpoint": true, "service": true, "container": true, "pod": true },
+            "renameByName": {
+              "Value #ready": "Ready",
+              "Value #declared": "Nodes declared",
+              "Value #nodesReady": "Nodes ready",
+              "Value #registered": "Nodes registered"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Ready" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "0": { "text": "No", "color": "red", "index": 0 }, "1": { "text": "Yes", "color": "green", "index": 1 } } }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Nodes ready vs declared",
+      "description": "A persistent gap is a node that is not coming back.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 10, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "fsoperator_cluster_nodes{namespace=~\"$namespace\", cluster=~\"$cluster\", state=\"ready\"}",
+          "legendFormat": "{{namespace}}/{{cluster}} ready",
+          "refId": "A"
+        },
+        {
+          "expr": "fsoperator_cluster_nodes{namespace=~\"$namespace\", cluster=~\"$cluster\", state=\"declared\"}",
+          "legendFormat": "{{namespace}}/{{cluster}} declared",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 0 }, "min": 0 },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Rolling changes",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Update phase",
+      "description": "1 while a cluster is in that phase. A phase stuck at 1 for hours is a change that is not progressing — for Draining, a decommission whose data cannot move off. A stuck change never reaches the duration histogram, so this is where it shows.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 14, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "fsoperator_update_phase{namespace=~\"$namespace\", cluster=~\"$cluster\"} == 1",
+          "legendFormat": "{{namespace}}/{{cluster}} {{phase}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 20, "lineWidth": 2 }, "min": 0, "max": 1 },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Completed rolling changes (p50 / p95)",
+      "description": "Only completed changes are observed here; one that is stuck appears in the phase panel instead.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 10, "x": 14, "y": 12 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(fsoperator_update_duration_seconds_bucket{namespace=~\"$namespace\", cluster=~\"$cluster\"}[1h])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(fsoperator_update_duration_seconds_bucket{namespace=~\"$namespace\", cluster=~\"$cluster\"}[1h])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 }, "min": 0 },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Operator",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconcile errors",
+      "description": "Passes that ended in an error, by controller. A sustained rate means the operator cannot apply what a spec asks for.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum by (controller) (rate(fsoperator_reconcile_errors_total[5m]))",
+          "legendFormat": "{{controller}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10 }, "min": 0 },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconcile latency (p95)",
+      "description": "controller-runtime's own histogram, for the operator's health rather than the clusters'.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket[5m])))",
+          "legendFormat": "{{controller}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 }, "min": 0 },
+        "overrides": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{{- if .Values.grafanaDashboard.enabled }}
+{{- /*
+The Grafana sidecar discovers dashboards by label, not by name, so shipping
+one is a labelled ConfigMap. The label is configurable because the key the
+sidecar watches for is a deployment decision (kube-prometheus-stack defaults
+to grafana_dashboard=1, others differ).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fs-operator.resourceName" (dict "suffix" "grafana-dashboard" "context" $) }}
+  namespace: {{ .Values.grafanaDashboard.namespace | default .Release.Namespace }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "fs-operator.name" . }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- toYaml .Values.grafanaDashboard.labels | nindent 4 }}
+  {{- with .Values.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  fs-operator.json: |
+{{ .Files.Get "dashboards/fs-operator.json" | indent 4 }}
+{{- end }}

@@ -188,6 +188,21 @@ certManager:
 prometheus:
   enabled: false
 
+## Grafana dashboard for the operator's metrics, shipped as a ConfigMap the
+## Grafana sidecar discovers by label. Needs `prometheus.enabled` (or some
+## other scrape path) to have anything to show.
+##
+grafanaDashboard:
+  enabled: false
+  ## The label the Grafana sidecar watches for. kube-prometheus-stack uses
+  ## grafana_dashboard="1"; other deployments differ, so it is configurable.
+  labels:
+    grafana_dashboard: "1"
+  annotations: {}
+  ## Namespace to put the ConfigMap in. Empty means the release namespace;
+  ## set it when the sidecar only watches its own.
+  namespace: ""
+
 ## Network policies for controlling traffic flow.
 ## Enable to restrict ingress to the controller manager.
 ##
