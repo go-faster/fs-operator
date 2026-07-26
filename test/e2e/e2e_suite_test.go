@@ -76,6 +76,14 @@ var _ = BeforeSuite(func() {
 
 	configureKubectlKubeRC()
 
+	// The admission webhook needs a certificate the API server trusts, so the
+	// suite installs cert-manager and turns the webhook on. It is the half of
+	// the webhook unit tests cannot reach: the Service selector matching the
+	// manager pod, the CA bundle being injected, and the manager actually
+	// serving TLS on 9443.
+	By("installing cert-manager")
+	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install cert-manager")
+
 	By("installing the operator from dist/chart")
 	cmd = exec.Command("helm", "upgrade", "--install", releaseName, "dist/chart",
 		"--namespace", namespace,
@@ -83,6 +91,8 @@ var _ = BeforeSuite(func() {
 		"--set", "manager.image.repository="+imageRepository(managerImage),
 		"--set", "manager.image.tag="+imageTag(managerImage),
 		"--set", "manager.image.pullPolicy=IfNotPresent",
+		"--set", "webhook.enabled=true",
+		"--set", "certManager.enabled=true",
 		"--wait", "--timeout", "5m",
 	)
 	_, err = utils.Run(cmd)

@@ -16,7 +16,7 @@ kubectl get fscluster prod -o jsonpath='{range .status.conditions[*]}{.type}={.s
 
 | Type | Meaning | `True` when |
 |---|---|---|
-| `SpecValid` | The spec passed controller-side cross-field validation. | The spec is coherent and applied. |
+| `SpecValid` | The spec passed cross-field validation. | The spec is coherent and applied. |
 | `ReconcileSucceeded` | The last reconcile pass completed without error. | The pass finished cleanly. |
 | `Ready` | The cluster serves S3 at write quorum. | A write quorum of failure domains is serving. |
 | `NodesHealthy` | Every node's pod is up and current. | All nodes Ready. |
@@ -28,6 +28,12 @@ kubectl get fscluster prod -o jsonpath='{range .status.conditions[*]}{.type}={.s
 ### Condition reasons
 
 The `reason` names the specific cause; these are stable.
+
+With the [admission webhook](../install/helm.md#admission-webhook) enabled,
+most of the `SpecValid` reasons below are reported by `kubectl apply` instead
+— the object is never stored, so there is no condition to read. They still
+appear here for clusters stored before the webhook was on, or while it is
+off: the controller runs the same checks either way.
 
 | Reason | On | Meaning |
 |---|---|---|

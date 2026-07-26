@@ -272,25 +272,38 @@ var _ = Describe("FSCluster", Ordered, func() {
 			"the object came back different after the decommission")
 	})
 
-	It("refuses a topology its scheme cannot host", func() {
-		By("asking for two nodes, below rf3's three failure domains")
-		_, err := utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
-			"-n", clusterNamespace, "--type", "merge",
-			"-p", `{"spec":{"topology":{"nodes":2}}}`))
-		Expect(err).NotTo(HaveOccurred(), "Failed to patch the cluster")
+	It("rejects an impossible spec at apply time", func() {
+		// The webhook's whole purpose: the API server refuses the object, so
+		// there is nothing to reconcile and nothing to clean up. Everything
+		// else in this suite goes through the controller; this is the one
+		// check that proves the admission path is wired — the Service selector
+		// finds the manager, cert-manager's CA reached the configuration, and
+		// the manager is serving TLS on 9443.
+		By("applying a cluster whose topology cannot host its scheme")
+		apply := exec.Command("kubectl", "apply", "-n", clusterNamespace, "-f", "-")
+		apply.Stdin = strings.NewReader(strings.ReplaceAll(
+			minimalExample(), "nodes: 3", "nodes: 2"))
 
-		By("waiting for the refusal")
-		Eventually(func(g Gomega) {
-			g.Expect(clusterCondition("SpecValid")).To(Equal("False"))
-		}).WithTimeout(2 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+		out, err := utils.Run(apply)
+		Expect(err).To(HaveOccurred(), "the API server admitted an impossible spec")
 
-		// Refused outright, so nothing is drained on the way to a cluster that
-		// could not host its own data.
-		By("checking that every node is still there")
-		Expect(readyNodes()).To(HaveLen(3), "the operator drained a node toward a refused topology")
+		// The message a user reads has to name the reason, not just fail.
+		Expect(out + errorText(err)).To(ContainSubstring("SchemeTopologyMismatch"))
+
+		By("checking the running cluster was not touched")
+		Expect(nodeSets()).To(HaveLen(3))
 	})
 
 })
+
+// errorText is an error's message, for asserting on what kubectl printed.
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	return err.Error()
+}
 
 // nodeSets names every node StatefulSet the cluster has, ready or not. A
 // decommission is about existence: a node restarting onto its drained config is

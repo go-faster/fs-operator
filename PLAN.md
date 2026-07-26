@@ -271,8 +271,16 @@ needs a pointer field to tell an absent key from an explicit zero.
    gate resolves unknown to *wait*, so a pre-v0.10.0 cluster drains and then
    holds rather than deleting on a signal that is not there.
 5. **Disk add** (§8.5), and removal once §11.6 lands.
-6. **Admission webhook** — after decommission, which changes what
-   scale-down validation means.
+6. ✅ **Admission webhook** — cross-field checks move to `internal/validation`
+   and run in two places: the validating webhook at apply time (so `kubectl
+   apply` reports the problem and nothing is stored), and the controller
+   before it acts, because a webhook can be disabled, unreachable, or absent
+   when an object was stored. One implementation, two callers. Checks that
+   read cluster state (a referenced Secret, a live StatefulSet's disks) stay
+   controller-only: the admission path must not call the API server. Opt-in
+   (`webhook.enabled` + a certificate), `failurePolicy: Fail`. The scheme
+   parser moved to `internal/scheme` so the shared validation had somewhere
+   neutral to live.
 7. ✅ **Operator metrics** (§10) **+ Grafana dashboard** — `internal/metrics`
    publishes the five `fsoperator_*` series §10 has declared since P1 and
    none of which existed. Every series carries `namespace` as well as
