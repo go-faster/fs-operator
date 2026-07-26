@@ -87,6 +87,12 @@ spec:
         {{- if .Values.webhook.enabled }}
         - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
         {{- end }}
+        {{- with (include "fs-operator.watchNamespaces" .) }}
+        # The watch scope must match the RBAC scope. A namespaced Role with
+        # cluster-wide watches is an operator that reports Ready and reconciles
+        # nothing, because every List and Watch it opens is refused.
+        - --watch-namespaces={{ . }}
+        {{- end }}
         {{- range .Values.manager.args }}
         - {{ . }}
         {{- end }}

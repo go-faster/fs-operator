@@ -145,4 +145,104 @@ into `repository` (`ghcr.io/go-faster/fs@sha256:…`) works too.
 Changing a cluster's digest is an ordinary image change: it rolls the cluster
 one node at a time under the usual convergence gates ([upgrades](../guides/upgrades.md)).
 
-<!-- TODO(P2): values reference, watchNamespaces. -->
+## Values reference
+
+Defaults are what `helm install` gives you with no `--set`. `values.yaml` in
+the chart carries the same information with more commentary.
+
+### Operator deployment
+
+| Value | Default | What it does |
+|---|---|---|
+| `manager.enabled` | `true` | Install the operator itself. `false` installs only the CRDs and RBAC. |
+| `manager.replicas` | `1` | Replica count. More than one is safe — leader election means only one reconciles. |
+| `manager.image.repository` | `ghcr.io/go-faster/fs-operator` | Operator image. |
+| `manager.image.tag` | chart `appVersion` | Overrides the tag the chart would pick. |
+| `manager.image.digest` | _unset_ | Pin by content. Wins over `tag`. |
+| `manager.image.pullPolicy` | `IfNotPresent` | |
+| `manager.imagePullSecrets` | _unset_ | Pull secrets for a private registry. |
+| `manager.args` | `[--leader-elect]` | Manager flags. |
+| `manager.resources` | 500m / 128Mi limits | Requests and limits. |
+| `manager.podSecurityContext` | non-root, `RuntimeDefault` | Pod-level hardening. |
+| `manager.securityContext` | no caps, no escalation, read-only root | Container-level hardening. |
+| `manager.affinity`, `.nodeSelector`, `.tolerations` | empty | Scheduling. |
+| `manager.terminationGracePeriodSeconds` | `10` | |
+| `global.imageRegistry` | `""` | Rewrites the registry **host** of both the operator image and the fs node image the operator deploys, for mirrors and air-gapped installs. Empty is a no-op. |
+
+### CRDs
+
+| Value | Default | What it does |
+|---|---|---|
+| `crd.enabled` | `true` | Install the CRDs with the chart. |
+| `crd.keep` | `true` | Keep them on `helm uninstall`. Deleting a CRD deletes every object of that kind — including running clusters — so this defaults to keeping them. |
+
+### Metrics and monitoring
+
+| Value | Default | What it does |
+|---|---|---|
+| `metrics.enabled` | `true` | Serve `/metrics`. |
+| `metrics.port` | `8443` | |
+| `metrics.secure` | `true` | HTTPS with authn/authz. `false` serves plain HTTP. |
+| `prometheus.enabled` | `false` | Create a ServiceMonitor. Needs prometheus-operator. |
+| `grafanaDashboard.enabled` | `false` | Publish the operator dashboard as a ConfigMap. Needs a scrape path to show anything. |
+| `grafanaDashboard.labels` | `grafana_dashboard: "1"` | The label the Grafana sidecar discovers by; `kube-prometheus-stack` uses this one, others differ. |
+| `grafanaDashboard.namespace` | `""` | Release namespace when empty. Set it when the sidecar only watches its own. |
+
+### Admission webhook
+
+| Value | Default | What it does |
+|---|---|---|
+| `webhook.enabled` | `false` | Reject an unworkable spec at apply time rather than storing it. Opt-in because it needs a certificate the API server trusts. |
+| `webhook.failurePolicy` | `Fail` | `Ignore` admits specs unchecked when the webhook is unreachable — the controller still refuses them, but the object is stored by then. |
+| `webhook.certSecretName` | `""` | Bring your own serving certificate (`tls.crt`/`tls.key`) instead of cert-manager. |
+| `webhook.caBundle` | `""` | The base64 CA bundle to go with it. |
+| `certManager.enabled` | `false` | Issue the webhook (and metrics) certificates with cert-manager. |
+
+### RBAC and service account
+
+| Value | Default | What it does |
+|---|---|---|
+| `serviceAccount.enabled` | `true` | Create the operator's ServiceAccount. |
+| `rbac.helpers.enabled` | `false` | Install convenience admin/editor/viewer roles for the CRDs. |
+| `rbac.namespaced` | `false` | Scope the operator to the release namespace: `Role`/`RoleBinding` instead of cluster-wide, and the watch scope narrowed to match. |
+| `watchNamespaces` | _unset_ | Namespaces to watch. Empty watches all of them. |
+| `networkPolicy.enabled` | `false` | Restrict ingress to the operator pod. Separate from an `FSCluster`'s own `spec.networkPolicy`, which is [documented with the cluster](../guides/security.md#network-policy). |
+
+## Limiting what the operator watches
+
+The supported deployment is **one cluster-wide installation**. Tenancy comes
+from the namespaced custom resources and RBAC on them, not from running an
+operator per team.
+
+Where that is not allowed — a cluster where nobody gets a ClusterRole — there
+are two ways to narrow it, and they must agree with each other:
+
+```sh
+# Everything in one namespace: namespaced RBAC, and the watch scope follows.
+helm install fs-operator oci://ghcr.io/go-faster/charts/fs-operator \
+  --namespace fs-system --create-namespace \
+  --set rbac.namespaced=true
+
+# Or watch a specific set, with cluster-wide RBAC.
+helm install fs-operator oci://ghcr.io/go-faster/charts/fs-operator \
+  --namespace fs-system --create-namespace \
+  --set 'watchNamespaces={team-a,team-b}'
+```
+
+`rbac.namespaced: true` implies `watchNamespaces: [<release namespace>]`,
+because the two scopes have to match: an operator holding a namespaced `Role`
+while watching cluster-wide has every List and Watch refused, and the shape
+that produces is the bad one — it starts, passes its health checks, reports
+Ready, and reconciles nothing while logging `forbidden`. Combining
+`rbac.namespaced` with a `watchNamespaces` entry outside the release namespace
+is refused when the chart renders, rather than installed and discovered later.
+
+### The caveat before you run more than one
+
+**CRDs are cluster-scoped, so every installation in a cluster shares one set of
+them.** Two installations at different chart versions share whichever CRDs were
+applied last, and the older operator then sees objects with fields it does not
+understand. Pin the same chart version everywhere, or run a single instance.
+
+`crd.enabled=false` on the extra installations, with one owner applying the
+CRDs, makes that ownership explicit.

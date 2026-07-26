@@ -344,6 +344,10 @@ docs-api-ref: crd-ref-docs ## Regenerate docs/reference/api.md from the api/ fie
 	@cat "$(LOCALBIN)/api-ref-header.md" "$(LOCALBIN)/api-ref-body.md" > docs/reference/api.md
 	@echo "Wrote docs/reference/api.md"
 
+.PHONY: check-watch-scope
+check-watch-scope: install-helm ## Fail if the chart's watch scope and RBAC scope can disagree.
+	HELM=$(HELM) CHART=$(HELM_CHART_DIR) ./hack/check-watch-scope.sh
+
 .PHONY: helm-lint
 helm-lint: install-helm ## Lint the Helm chart.
 	$(HELM) lint $(HELM_CHART_DIR)

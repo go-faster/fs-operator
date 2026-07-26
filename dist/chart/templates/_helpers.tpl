@@ -106,3 +106,29 @@ Otherwise, use the standard resourceName helper with "controller-manager" suffix
 {{- include "fs-operator.resourceName" (dict "suffix" "controller-manager" "context" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+The namespaces the operator watches, as a comma-separated list for
+--watch-namespaces. Empty means every namespace, which is the supported
+deployment (SPEC §17.4).
+
+This is deliberately the single source of both scopes. rbac.namespaced grants
+permissions in the release namespace only, and an operator that keeps watching
+cluster-wide under that Role starts, reports Ready, and reconciles nothing —
+so setting it here implies the matching watch scope rather than leaving the two
+to be configured, and disagreed on, separately.
+*/}}
+{{- define "fs-operator.watchNamespaces" -}}
+{{- $explicit := .Values.watchNamespaces | default (list) -}}
+{{- if and .Values.rbac.namespaced $explicit -}}
+{{- $outside := without $explicit .Release.Namespace -}}
+{{- if $outside -}}
+{{- fail (printf "rbac.namespaced grants permissions in %s only, but watchNamespaces also lists %s: the operator would watch namespaces it cannot read. Either drop those namespaces or set rbac.namespaced=false and install cluster-wide RBAC." .Release.Namespace (join ", " $outside)) -}}
+{{- end -}}
+{{- end -}}
+{{- if $explicit -}}
+{{- join "," $explicit -}}
+{{- else if .Values.rbac.namespaced -}}
+{{- .Release.Namespace -}}
+{{- end -}}
+{{- end }}

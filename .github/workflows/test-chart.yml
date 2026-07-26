@@ -50,6 +50,13 @@ jobs:
         run: |
           helm lint ./dist/chart
 
+      - name: The watch scope and the RBAC scope agree
+        # rbac.namespaced narrowed the operator's permissions without narrowing
+        # what it watched, so every List and Watch was refused while the pod
+        # reported Ready and reconciled nothing. Nothing caught it because
+        # nothing rendered the chart with that value set; this does.
+        run: make check-watch-scope
+
 # TODO: Uncomment if cert-manager is enabled
 #      - name: Install cert-manager via Helm (wait for readiness)
 #        run: |

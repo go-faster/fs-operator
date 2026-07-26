@@ -20,6 +20,8 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"slices"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -29,6 +31,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -64,6 +67,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var fsImageRegistry string
+	var watchNamespaces string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -86,6 +90,11 @@ func main() {
 		"Registry host that replaces the registry of every fs node image the operator deploys, "+
 			"for air-gapped or mirrored installs (e.g. registry.internal). "+
 			"Empty keeps each FSCluster's own image.repository. Defaults to $FS_IMAGE_REGISTRY.")
+	flag.StringVar(&watchNamespaces, "watch-namespaces", os.Getenv("WATCH_NAMESPACES"),
+		"Comma-separated namespaces to watch. Empty (the default) watches every namespace, "+
+			"which is the supported deployment. Setting it needs RBAC in each namespace listed, "+
+			"and the CRDs stay cluster-scoped, so instances sharing a cluster share their "+
+			"versions. Defaults to $WATCH_NAMESPACES.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -161,8 +170,14 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	watched := parseNamespaces(watchNamespaces)
+	if len(watched) > 0 {
+		setupLog.Info("watching a subset of namespaces", "namespaces", watched)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
+		Cache:                  namespaceCache(watched),
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
@@ -265,4 +280,44 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+// parseNamespaces splits the --watch-namespaces list, tolerating spaces,
+// empties and repeats so that "a, b,,a" is the same as "a,b".
+func parseNamespaces(list string) []string {
+	var names []string
+
+	for raw := range strings.SplitSeq(list, ",") {
+		if name := strings.TrimSpace(raw); name != "" {
+			names = append(names, name)
+		}
+	}
+
+	slices.Sort(names)
+
+	return slices.Compact(names)
+}
+
+// namespaceCache restricts the manager's cache — and so every watch it opens —
+// to the given namespaces. No namespaces means every namespace, which is the
+// supported deployment (SPEC §17.4).
+//
+// This is what makes namespace-scoped RBAC a working configuration instead of
+// a broken one. An operator holding only a namespaced Role still opens
+// cluster-wide watches unless it is told not to, and the API server rejects
+// them: it starts, passes its health checks, logs "forbidden" every few
+// seconds and reconciles nothing. Ready and useless is the worst failure shape
+// available, so the cache scope and the RBAC scope are set from the same
+// switch in the chart.
+func namespaceCache(namespaces []string) cache.Options {
+	if len(namespaces) == 0 {
+		return cache.Options{}
+	}
+
+	byName := make(map[string]cache.Config, len(namespaces))
+	for _, name := range namespaces {
+		byName[name] = cache.Config{}
+	}
+
+	return cache.Options{DefaultNamespaces: byName}
 }

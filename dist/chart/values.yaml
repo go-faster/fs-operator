@@ -11,6 +11,23 @@ global:
   ##
   imageRegistry: ""
 
+## Namespaces the operator watches. Empty (the default) watches all of them,
+## which is the supported deployment: tenancy comes from the namespaced custom
+## resources and RBAC on them, not from running an operator per namespace.
+##
+## This is an escape hatch, and it has a caveat worth reading first. CRDs are
+## cluster-scoped, so every instance in a cluster shares one set of them: two
+## installations at different versions share whichever CRDs were applied last,
+## and the older one then sees fields it does not understand. Pin the same
+## chart version everywhere, or do not run more than one.
+##
+## With rbac.namespaced=true this defaults to the release namespace, and
+## listing any namespace outside it is refused at render time.
+##
+# watchNamespaces:
+#   - team-a
+#   - team-b
+
 ## String to partially override chart.fullname template (will maintain the release name)
 ##
 # nameOverride: ""
@@ -128,6 +145,11 @@ rbac:
   ## RBAC resource scope
   ## - false (default): ClusterRole/ClusterRoleBinding (all namespaces)
   ## - true: Role/RoleBinding (release namespace only)
+  ##
+  ## Setting this to true also narrows what the operator watches to the release
+  ## namespace, because the two have to agree: an operator holding a namespaced
+  ## Role while watching cluster-wide is refused on every List and Watch, and
+  ## reports Ready while reconciling nothing.
   ##
   namespaced: false
 
