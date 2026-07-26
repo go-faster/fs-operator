@@ -44,6 +44,23 @@ type convergence struct {
 	repairQueue      int
 	rebalanceRunning bool
 
+	// nodesReporting and nodesNotReporting split the registered topology by
+	// whether the node answered the live-state fetch. repairQueue only counts
+	// the reporting ones, so a zero with nodes silent means "nobody said
+	// otherwise", not "nothing left to do".
+	//
+	// The rollout gate tolerates silence — a cluster being upgraded from a
+	// pre-v0.9.0 image has no node serving live state, and gating on a
+	// complete view would stall it for good. The drain gate (SPEC §8.4) will
+	// not: deleting a node on the strength of a partial view is the one
+	// mistake a decommission cannot take back.
+	nodesReporting, nodesNotReporting int
+
+	// nodes is the per-node view, keyed by fs node ID: disks with their
+	// capacity and placement weight. The drain gate reads occupancy from here
+	// (SPEC §8.4).
+	nodes map[string]fsclient.ClusterNode
+
 	// skew is the placement skew (max minus min disk fullness) — informational,
 	// surfaced in events, not a hard gate.
 	skew float64
@@ -80,15 +97,23 @@ func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (pipeline.O
 		return pipeline.Continue()
 	}
 
-	repairQueue := r.repairQueueDepth(ctx, p, serving, token)
+	repairQueue := r.repairQueueDepth(ctx, p, status, serving, token)
+
+	nodes := make(map[string]fsclient.ClusterNode, len(status.Nodes))
+	for _, node := range status.Nodes {
+		nodes[node.ID] = node
+	}
 
 	p.convergence = convergence{
-		known:            true,
-		repairQueue:      repairQueue,
-		rebalanceRunning: status.RebalanceRunning,
-		skew:             status.PlacementSkew,
-		schemaVersion:    status.SchemaVersion,
-		binarySchema:     status.BinarySchema,
+		known:             true,
+		repairQueue:       repairQueue,
+		rebalanceRunning:  status.RebalanceRunning,
+		nodesReporting:    status.NodesReporting,
+		nodesNotReporting: status.NodesNotReporting,
+		nodes:             nodes,
+		skew:              status.PlacementSkew,
+		schemaVersion:     status.SchemaVersion,
+		binarySchema:      status.BinarySchema,
 		// Converged when the repair queue has drained and no rebalance is
 		// moving data — placement has settled (SPEC §8.2, §11.2).
 		converged: repairQueue == 0 && !status.RebalanceRunning,
@@ -125,11 +150,23 @@ func (r *Reconciler) clusterStatus(ctx context.Context, p *pass, serving []Node,
 	return fsclient.ClusterStatus{}, false
 }
 
-// repairQueueDepth sums the per-node repair-queue backlog across serving nodes.
-// fs does not yet expose an aggregate, so the operator adds them up (SPEC
-// §11.2); an unreachable node contributes nothing rather than failing the gate.
-func (r *Reconciler) repairQueueDepth(ctx context.Context, p *pass, serving []Node, token string) int {
+// repairQueueDepth reports the cluster's pending async remainder work.
+//
+// Since fs v0.9.0 the cluster status carries the sum itself, over the nodes
+// that answered the live-state fetch, and that is what the operator reads.
+// Nodes running an older binary do not serve live state at all, so a cluster
+// still on a pre-v0.9.0 image reports no depth there — and a zero meaning
+// "nobody answered" must not be read as "the queue is empty". When not one
+// node reports, fall back to fanning out over the per-node rebalance endpoint,
+// which every supported fs release serves (SPEC §11.2).
+func (r *Reconciler) repairQueueDepth(
+	ctx context.Context, p *pass, status fsclient.ClusterStatus, serving []Node, token string,
+) int {
 	log := logf.FromContext(ctx)
+
+	if status.NodesReporting > 0 {
+		return status.RepairQueueDepth
+	}
 
 	var total int
 

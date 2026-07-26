@@ -117,6 +117,46 @@ func TestConvergedReflectsRepairQueue(t *testing.T) {
 	}
 }
 
+// TestConvergedReadsAggregateRepairQueue covers the v0.9.0 path: the cluster
+// status carries the repair queue summed over the nodes that reported, so the
+// operator reads that instead of fanning out over the per-node rebalance
+// endpoint — which it must keep doing for a cluster whose binaries predate it
+// (TestConvergedReflectsRepairQueue covers that fallback).
+func TestConvergedReadsAggregateRepairQueue(t *testing.T) {
+	r, _, admin := reconcilerWithAdmin(t)
+	key := createCluster(t, r, "converge-aggregate", nil)
+
+	reconcile(t, r, key)
+
+	var cluster fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	nodes := Nodes(&cluster)
+	for _, node := range nodes {
+		serving(t, r, key, node)
+		admin.setApplied(nodeAdminURL(key, node), configRevision(t, r, key, node))
+	}
+
+	// The aggregate says there is work left; every per-node rebalance endpoint
+	// says zero. Reading the aggregate is what keeps the rollout gated.
+	admin.setLive(0, liveNode(nodes[0].Name, 1, 40, 100, 4))
+
+	reconcile(t, r, key)
+
+	c := condition(t, r, key, fsv1alpha1.ConditionConverged)
+	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != fsv1alpha1.ReasonRepairQueueBacklog {
+		t.Fatalf("Converged = %v, want False/%s from the aggregate depth", c, fsv1alpha1.ReasonRepairQueueBacklog)
+	}
+
+	admin.setLive(0, liveNode(nodes[0].Name, 1, 40, 100, 0))
+
+	reconcile(t, r, key)
+
+	if c := condition(t, r, key, fsv1alpha1.ConditionConverged); c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("Converged = %v, want True once the aggregate queue drained", c)
+	}
+}
+
 // changed names the nodes whose value differs between two snapshots.
 func changed(before, after map[string]string) []string {
 	var names []string

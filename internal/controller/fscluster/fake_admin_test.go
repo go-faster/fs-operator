@@ -47,8 +47,17 @@ type fakeAdmin struct {
 
 	// rebalanceRunning and repairQueue drive the cluster's convergence: the
 	// cluster is converged only with no rebalance running and an empty queue.
+	// repairQueue is the pre-v0.9.0 shape — per node, over the rebalance
+	// endpoint the operator falls back to when nothing serves live state.
 	rebalanceRunning bool
 	repairQueue      map[string]int
+
+	// live is the per-node view a v0.9.0 cluster folds into its status, and
+	// notReporting how many registered nodes did not answer. Leaving live
+	// empty models a cluster whose binaries predate the peer status endpoint:
+	// the status carries no aggregate, and the operator fans out instead.
+	live         []fsclient.ClusterNode
+	notReporting int
 
 	// schemaVersion is what the cluster reports as agreed in etcd; binarySchema
 	// is what the deployed binary implements. binarySchema > schemaVersion is a
@@ -107,6 +116,31 @@ func (f *fakeAdmin) setRepairQueue(url string, depth int) {
 	defer f.mu.Unlock()
 
 	f.repairQueue[url] = depth
+}
+
+// setLive makes the cluster report the v0.9.0 per-node view: these nodes
+// answered the live-state fetch, and notReporting more did not.
+func (f *fakeAdmin) setLive(notReporting int, nodes ...fsclient.ClusterNode) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.live, f.notReporting = nodes, notReporting
+}
+
+// liveNode builds one reporting node holding used bytes of data on a single
+// disk, at the given placement weight.
+func liveNode(id string, weight float64, used, total int64, repairQueue int) fsclient.ClusterNode {
+	return fsclient.ClusterNode{
+		ID: id,
+		Disks: []fsclient.ClusterDisk{{
+			ID:            "disk-0",
+			Weight:        weight,
+			CapacityKnown: true,
+			TotalBytes:    total,
+			FreeBytes:     total - used,
+		}},
+		Live: &fsclient.NodeLive{RepairQueueDepth: repairQueue},
+	}
 }
 
 // setAccessKeys replaces what every node's ListAccessKeys reports — the
@@ -181,11 +215,27 @@ func (c *fakeClient) ClusterStatus(context.Context) (fsclient.ClusterStatus, err
 		return fsclient.ClusterStatus{}, errors.New("node admin unreachable")
 	}
 
-	return fsclient.ClusterStatus{
+	status := fsclient.ClusterStatus{
 		RebalanceRunning: f.rebalanceRunning,
 		SchemaVersion:    f.schemaVersion,
 		BinarySchema:     f.binarySchema,
-	}, nil
+	}
+
+	// A pre-v0.9.0 cluster reports no live state at all, and the aggregate
+	// stays zero — the operator must not read that as an empty queue.
+	if len(f.live) > 0 {
+		status.Nodes = f.live
+		status.NodesReporting = len(f.live)
+		status.NodesNotReporting = f.notReporting
+
+		for _, node := range f.live {
+			if node.Live != nil {
+				status.RepairQueueDepth += node.Live.RepairQueueDepth
+			}
+		}
+	}
+
+	return status, nil
 }
 
 func (c *fakeClient) Rebalance(context.Context) (fsclient.Rebalance, error) {
