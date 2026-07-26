@@ -215,6 +215,11 @@ on `cluster S3 not reachable yet`.
 SPEC §16: decommission/drain, disk add/remove, etcd TLS, managed dev-grade
 etcd, admission webhook, Grafana dashboards, CRD-compat CI gate.
 
+**P4 is complete.** Every item shipped, and every upstream gap it was blocked
+on was closed along the way — SPEC §11 now has nothing outstanding. Four fs
+releases came out of it: v0.9.0 (live node state), v0.10.0 (per-disk
+occupancy), v0.11.0 (etcd TLS/auth) and v0.12.0 (persisted drain override).
+
 Three of these were gated on upstream fs. Two upstream releases were cut for
 this phase — v0.9.0 (live node state) and v0.10.0 (per-disk occupancy, fs PR
 #102, written here) — which between them settled the §11.2 gap entirely:
@@ -270,7 +275,14 @@ needs a pointer field to tell an absent key from an explicit zero.
    than rebuilt from a spec that no longer describes where it runs. Every
    gate resolves unknown to *wait*, so a pre-v0.10.0 cluster drains and then
    holds rather than deleting on a signal that is not there.
-5. **Disk add** (§8.5), and removal once §11.6 lands.
+5. ✅ **Disk add and removal** (§8.5) — adding was never gated (it reuses the
+   PVC-expansion orphan-recreate). Removal is a decommission: drained on every
+   node at once through fs's control plane (§11.6, written for this and
+   released as v0.12.0), waited on until every node reports `has_data: false`,
+   then orphan-recreated node by node. The disk stays mounted *and* in the
+   node's config for the whole drain — dropping either would strand the data
+   on a volume fs cannot move off. Restoring the entry mid-drain clears the
+   override; the last disk cannot be removed.
 6. ✅ **Admission webhook** — cross-field checks move to `internal/validation`
    and run in two places: the validating webhook at apply time (so `kubectl
    apply` reports the problem and nothing is stored), and the controller

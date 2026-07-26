@@ -56,13 +56,23 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// The suite starts as soon as the kind cluster answers, which can be
+	// before CoreDNS is serving. A spec that resolves a Service name then
+	// fails with "could not resolve host" — observed once, on the metrics
+	// spec, five minutes before the same cluster resolved everything else
+	// fine. Waiting here costs nothing and removes a whole class of flake.
+	By("waiting for cluster DNS")
+	_, err := utils.Run(exec.Command("kubectl", "rollout", "status",
+		"deployment/coredns", "-n", "kube-system", "--timeout", "5m"))
+	Expect(err).NotTo(HaveOccurred(), "CoreDNS did not become ready")
+
 	By("building the manager image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
 	// Some sandboxes give the build container no working DNS, which the Go
 	// module proxy needs; DOCKER_BUILD_FLAGS=--network=host is the escape
 	// hatch, and passing the environment through is what makes it reach make.
 	cmd.Env = os.Environ()
-	_, err := utils.Run(cmd)
+	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
 	By("loading the manager image on Kind")

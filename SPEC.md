@@ -846,7 +846,8 @@ rest remain:
    endpoint without a TLS block used to connect in the clear. Unblocked
    `etcd.external.tls.secretName` and `authSecretRef`.
 5. **`FS_CLUSTER_RACK` env override** — symmetry with node_id/advertise.
-   Nice-to-have (per-node configs carry the rack today).
+   **Not needed**: the operator renders one config per node, so the rack is
+   already per-node. Left here as a deliberate non-goal rather than a gap.
 6. **Hot drain / weight override** — persisted per-disk weight override in
    etcd, settable via CLI + admin API. **DONE** (go-faster/fs PR #110,
    released as v0.12.0): `fs cluster drain <node> <disk>` and
@@ -865,8 +866,12 @@ rest remain:
    `refactor(adminapi): export the admin API client`): moved from
    `internal/adminapi` to the importable `github.com/go-faster/fs/adminapi`.
 
-Sequencing: 1, 2, 7 first (they gate the core loops); 3–5 next; 6 with
-decommission polish.
+**Every item that gated a feature is done**, across fs v0.6.0 – v0.12.0:
+1, 2 and 7 (v0.6.0–v0.10.0), 3 (v0.7.0), 4 (v0.11.0) and 6 (v0.12.0).
+
+Item 5 (`FS_CLUSTER_RACK`) is the exception, and is not planned: it was only
+ever symmetry with the other env overrides, and the operator renders a
+per-node config, so the rack has never needed to come from the environment.
 
 **Dedicated admin backend (fs PR #90).** fs now ships a headless
 `fs admin --config config.yaml` — a control-plane-only process (no S3 data)

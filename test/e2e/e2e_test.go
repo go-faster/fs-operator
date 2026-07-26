@@ -201,6 +201,13 @@ subjects:
 
 			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
 
+			// The trailing dot on the Service name is load-bearing. Without it
+			// the name has four dots, ndots:5 makes the resolver treat it as
+			// relative, and every search domain is tried first — including any
+			// the host contributed, which are forwarded upstream. On a machine
+			// behind a VPN that is six timeouts per attempt, and the pod
+			// exhausts its retries before it ever tries the name as written.
+			// The dot makes it absolute, so only the cluster is asked.
 			By("creating the curl-metrics pod to access the metrics endpoint")
 			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 				"--namespace", namespace,
@@ -212,7 +219,7 @@ subjects:
 							"name": "curl",
 							"image": "curlimages/curl:latest",
 							"command": ["/bin/sh", "-c"],
-							"args": ["for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"],
+							"args": ["for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local.:8443/metrics && exit 0 || sleep 2; done; exit 1"],
 							"securityContext": {
 								"readOnlyRootFilesystem": true,
 								"allowPrivilegeEscalation": false,
