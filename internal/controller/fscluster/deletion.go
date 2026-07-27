@@ -18,6 +18,7 @@ package fscluster
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-faster/errors"
 	batchv1 "k8s.io/api/batch/v1"
@@ -41,6 +42,20 @@ import (
 // finalizer: garbage collection takes it down, and each node's claim retention
 // policy decides the fate of its data. etcd is the one thing outside that graph.
 const ClusterFinalizer = "fs.go-faster.org/cluster"
+
+// stopPollInterval is how often finalize looks again while the nodes are
+// shutting down.
+//
+// It is shorter than pollInterval, which paces the waits that are gated on a
+// cluster reconverging — minutes of real work, where looking every couple of
+// seconds is noise. This wait is different: it ends when the last pod goes,
+// which measures a few seconds, and nothing wakes the reconcile when it does.
+// Deleting the StatefulSets removes the objects the controller owns, so the
+// pods disappearing afterwards produces no event it watches.
+//
+// Polling at 15s meant a delete where the pods were gone at 6s still took 15,
+// all of it spent not looking.
+const stopPollInterval = 2 * time.Second
 
 // Event reasons the deletion path reports.
 const (
@@ -110,7 +125,7 @@ func (r *Reconciler) finalize(ctx context.Context, cluster *fsv1alpha1.FSCluster
 			r.Recorder.Event(cluster, corev1.EventTypeNormal, eventClusterPurging,
 				"Stopping nodes before deleting the cluster's etcd keys")
 
-			return ctrl.Result{RequeueAfter: pollInterval}, nil
+			return ctrl.Result{RequeueAfter: stopPollInterval}, nil
 		}
 
 		if err := r.purgeEtcd(ctx, cluster); err != nil {
