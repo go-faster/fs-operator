@@ -153,14 +153,17 @@ func main() {
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
+	// Without --metrics-cert-path, controller-runtime serves the metrics
+	// endpoint with a self-signed certificate it generates itself. That is
+	// fine for development and for a scraper that does not verify, and it is
+	// not what you want in production.
 	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
+	// The owned Helm chart is the supported install (SPEC §14) and wires
+	// cert-manager through certManager.enabled. For the kustomize path, the
+	// equivalent is opt-in at two markers: [METRICS-WITH-CERTS] in
+	// config/default/kustomization.yaml issues the certificate, and
+	// [PROMETHEUS-WITH-CERTS] in config/prometheus/kustomization.yaml makes
+	// the ServiceMonitor verify it.
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
 			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
