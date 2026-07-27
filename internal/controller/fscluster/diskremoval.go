@@ -320,5 +320,5 @@ func (r *Reconciler) holdDiskRemoval(p *pass, disk, reason string) (pipeline.Out
 	p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
 		fsv1alpha1.ReasonDraining, reason)
 
-	return r.hold(p, fsv1alpha1.UpdatePhaseDraining, disk, reason)
+	return r.hold(p, fsv1alpha1.UpdatePhaseDraining, diskSubject(disk), reason)
 }

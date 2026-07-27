@@ -111,10 +111,12 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 		phase, holdNode = update.Phase, update.Node
 	}
 
+	held := nodeSubject(holdNode)
+
 	// A node whose pod is not ready is a failure domain already missing.
 	// Taking a second one down is what the upgrade contract forbids.
 	if waiting := p.health.notReady; len(waiting) > 0 {
-		return r.hold(p, phase, holdNode, fmt.Sprintf(
+		return r.hold(p, phase, held, fmt.Sprintf(
 			"waiting for node(s) %v to become ready before replacing another", waiting))
 	}
 
@@ -123,7 +125,7 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 	// failure domain is taken down (SPEC §8.2). Unknown convergence (no node
 	// answered) holds too, rather than proceed blind.
 	if !p.convergence.known || !p.convergence.converged {
-		return r.hold(p, phase, holdNode,
+		return r.hold(p, phase, held,
 			"waiting for the cluster to reconverge (repair queue / rebalance) before replacing another node")
 	}
 
@@ -150,15 +152,22 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 // It never gives up and never forces anything: past the convergence timeout it
 // reports the wait as stuck, loudly, and keeps waiting — the cluster resumes on
 // its own the moment the gate opens (SPEC §8.2).
-func (r *Reconciler) hold(p *pass, phase fsv1alpha1.UpdatePhase, node, reason string) (pipeline.Outcome, error) {
+func (r *Reconciler) hold(
+	p *pass, phase fsv1alpha1.UpdatePhase, subject updateSubject, reason string,
+) (pipeline.Outcome, error) {
 	started := metav1.Now()
-	if update := p.object.Status.Update; update != nil && update.Phase == phase && update.Node == node {
+	if update := p.object.Status.Update; update != nil && update.Phase == phase && subject.matches(update) {
 		if update.StartedAt != nil {
 			started = *update.StartedAt
 		}
 	}
 
-	p.update = &fsv1alpha1.UpdateStatus{Phase: phase, Node: node, StartedAt: ptrTime(started)}
+	p.update = &fsv1alpha1.UpdateStatus{
+		Phase:     phase,
+		Node:      subject.node,
+		Disk:      subject.disk,
+		StartedAt: ptrTime(started),
+	}
 
 	timeout := p.cluster.Spec.UpdatePolicy.ConvergenceTimeout
 	if timeout != nil && time.Since(started.Time) > timeout.Duration {
@@ -242,4 +251,30 @@ func stampTemplateRevision(set *appsv1.StatefulSet) error {
 // ptrTime is metav1.Time as the API's optional timestamp.
 func ptrTime(t metav1.Time) *metav1.Time {
 	return &t
+}
+
+// updateSubject is what a held change is waiting on.
+//
+// A rolling change works through one node at a time, so it is attributable to
+// that node. A disk removal drains one disk out of *every* node at once, so it
+// is not attributable to any of them — reporting the disk's name in the node
+// field, which is what shipped first, tells a reader the cluster is rolling a
+// node called "d1".
+type updateSubject struct {
+	node string
+	disk string
+}
+
+// nodeSubject is a rolling change or a node decommission.
+func nodeSubject(name string) updateSubject { return updateSubject{node: name} }
+
+// diskSubject is a disk being drained out of the whole cluster.
+func diskSubject(name string) updateSubject { return updateSubject{disk: name} }
+
+// matches reports whether a published status is about this same subject, which
+// is what decides if the wait is a continuation or a new one. Both fields have
+// to agree: comparing only the node would make every disk removal look like a
+// continuation of the last one.
+func (s updateSubject) matches(update *fsv1alpha1.UpdateStatus) bool {
+	return update.Node == s.node && update.Disk == s.disk
 }

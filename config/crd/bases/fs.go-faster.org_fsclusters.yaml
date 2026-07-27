@@ -1127,6 +1127,12 @@ spec:
               update:
                 description: update is present while a rolling change is in flight.
                 properties:
+                  disk:
+                    description: |-
+                      disk is the disk being drained out of the cluster, when the change in
+                      flight is a disk removal. A disk is removed from every node at once, so
+                      it is not attributable to one node the way a rolling change is.
+                    type: string
                   node:
                     description: node is the node currently being replaced or decommissioned.
                     type: string

@@ -792,6 +792,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `phase` _[UpdatePhase](#updatephase)_ | phase is the state-machine phase. |  | Enum: [Preflight RollingNodes Migrating Draining] <br />Optional: \{\} <br /> |
 | `node` _string_ | node is the node currently being replaced or decommissioned. |  | Optional: \{\} <br /> |
+| `disk` _string_ | disk is the disk being drained out of the cluster, when the change in<br />flight is a disk removal. A disk is removed from every node at once, so<br />it is not attributable to one node the way a rolling change is. |  | Optional: \{\} <br /> |
 | `startedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#time-v1-meta)_ | startedAt is when the rolling change started. |  | Optional: \{\} <br /> |
 
 

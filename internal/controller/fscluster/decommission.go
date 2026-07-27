@@ -406,7 +406,7 @@ func (r *Reconciler) holdDrain(p *pass, reason string) (pipeline.Outcome, error)
 	p.setCondition(fsv1alpha1.ConditionClusterSizeAligned, metav1.ConditionFalse,
 		fsv1alpha1.ReasonDraining, reason)
 
-	return r.hold(p, fsv1alpha1.UpdatePhaseDraining, p.decommission.node.Name, reason)
+	return r.hold(p, fsv1alpha1.UpdatePhaseDraining, nodeSubject(p.decommission.node.Name), reason)
 }
 
 // removeNode deletes a decommissioned node's StatefulSet and its configuration.

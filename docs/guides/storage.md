@@ -61,8 +61,10 @@ Drop the entry. This is a decommission, not a delete — the same discipline as
 3. **Remove.** Each node's StatefulSet is orphan-recreated without the disk, one
    node at a time. Its PVC then follows `reclaimPolicy`.
 
-While this runs, `status.update.phase` is `Draining` and `ClusterSizeAligned` is
-`False` with reason `Draining`, naming the disk and what it is waiting for.
+While this runs, `status.update.phase` is `Draining` and `status.update.disk`
+names the disk. `status.update.node` stays empty — the disk is leaving every
+node at once, so no single node is the one being changed. `ClusterSizeAligned`
+is `False` with reason `Draining`, saying what it is waiting for.
 
 **The disk stays mounted and configured throughout the drain.** That is not an
 implementation detail: fs cannot move data off a volume the pod no longer has,

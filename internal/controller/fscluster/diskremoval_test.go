@@ -142,6 +142,21 @@ func TestDiskRemovalDrainsBeforeRemoving(t *testing.T) {
 		t.Errorf("update phase = %q, want %q", phase, fsv1alpha1.UpdatePhaseDraining)
 	}
 
+	// A disk is drained out of every node at once, so it is not attributable
+	// to one of them. Reporting "d1" in the node field — which is what shipped
+	// first — tells anyone reading the status that a node called d1 is being
+	// rolled.
+	var draining fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &draining)
+
+	if got := draining.Status.Update.Disk; got != removedDisk {
+		t.Errorf("status.update.disk = %q, want %q", got, removedDisk)
+	}
+
+	if got := draining.Status.Update.Node; got != "" {
+		t.Errorf("status.update.node = %q, want it empty: no single node is being rolled", got)
+	}
+
 	// The operator should have drained it out of placement on every node.
 	overrides := fake.overrides()
 	if len(overrides) != len(names) {

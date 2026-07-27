@@ -731,6 +731,12 @@ type UpdateStatus struct {
 	// +optional
 	Node string `json:"node,omitempty"`
 
+	// disk is the disk being drained out of the cluster, when the change in
+	// flight is a disk removal. A disk is removed from every node at once, so
+	// it is not attributable to one node the way a rolling change is.
+	// +optional
+	Disk string `json:"disk,omitempty"`
+
 	// startedAt is when the rolling change started.
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
