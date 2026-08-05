@@ -182,6 +182,10 @@ type fakeS3 struct {
 	mu       sync.Mutex
 	buckets  map[string]bool
 	nonEmpty map[string]bool
+
+	// existsErr, when set, is what BucketExists fails with — the shape of an
+	// S3 endpoint that answers but refuses the operator's credential.
+	existsErr error
 }
 
 func newFakeS3() *fakeS3 {
@@ -196,6 +200,10 @@ func (s *fakeS3) factory() func(endpoint, access, secret string, secure bool) (S
 func (s *fakeS3) BucketExists(_ context.Context, bucket string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.existsErr != nil {
+		return false, s.existsErr
+	}
 
 	return s.buckets[bucket], nil
 }

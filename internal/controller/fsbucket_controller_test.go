@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 
+	"github.com/minio/minio-go/v7"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -96,6 +97,44 @@ var _ = Describe("FSBucket Controller", func() {
 		Expect(ready).NotTo(BeNil())
 		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		Expect(ready.Reason).To(Equal(fsv1alpha1.ReasonSchemeRejected))
+	})
+
+	// A cluster that adopted a populated etcd prefix (SPEC §8.6) serves S3 and
+	// rejects the operator's root credential, so every bucket of it fails here.
+	// The condition has to carry that error: reported as a reachability problem
+	// it sends the reader to the network, and the cause is in the key store.
+	It("reports what the S3 call actually failed with", func() {
+		makeCluster(ctx, "unauth-cluster")
+
+		s3 := newFakeS3()
+		s3.existsErr = minio.ErrorResponse{
+			Code:    "InvalidAccessKeyId",
+			Message: "The AWS access key Id you provided does not exist in our records.",
+		}
+		admin := newFakeAdmin()
+		r := &FSBucketReconciler{
+			Client: k8sClient, Scheme: k8sClient.Scheme(),
+			S3: s3.factory(), Admin: admin.client,
+		}
+
+		bucket := &fsv1alpha1.FSBucket{
+			ObjectMeta: metav1.ObjectMeta{Name: "locked", Namespace: namespace},
+			Spec: fsv1alpha1.FSBucketSpec{
+				ClusterRef: fsv1alpha1.ClusterReference{Name: "unauth-cluster"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
+
+		key := types.NamespacedName{Name: "locked", Namespace: namespace}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, key, bucket)).To(Succeed())
+		ready := meta.FindStatusCondition(bucket.Status.Conditions, fsv1alpha1.ConditionReady)
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		Expect(ready.Reason).To(Equal(fsv1alpha1.ReasonClusterNotReady))
+		Expect(ready.Message).To(ContainSubstring("does not exist in our records"))
 	})
 
 	It("refuses to delete a non-empty bucket under reclaimPolicy Delete", func() {
