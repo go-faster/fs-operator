@@ -1,8 +1,9 @@
 # Storage
 
 Each entry in `spec.storage.disks` becomes one PersistentVolumeClaim on **every**
-node, mounted at `/var/lib/fs/disks/<name>`. A three-node cluster with two disks
-has six PVCs.
+node, mounted at `/var/lib/fs/disks/<name>`. Every node also gets one **state**
+PVC at the storage root. A three-node cluster with two disks has nine PVCs: six
+for data, three for state.
 
 ```yaml
 spec:
@@ -13,8 +14,38 @@ spec:
         storageClass: fast
       - name: d1
         size: 500Gi
+    state:
+      size: 10Gi        # the default
+      storageClass: fast
     reclaimPolicy: Retain
 ```
+
+## The state volume
+
+`spec.storage.state` sizes the volume mounted at `/var/lib/fs`, where fs keeps
+what it derives from the disks rather than the objects themselves. Since fs
+v0.13.0 that is the **object index**: one pebble entry per object the node
+holds, which is what answers a listing, a usage recount or a scrub-coverage
+question without reading every sidecar on every disk.
+
+- **Sizing.** A few hundred bytes per object, so the 10Gi default carries a
+  node with tens of millions of them. Like a disk it may only grow, and growing
+  it needs an expandable StorageClass.
+- **Why a claim and not an emptyDir.** The index is derived and never
+  authoritative — the sidecars beside the data are the commit point, so losing
+  it is not data loss. But rebuilding it means walking every disk on the node,
+  which on a full node competes with serving traffic for hours. Surviving the
+  pod is what keeps a rollout from paying that on every node.
+- **`state` is a reserved disk name.** A disk called `state` would be the same
+  PVC as the storage root; the spec is refused.
+- **Reclaim.** `reclaimPolicy` covers it too — Kubernetes sets that policy per
+  StatefulSet, not per claim — so under `Retain` a removed node leaves its
+  state volume behind along with its disks. It holds nothing that is not on the
+  disks; delete it whenever.
+
+Nodes that predate this volume get it the same way they get a new disk: the
+operator orphan-recreates each StatefulSet, one node at a time, gated on the
+cluster being healthy and converged. The pods and the data stay.
 
 ## Weights
 

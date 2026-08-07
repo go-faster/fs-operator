@@ -252,6 +252,7 @@ spec:
   storage:
     # Each disk is one PVC on every node, mounted at
     # /var/lib/fs/disks/<name> and listed in cluster.disks with its weight.
+    # `state` is reserved: it is the node's storage-root claim, not a disk.
     disks:
       - name: d0
         size: 200Gi
@@ -548,13 +549,15 @@ apply (field manager `fs-operator`):
      secretKeyRef, OTEL env, `PPROF_ADDR`;
    - ports: http 8080, peer 7080, admin 8090, metrics 9464, pprof 9010;
    - probes: liveness `/health`, readiness `/ready`, generous startup probe;
-   - volumes: config Secret at `/etc/fs`, TLS Secret when set, disk PVCs,
-     and an emptyDir at the storage root `/var/lib/fs` — the container's
-     filesystem is read-only and fs writes node-local state directly under
-     the root (since v0.13.0, the pebble object index at
-     `cluster/index`). That state is derived: losing it with the pod costs a
-     rebuild from the disks, which is why it is an emptyDir and not a claim.
-     A node large enough for that walk to be an event wants a claim instead;
+   - volumes: config Secret at `/etc/fs`, TLS Secret when set, and one PVC
+     per disk plus the **state PVC** mounted at the storage root
+     `/var/lib/fs` (`storage.state`, default 10Gi). The container filesystem
+     is read-only and fs writes node-local state under the root — since
+     v0.13.0 the pebble object index at `cluster/index`, which answers
+     listings, usage and scrub coverage without walking every sidecar. The
+     index is derived, but rebuilding it means walking every disk of the
+     node, so it outlives the pod. The root mount comes before the disk
+     mounts it contains: the kubelet mounts a nested path after its parent;
    - securityContext: runAsNonRoot 1000, readOnlyRootFilesystem, seccomp
      RuntimeDefault, drop ALL;
    - `fs.go-faster.org/restart-revision` pod annotation: the fingerprint of

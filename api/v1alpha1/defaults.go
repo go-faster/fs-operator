@@ -41,6 +41,12 @@ const (
 	// DefaultScheme is the default replication scheme.
 	DefaultScheme = "rf2.5"
 
+	// DefaultStateSize is each node's state volume: the storage root, whose
+	// size is the object index living on it. A few hundred bytes per object
+	// puts tens of millions of them inside this, and a node past that is one
+	// whose operator is already sizing volumes deliberately.
+	DefaultStateSize = "10Gi"
+
 	// DefaultS3Port is the default S3 service port.
 	DefaultS3Port int32 = 8080
 
@@ -134,6 +140,11 @@ func (s *FSClusterSpec) WithDefaults() {
 
 	if s.Storage.ReclaimPolicy == "" {
 		s.Storage.ReclaimPolicy = ReclaimRetain
+	}
+
+	if s.Storage.State.Size == nil {
+		size := resource.MustParse(DefaultStateSize)
+		s.Storage.State.Size = &size
 	}
 
 	if s.S3.Service.Type == "" {

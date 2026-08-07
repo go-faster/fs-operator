@@ -316,15 +316,12 @@ func TestStatefulSetStorage(t *testing.T) {
 
 	set := nodeStatefulSet(t, cluster)
 
-	if got, want := len(set.Spec.VolumeClaimTemplates), 2; got != want {
-		t.Fatalf("%d claim templates, want one per disk (%d)", got, want)
+	// One per disk, plus the state volume every node carries.
+	if got, want := len(set.Spec.VolumeClaimTemplates), 3; got != want {
+		t.Fatalf("%d claim templates, want %d", got, want)
 	}
 
-	first := set.Spec.VolumeClaimTemplates[0]
-	if first.Name != "d0" {
-		t.Errorf("claim name = %q, want the disk's name", first.Name)
-	}
-
+	first := claimNamed(t, set, "d0")
 	if first.Spec.StorageClassName == nil || *first.Spec.StorageClassName != storageClass {
 		t.Errorf("storage class = %v, want fast-nvme", first.Spec.StorageClassName)
 	}
@@ -334,7 +331,7 @@ func TestStatefulSetStorage(t *testing.T) {
 	}
 
 	// A disk without a class must not pin one, or the cluster default is lost.
-	if set.Spec.VolumeClaimTemplates[1].Spec.StorageClassName != nil {
+	if claimNamed(t, set, "d1").Spec.StorageClassName != nil {
 		t.Error("a disk without a storage class pinned one anyway")
 	}
 
@@ -492,8 +489,9 @@ func TestStatefulSetMountsAWritableStorageRoot(t *testing.T) {
 
 	set := NewStatefulSet(cluster, Nodes(cluster)[0], testRevision)
 
-	if volume := volumeNamed(t, set, stateVolumeName); volume.EmptyDir == nil {
-		t.Errorf("the storage root is %+v, want an emptyDir", volume.VolumeSource)
+	state := claimNamed(t, set, stateVolumeName)
+	if got := state.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != fsv1alpha1.DefaultStateSize {
+		t.Errorf("state claim = %s, want the default %s", got.String(), fsv1alpha1.DefaultStateSize)
 	}
 
 	mounts := set.Spec.Template.Spec.Containers[0].VolumeMounts
@@ -536,6 +534,21 @@ func volumeNamed(t *testing.T, set *appsv1.StatefulSet, name string) corev1.Volu
 	t.Fatalf("no volume named %q", name)
 
 	return corev1.Volume{}
+}
+
+// claimNamed returns a node's claim template by name.
+func claimNamed(t *testing.T, set *appsv1.StatefulSet, name string) corev1.PersistentVolumeClaim {
+	t.Helper()
+
+	for _, claim := range set.Spec.VolumeClaimTemplates {
+		if claim.Name == name {
+			return claim
+		}
+	}
+
+	t.Fatalf("no claim template named %q", name)
+
+	return corev1.PersistentVolumeClaim{}
 }
 
 // environment flattens a pod's container environment for lookup.

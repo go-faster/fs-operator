@@ -149,10 +149,15 @@ func (r *Reconciler) planDecommission(ctx context.Context, p *pass) (pipeline.Ou
 // disk has no entry, which is what lets the removal finish: the next render
 // builds it from the spec alone.
 func retainedDisks(cluster *fsv1alpha1.FSCluster, existing []appsv1.StatefulSet) map[string][]string {
-	declared := make(map[string]bool, len(cluster.Spec.Storage.Disks))
+	declared := make(map[string]bool, len(cluster.Spec.Storage.Disks)+1)
 	for _, disk := range cluster.Spec.Storage.Disks {
 		declared[disk.Name] = true
 	}
+
+	// The state claim is not a disk and is never dropped. Left out of this
+	// set it reads as a disk the spec no longer declares, and the operator
+	// would drain a disk fs has never heard of.
+	declared[fsv1alpha1.StateVolumeName] = true
 
 	retained := make(map[string][]string)
 

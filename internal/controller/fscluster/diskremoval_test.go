@@ -106,7 +106,14 @@ func collectGarbage(t *testing.T, r *Reconciler, key types.NamespacedName) {
 // claimNames are a node's declared disks.
 func claimNames(set appsv1.StatefulSet) []string {
 	names := make([]string, 0, len(set.Spec.VolumeClaimTemplates))
+
 	for _, claim := range set.Spec.VolumeClaimTemplates {
+		// The state claim is on every node always; these tests are about the
+		// disks coming and going around it.
+		if claim.Name == fsv1alpha1.StateVolumeName {
+			continue
+		}
+
 		names = append(names, claim.Name)
 	}
 
