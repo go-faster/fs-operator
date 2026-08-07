@@ -1,0 +1,106 @@
+# Every telemetry knob the spec has, on an otherwise ordinary three-node
+# cluster. fs runs on go-faster/sdk, which is configured entirely through the
+# environment (https://github.com/go-faster/sdk#reference); spec.observability
+# is the part of that environment the operator owns, and podTemplate.extraEnv
+# is the rest.
+#
+# The shape here is a common one rather than a maximal one: metrics scraped by
+# Prometheus, traces to the cluster collector, logs to a separate gateway, and
+# profiles to Pyroscope.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-telemetry
+spec:
+  topology:
+    nodes: 3
+    podAntiAffinity: Preferred
+  storage:
+    disks:
+      - name: d0
+        size: 100Gi
+  etcd:
+    external:
+      endpoints:
+        - http://etcd.default.svc:2379
+
+  observability:
+    # OTEL_LOG_LEVEL. The enum is exactly what the SDK can parse, because it
+    # panics on anything else — a typo here would be a crash loop, not a
+    # rejected pod. "debug" also turns on fs's per-request logging, which on a
+    # busy endpoint is one line per request.
+    logLevel: info
+
+    # Where signals go by default, and how they travel. A signal may override
+    # either; anything not overridden uses these.
+    otlp:
+      endpoint: http://otel-collector.observability:4317
+      protocol: grpc            # or http/protobuf
+
+    # OTEL_TRACES_EXPORTER. "otlp" is already the default once an endpoint
+    # exists — spelled out here because the exporters are the point of this
+    # example.
+    traces:
+      exporter: otlp
+
+    # OTEL_LOGS_EXPORTER, off by default: fs writes logs to stdout, where the
+    # cluster's log pipeline already collects them, so this is a second copy.
+    # Worth having when the collector is where you look — and it can go
+    # somewhere other than the traces.
+    #
+    # Note the path rule: a per-signal endpoint is used exactly as written,
+    # while the shared one above gets /v1/<signal> appended over HTTP.
+    logs:
+      exporter: otlp
+      endpoint: http://loki-gateway.observability:4318/otlp/v1/logs
+      protocol: http/protobuf
+
+    # OTEL_METRICS_EXPORTER. "prometheus" (the default) serves the node's
+    # metrics port for a scraper; "otlp" pushes to the endpoint instead, and
+    # "none" turns metrics off — both of which retire the metrics port, its
+    # NetworkPolicy rule, and any PodMonitor that would scrape it.
+    metrics:
+      exporter: prometheus
+
+    # Creates a PodMonitor for the metrics port. Refused unless the metrics
+    # exporter is the one that serves it.
+    podMonitor: true
+
+    # Added to the attributes the operator derives — fs.cluster, fs.node,
+    # fs.rack, k8s.namespace.name — rather than replacing them. Setting
+    # OTEL_RESOURCE_ATTRIBUTES through extraEnv below would replace them, and
+    # those are what the dashboards and alerts group by.
+    resourceAttributes:
+      deployment.environment: staging
+      team: storage
+
+    # PPROF_ADDR on :9010. On by default: the node worth profiling is usually
+    # the one already misbehaving, which is a bad moment to discover the
+    # listener needs enabling and the pods restarting. It is unauthenticated
+    # and a heap profile carries whatever is in memory — including the cluster
+    # secret and the root credentials — so set it false where any pod in the
+    # namespace reaching it is not acceptable (docs/guides/security.md).
+    pprof: true
+
+  podTemplate:
+    # Everything else in the SDK's reference table. These are applied last, so
+    # they win over what the operator sets — which also means overriding
+    # METRICS_ADDR leaves the PodMonitor above scraping nothing.
+    extraEnv:
+      - name: PYROSCOPE_ENABLE
+        value: "true"
+      - name: PYROSCOPE_URL
+        value: http://pyroscope.observability:4040
+      - name: PYROSCOPE_APP_NAME
+        value: fs-telemetry
+      # Secret material goes through a reference, never a literal: this file
+      # is a manifest people paste into tickets.
+      - name: PYROSCOPE_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: pyroscope-auth
+            key: password
+      # Push metrics less often than the SDK's default when the collector is
+      # the expensive part.
+      - name: OTEL_METRIC_EXPORT_INTERVAL
+        value: "30000"

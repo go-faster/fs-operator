@@ -176,6 +176,10 @@ signal agrees, and only per-signal variables as soon as one of them differs.
 Endpoints have no such quirk — the exporters resolve those themselves, and a
 signal's own wins — so both are rendered together.
 
+[`examples/10-telemetry.yaml`](../../examples/10-telemetry.yaml) is all of it
+in one manifest: metrics scraped, traces to the cluster collector, logs to a
+separate gateway, profiles to Pyroscope.
+
 ### Configuring the rest of the SDK
 
 ```yaml
