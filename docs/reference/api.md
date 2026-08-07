@@ -530,8 +530,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `endpoint` _string_ | endpoint is the OTLP endpoint URL every signal exported over OTLP is<br />sent to unless it names its own. A signal whose exporter is "otlp"<br />needs one of the two: without a destination the SDK ships to<br />localhost:4318 and logs a failed upload every interval. |  | Optional: \{\} <br /> |
-| `protocol` _string_ | protocol is the transport every OTLP signal uses unless it names its<br />own. | grpc | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
+| `endpoint` _string_ | endpoint is OTEL_EXPORTER_OTLP_ENDPOINT: where every signal exported<br />over OTLP is sent unless it names its own. A signal whose exporter is<br />"otlp" needs one of the two, since without a destination the SDK ships<br />to localhost:4318 and logs a failed upload every interval. |  | Optional: \{\} <br /> |
+| `protocol` _string_ | protocol is OTEL_EXPORTER_OTLP_PROTOCOL, the transport every OTLP<br />signal uses. Empty leaves it unset, which is the SDK's own default of<br />grpc.<br />It cannot be combined with a per-signal protocol, and that is fs's<br />SDK rather than a choice made here: it reads this variable first and<br />consults OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL only when it is unset,<br />so setting both would leave the per-signal value inert. Set this one<br />for a cluster that speaks one transport, or the per-signal ones for a<br />cluster that does not. |  | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
 
 
 #### ObservabilitySpec

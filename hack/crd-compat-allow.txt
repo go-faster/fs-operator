@@ -18,3 +18,11 @@
 # acknowledged here before it, which the CRD no longer carries:
 # 'has(self.external) != has(self.managed)'.
 FSCluster/v1alpha1.spec.etcd: new validation rule '!has(self.external) || !has(self.managed)'
+
+# The shared OTLP transport lost its default so that leaving it unset means
+# something: unset is what lets a per-signal OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL
+# take effect, since fs's SDK reads the shared variable first. Nothing changes
+# for a stored object — the API server already materialised 'grpc' into it, and
+# grpc is also what the SDK falls back to — so every existing cluster renders
+# the transport it rendered before.
+FSCluster/v1alpha1.spec.observability.otlp.protocol: default 'grpc' -> None

@@ -76,8 +76,11 @@ const (
 	// DefaultLogLevel is the default fs log level.
 	DefaultLogLevel = "info"
 
-	// DefaultOTLPProtocol is the default OTLP transport.
-	DefaultOTLPProtocol = "grpc"
+	// SDKDefaultOTLPProtocol is the transport go-faster/sdk uses when
+	// OTEL_EXPORTER_OTLP_PROTOCOL is unset. The operator does not apply it —
+	// leaving the variable out is what lets a per-signal protocol take
+	// effect — it is here because the docs and tests need to name it.
+	SDKDefaultOTLPProtocol = "grpc"
 
 	// Exporter values, as go-faster/sdk spells them.
 	ExporterOTLP       = "otlp"
@@ -173,10 +176,6 @@ func (s *FSClusterSpec) WithDefaults() {
 
 	if s.Observability.LogLevel == "" {
 		s.Observability.LogLevel = DefaultLogLevel
-	}
-
-	if s.Observability.OTLP.Protocol == "" {
-		s.Observability.OTLP.Protocol = DefaultOTLPProtocol
 	}
 
 	if s.Observability.Pprof == nil {

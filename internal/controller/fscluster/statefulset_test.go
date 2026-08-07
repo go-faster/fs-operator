@@ -267,12 +267,13 @@ func TestStatefulSetTelemetryEnvironment(t *testing.T) {
 			},
 		},
 		{
+			// An endpoint and no transport: the SDK's default (grpc) applies,
+			// and leaving the variable out is what lets a signal name its own.
 			name:     "otlp collector",
 			endpoint: "http://collector:4317",
 			want: map[string]string{
 				envTracesExporter: fsv1alpha1.ExporterOTLP,
 				envOTLPEndpoint:   "http://collector:4317",
-				envOTLPProtocol:   fsv1alpha1.DefaultOTLPProtocol,
 				envMetricsExport:  fsv1alpha1.ExporterPrometheus,
 			},
 		},
@@ -702,41 +703,54 @@ func TestStatefulSetSDKListeners(t *testing.T) {
 			}
 		}
 
-		// One signal asked for its own transport, so the base variable must
-		// not be rendered: the SDK reads it first and would shadow the rest.
-		if _, ok := env[envOTLPProtocol]; ok {
-			t.Errorf("%s shadows the per-signal transports", envOTLPProtocol)
-		}
-
 		if got := env[envOTLPMetricsProto]; got != protocolHTTP {
 			t.Errorf("%s = %q, want %q", envOTLPMetricsProto, got, protocolHTTP)
 		}
 
-		// Traces keep the shared default, spelled out per signal; logs
-		// export nothing, so they name no transport at all.
-		if got := env[envOTLPTracesProto]; got != fsv1alpha1.DefaultOTLPProtocol {
-			t.Errorf("%s = %q, want %q", envOTLPTracesProto, got, fsv1alpha1.DefaultOTLPProtocol)
-		}
-
-		if _, ok := env[envOTLPLogsProto]; ok {
-			t.Errorf("%s is set for a signal that is not exported", envOTLPLogsProto)
+		// Nothing else named a transport, so nothing else renders one: the
+		// SDK's own default applies to traces, and logs export nothing.
+		for _, name := range []string{envOTLPProtocol, envOTLPTracesProto, envOTLPLogsProto} {
+			if _, ok := env[name]; ok {
+				t.Errorf("%s is set though nothing asked for it", name)
+			}
 		}
 	})
 
 	t.Run("one transport for every signal", func(t *testing.T) {
 		cluster := testCluster()
 		cluster.Spec.Observability.OTLP.Endpoint = collectorEndpoint
+		cluster.Spec.Observability.OTLP.Protocol = protocolHTTP
 		cluster.Spec.WithDefaults()
 
 		env := environment(nodeStatefulSet(t, cluster))
 
-		if got := env[envOTLPProtocol]; got != fsv1alpha1.DefaultOTLPProtocol {
-			t.Errorf("%s = %q, want %q", envOTLPProtocol, got, fsv1alpha1.DefaultOTLPProtocol)
+		// Rendered as given: this is the variable a cluster with one
+		// collector on one transport sets, and the operator does not
+		// second-guess it.
+		if got := env[envOTLPProtocol]; got != protocolHTTP {
+			t.Errorf("%s = %q, want %q", envOTLPProtocol, got, protocolHTTP)
 		}
 
 		for _, name := range []string{envOTLPTracesProto, envOTLPLogsProto, envOTLPMetricsProto} {
 			if _, ok := env[name]; ok {
 				t.Errorf("%s is redundant when every signal shares the transport", name)
+			}
+		}
+	})
+
+	t.Run("no transport named at all", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.OTLP.Endpoint = collectorEndpoint
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		// An unset protocol stays unset, which is what leaves a per-signal
+		// one able to take effect at all — and the SDK's own default (grpc)
+		// is the same answer the operator used to write out.
+		for _, name := range []string{envOTLPProtocol, envOTLPTracesProto, envOTLPLogsProto, envOTLPMetricsProto} {
+			if _, ok := env[name]; ok {
+				t.Errorf("%s is set though the spec names no transport", name)
 			}
 		}
 	})

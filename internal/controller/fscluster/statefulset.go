@@ -395,41 +395,28 @@ func telemetryEnv(spec *fsv1alpha1.ObservabilitySpec) []corev1.EnvVar {
 		vars = append(vars, corev1.EnvVar{Name: envMetricsAddr, Value: listenAddr(MetricsPort)})
 	}
 
-	if !exportsOTLP(spec) {
-		return vars
-	}
-
+	// The shared destination and transport are rendered as given: whatever
+	// observability.otlp holds is what OTEL_EXPORTER_OTLP_ENDPOINT and
+	// OTEL_EXPORTER_OTLP_PROTOCOL say. A per-signal protocol beside a shared
+	// one would be inert — the SDK reads the shared variable first — so that
+	// pair is refused at admission instead of being resolved here (SPEC
+	// §5.1).
 	if spec.OTLP.Endpoint != "" {
 		vars = append(vars, corev1.EnvVar{Name: envOTLPEndpoint, Value: spec.OTLP.Endpoint})
+	}
+
+	if spec.OTLP.Protocol != "" {
+		vars = append(vars, corev1.EnvVar{Name: envOTLPProtocol, Value: spec.OTLP.Protocol})
 	}
 
 	for _, v := range []corev1.EnvVar{
 		signalEndpoint(envOTLPTracesEndpoint, spec.Traces.Exporter, spec.Traces.Endpoint),
 		signalEndpoint(envOTLPLogsEndpoint, spec.Logs.Exporter, spec.Logs.Endpoint),
 		signalEndpoint(envOTLPMetricsEndpoint, spec.Metrics.Exporter, spec.Metrics.Endpoint),
+		signalProtocol(envOTLPTracesProto, spec.Traces.Exporter, spec.Traces.Protocol),
+		signalProtocol(envOTLPLogsProto, spec.Logs.Exporter, spec.Logs.Protocol),
+		signalProtocol(envOTLPMetricsProto, spec.Metrics.Exporter, spec.Metrics.Protocol),
 	} {
-		if v.Name != "" {
-			vars = append(vars, v)
-		}
-	}
-
-	// The transports, and the one place the SDK's precedence has to be
-	// respected rather than described: it reads OTEL_EXPORTER_OTLP_PROTOCOL
-	// first and consults the per-signal variables only when that is unset, so
-	// rendering both would silently ignore whichever signal asked for its
-	// own. Either every signal shares the base protocol, or none of them
-	// sees it.
-	perSignal := []corev1.EnvVar{
-		signalProtocol(envOTLPTracesProto, spec.Traces.Exporter, spec.Traces.Protocol, spec.OTLP.Protocol),
-		signalProtocol(envOTLPLogsProto, spec.Logs.Exporter, spec.Logs.Protocol, spec.OTLP.Protocol),
-		signalProtocol(envOTLPMetricsProto, spec.Metrics.Exporter, spec.Metrics.Protocol, spec.OTLP.Protocol),
-	}
-
-	if spec.Traces.Protocol == "" && spec.Logs.Protocol == "" && spec.Metrics.Protocol == "" {
-		return append(vars, corev1.EnvVar{Name: envOTLPProtocol, Value: spec.OTLP.Protocol})
-	}
-
-	for _, v := range perSignal {
 		if v.Name != "" {
 			vars = append(vars, v)
 		}
@@ -449,24 +436,13 @@ func signalEndpoint(name, exporter, endpoint string) corev1.EnvVar {
 }
 
 // signalProtocol is one signal's transport variable, or the zero value when
-// the signal does not travel over OTLP.
-func signalProtocol(name, exporter, protocol, fallback string) corev1.EnvVar {
-	if exporter != fsv1alpha1.ExporterOTLP {
+// the signal has none of its own to declare.
+func signalProtocol(name, exporter, protocol string) corev1.EnvVar {
+	if protocol == "" || exporter != fsv1alpha1.ExporterOTLP {
 		return corev1.EnvVar{}
 	}
 
-	if protocol == "" {
-		protocol = fallback
-	}
-
 	return corev1.EnvVar{Name: name, Value: protocol}
-}
-
-// exportsOTLP reports whether any signal is pushed to the OTLP endpoint.
-func exportsOTLP(spec *fsv1alpha1.ObservabilitySpec) bool {
-	return spec.Traces.Exporter == fsv1alpha1.ExporterOTLP ||
-		spec.Logs.Exporter == fsv1alpha1.ExporterOTLP ||
-		spec.Metrics.Exporter == fsv1alpha1.ExporterOTLP
 }
 
 // secretEnv reads one key of a Secret into an environment variable, which is
