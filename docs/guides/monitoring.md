@@ -151,7 +151,7 @@ spec:
 | `logs.exporter` | `none` | fs logs to stdout, where the cluster already collects them; OTLP logs are a second copy, so they are asked for rather than inherited from an endpoint set for traces |
 | `metrics.exporter` | `prometheus` | Kubernetes collects by scraping |
 | `*.endpoint` | `otlp.endpoint` | per-signal destination |
-| `*.protocol` | `otlp.protocol` | per-signal transport |
+| `*.protocol` | the SDK's default, `grpc` | per-signal transport; mutually exclusive with `otlp.protocol` (below) |
 
 A signal's own endpoint is enough on its own — `otlp.endpoint` may be left
 unset if every exporter names where it sends. Mind the OpenTelemetry path rule
@@ -168,13 +168,22 @@ port it scrapes.
 `none` and the node stops advertising the metrics container port, and the
 NetworkPolicy stops opening it.
 
-**A transport subtlety the operator handles for you.** The SDK reads
-`OTEL_EXPORTER_OTLP_PROTOCOL` *first* and consults the per-signal variables
-only when it is unset — the reverse of the OpenTelemetry specification. So the
-operator renders one or the other, never both: the shared variable when every
-signal agrees, and only per-signal variables as soon as one of them differs.
-Endpoints have no such quirk — the exporters resolve those themselves, and a
-signal's own wins — so both are rendered together.
+**Transports are either/or, and the spec says which.** `otlp.endpoint` and
+`otlp.protocol` are rendered verbatim as `OTEL_EXPORTER_OTLP_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_PROTOCOL` — a cluster with one collector on one transport
+sets those two and nothing else.
+
+What cannot be combined is a shared protocol and a per-signal one. The SDK
+reads `OTEL_EXPORTER_OTLP_PROTOCOL` *first* and consults
+`OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL` only when it is unset — the reverse of
+the OpenTelemetry specification — so the two together would leave the
+per-signal value inert. That pair is refused at apply time rather than
+silently resolved: set the shared one, or the per-signal ones. Leaving
+`otlp.protocol` unset means the SDK's own default, `grpc`.
+
+Endpoints have no such quirk: the exporters resolve those themselves and a
+signal's own wins, so the shared and per-signal variables are rendered
+together.
 
 [`examples/10-telemetry.yaml`](../../examples/10-telemetry.yaml) is all of it
 in one manifest: metrics scraped, traces to the cluster collector, logs to a

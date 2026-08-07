@@ -31,11 +31,19 @@ spec:
     # busy endpoint is one line per request.
     logLevel: info
 
-    # Where signals go by default, and how they travel. A signal may override
-    # either; anything not overridden uses these.
+    # Where signals go by default. A signal may override the endpoint; what
+    # it does not override uses this one.
     otlp:
       endpoint: http://otel-collector.observability:4317
-      protocol: grpc            # or http/protobuf
+      # protocol: grpc
+      #
+      # Deliberately unset here, and refused if set alongside the per-signal
+      # protocol below. fs's SDK reads OTEL_EXPORTER_OTLP_PROTOCOL first and
+      # only falls through to OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL when it is
+      # empty, so the two together would leave the per-signal one inert.
+      # A cluster whose collector speaks one transport sets this instead and
+      # leaves the per-signal protocols out. Unset means the SDK default,
+      # grpc.
 
     # OTEL_TRACES_EXPORTER. "otlp" is already the default once an endpoint
     # exists — spelled out here because the exporters are the point of this
@@ -50,6 +58,9 @@ spec:
     #
     # Note the path rule: a per-signal endpoint is used exactly as written,
     # while the shared one above gets /v1/<signal> appended over HTTP.
+    #
+    # And the transport is this signal's alone — see otlp.protocol above for
+    # why that is an either/or rather than an override.
     logs:
       exporter: otlp
       endpoint: http://loki-gateway.observability:4318/otlp/v1/logs

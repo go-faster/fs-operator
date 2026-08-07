@@ -117,6 +117,17 @@ func TestClusterRejects(t *testing.T) {
 			reason: fsv1alpha1.ReasonSpecInvalid,
 		},
 		{
+			// fs reads the shared transport first, so the per-signal one
+			// would be configuration that does nothing.
+			name: "a per-signal protocol under a shared one",
+			mutate: func(s *fsv1alpha1.FSClusterSpec) {
+				s.Observability.OTLP.Endpoint = "http://collector.observability:4317"
+				s.Observability.OTLP.Protocol = "grpc"
+				s.Observability.Traces.Protocol = "http/protobuf"
+			},
+			reason: fsv1alpha1.ReasonSpecInvalid,
+		},
+		{
 			// Only the Prometheus exporter serves the port the PodMonitor
 			// scrapes; the pair would be a dashboard with no data.
 			name: "podMonitor scraping an exporter that does not listen",

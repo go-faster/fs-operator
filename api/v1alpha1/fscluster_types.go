@@ -684,17 +684,24 @@ type ObservabilitySpec struct {
 // is applied last and therefore wins over what the operator sets. See the
 // SDK's reference table: https://github.com/go-faster/sdk#reference
 type OTLPSpec struct {
-	// endpoint is the OTLP endpoint URL every signal exported over OTLP is
-	// sent to unless it names its own. A signal whose exporter is "otlp"
-	// needs one of the two: without a destination the SDK ships to
-	// localhost:4318 and logs a failed upload every interval.
+	// endpoint is OTEL_EXPORTER_OTLP_ENDPOINT: where every signal exported
+	// over OTLP is sent unless it names its own. A signal whose exporter is
+	// "otlp" needs one of the two, since without a destination the SDK ships
+	// to localhost:4318 and logs a failed upload every interval.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 
-	// protocol is the transport every OTLP signal uses unless it names its
-	// own.
+	// protocol is OTEL_EXPORTER_OTLP_PROTOCOL, the transport every OTLP
+	// signal uses. Empty leaves it unset, which is the SDK's own default of
+	// grpc.
+	//
+	// It cannot be combined with a per-signal protocol, and that is fs's
+	// SDK rather than a choice made here: it reads this variable first and
+	// consults OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL only when it is unset,
+	// so setting both would leave the per-signal value inert. Set this one
+	// for a cluster that speaks one transport, or the per-signal ones for a
+	// cluster that does not.
 	// +kubebuilder:validation:Enum=grpc;http/protobuf
-	// +kubebuilder:default=grpc
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
 }

@@ -195,6 +195,31 @@ func observability(spec *fsv1alpha1.ObservabilitySpec) *Failure {
 		}
 	}
 
+	// The SDK reads OTEL_EXPORTER_OTLP_PROTOCOL before the per-signal
+	// variables and only falls through when it is unset (autometer,
+	// autotracer, autologs), which is the reverse of the OpenTelemetry
+	// specification. Setting both would therefore silently ignore the
+	// per-signal value — a spec that reads exactly like what the user wanted
+	// and is not what runs.
+	if spec.OTLP.Protocol != "" {
+		for signal, protocol := range map[string]string{
+			"traces":  spec.Traces.Protocol,
+			"logs":    spec.Logs.Protocol,
+			"metrics": spec.Metrics.Protocol,
+		} {
+			if protocol != "" {
+				return &Failure{
+					Reason: fsv1alpha1.ReasonSpecInvalid,
+					Message: fmt.Sprintf(
+						"observability.%s.protocol cannot be combined with observability.otlp.protocol: "+
+							"fs reads the shared variable first, so the per-signal one would be ignored. "+
+							"Leave otlp.protocol unset (the SDK defaults to %s) to give each signal its own",
+						signal, fsv1alpha1.SDKDefaultOTLPProtocol),
+				}
+			}
+		}
+	}
+
 	if spec.PodMonitor && spec.Metrics.Exporter != "" &&
 		spec.Metrics.Exporter != fsv1alpha1.ExporterPrometheus {
 		return &Failure{
