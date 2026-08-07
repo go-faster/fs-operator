@@ -21,9 +21,11 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap/zapcore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 )
@@ -258,8 +260,8 @@ func TestStatefulSetTelemetryEnvironment(t *testing.T) {
 			// interval logs a failed connection to localhost.
 			name: "no collector",
 			want: map[string]string{
-				envTracesExporter: exporterNone,
-				envMetricsExport:  exporterPrometheus,
+				envTracesExporter: fsv1alpha1.ExporterNone,
+				envMetricsExport:  fsv1alpha1.ExporterPrometheus,
 				envMetricsAddr:    ":9464",
 				envPprofAddr:      ":9010",
 			},
@@ -268,10 +270,10 @@ func TestStatefulSetTelemetryEnvironment(t *testing.T) {
 			name:     "otlp collector",
 			endpoint: "http://collector:4317",
 			want: map[string]string{
-				envTracesExporter: exporterOTLP,
+				envTracesExporter: fsv1alpha1.ExporterOTLP,
 				envOTLPEndpoint:   "http://collector:4317",
 				envOTLPProtocol:   fsv1alpha1.DefaultOTLPProtocol,
-				envMetricsExport:  exporterPrometheus,
+				envMetricsExport:  fsv1alpha1.ExporterPrometheus,
 			},
 		},
 	} {
@@ -299,10 +301,10 @@ func TestStatefulSetTelemetryEnvironment(t *testing.T) {
 // occurrence.
 func TestStatefulSetExtraEnvWins(t *testing.T) {
 	cluster := testCluster()
-	cluster.Spec.PodTemplate.ExtraEnv = []corev1.EnvVar{{Name: envMetricsExport, Value: exporterOTLP}}
+	cluster.Spec.PodTemplate.ExtraEnv = []corev1.EnvVar{{Name: envMetricsExport, Value: fsv1alpha1.ExporterOTLP}}
 
 	env := environment(nodeStatefulSet(t, cluster))
-	if got, want := env[envMetricsExport], exporterOTLP; got != want {
+	if got, want := env[envMetricsExport], fsv1alpha1.ExporterOTLP; got != want {
 		t.Errorf("%s = %q, want the user's %q", envMetricsExport, got, want)
 	}
 }
@@ -519,6 +521,252 @@ func TestStatefulSetMountsAWritableStorageRoot(t *testing.T) {
 			t.Errorf("%s mounts before the storage root it lives under", mount.MountPath)
 		}
 	}
+}
+
+// collectorEndpoint stands in for an OTLP collector in this package's tests.
+const collectorEndpoint = "http://collector.observability:4317"
+
+// protocolHTTP is the OTLP transport a signal picks when it does not want the
+// shared one.
+const protocolHTTP = "http/protobuf"
+
+// TestStatefulSetSDKEnvironment covers what steers go-faster/sdk in the fs
+// container: the exporters it would otherwise point at localhost, the pprof
+// listener it serves only when given an address, and the resource attributes
+// the operator derives.
+func TestStatefulSetSDKEnvironment(t *testing.T) {
+	t.Run("without a collector", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		// Both default to OTLP in the SDK, which means an upload to
+		// localhost:4318 failing every interval on a cluster that never
+		// asked for one.
+		for _, name := range []string{envTracesExporter, envLogsExporter} {
+			if got := env[name]; got != fsv1alpha1.ExporterNone {
+				t.Errorf("%s = %q, want %q", name, got, fsv1alpha1.ExporterNone)
+			}
+		}
+
+		if got := env[envMetricsExport]; got != fsv1alpha1.ExporterPrometheus {
+			t.Errorf("%s = %q, want %q: metrics are scraped, not pushed", envMetricsExport, got, fsv1alpha1.ExporterPrometheus)
+		}
+	})
+
+	t.Run("with a collector", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.OTLP.Endpoint = collectorEndpoint
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		if got := env[envTracesExporter]; got != fsv1alpha1.ExporterOTLP {
+			t.Errorf("%s = %q, want %q", envTracesExporter, got, fsv1alpha1.ExporterOTLP)
+		}
+
+		// Logs are the exception: fs writes them to stdout, where the
+		// cluster already collects them, so a second copy is asked for and
+		// not inherited from an endpoint that was set for traces.
+		if got := env[envLogsExporter]; got != fsv1alpha1.ExporterNone {
+			t.Errorf("%s = %q, want %q by default", envLogsExporter, got, fsv1alpha1.ExporterNone)
+		}
+
+		if got := env[envOTLPEndpoint]; got != collectorEndpoint {
+			t.Errorf("%s = %q, want %q", envOTLPEndpoint, got, collectorEndpoint)
+		}
+	})
+
+	t.Run("a signal with its own destination", func(t *testing.T) {
+		const logsEndpoint = "http://loki-gateway.observability:4318/otlp/v1/logs"
+
+		cluster := testCluster()
+		cluster.Spec.Observability.OTLP.Endpoint = collectorEndpoint
+		cluster.Spec.Observability.Logs = fsv1alpha1.SignalSpec{
+			Exporter: fsv1alpha1.ExporterOTLP,
+			Endpoint: logsEndpoint,
+			Protocol: protocolHTTP,
+		}
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		// The exporters resolve this themselves, and per the specification a
+		// signal's own endpoint wins — so both are rendered, unlike the
+		// protocol.
+		if got := env[envOTLPEndpoint]; got != collectorEndpoint {
+			t.Errorf("%s = %q, want the shared endpoint to stay", envOTLPEndpoint, got)
+		}
+
+		if got := env[envOTLPLogsEndpoint]; got != logsEndpoint {
+			t.Errorf("%s = %q, want %q", envOTLPLogsEndpoint, got, logsEndpoint)
+		}
+
+		// Traces have no endpoint of their own to declare.
+		if _, ok := env[envOTLPTracesEndpoint]; ok {
+			t.Errorf("%s is set for a signal that uses the shared endpoint", envOTLPTracesEndpoint)
+		}
+	})
+
+	t.Run("a signal with no shared endpoint behind it", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.Traces = fsv1alpha1.SignalSpec{
+			Exporter: fsv1alpha1.ExporterOTLP,
+			Endpoint: collectorEndpoint,
+		}
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		if _, ok := env[envOTLPEndpoint]; ok {
+			t.Errorf("%s is set though no shared endpoint was given", envOTLPEndpoint)
+		}
+
+		if got := env[envOTLPTracesEndpoint]; got != collectorEndpoint {
+			t.Errorf("%s = %q, want %q", envOTLPTracesEndpoint, got, collectorEndpoint)
+		}
+	})
+
+}
+
+// TestStatefulSetSDKListeners covers the rest of the SDK's environment: what
+// the node says about itself, and what it listens on.
+func TestStatefulSetSDKListeners(t *testing.T) {
+	t.Run("log level", func(t *testing.T) {
+		// Every level the CRD admits has to be one go-faster/sdk can parse:
+		// it panics on anything else, so a level that passes admission and
+		// kills the process is the failure this enum exists to prevent.
+		for _, level := range []string{debugLogLevel, "info", "warn", "error", "dpanic", "panic", "fatal"} {
+			cluster := testCluster()
+			cluster.Spec.Observability.LogLevel = level
+			cluster.Spec.WithDefaults()
+
+			var parsed zapcore.Level
+			if err := parsed.UnmarshalText([]byte(level)); err != nil {
+				t.Errorf("the API admits %q, which the SDK cannot parse: %v", level, err)
+			}
+
+			if got := environment(nodeStatefulSet(t, cluster))[envLogLevel]; got != level {
+				t.Errorf("%s = %q, want %q", envLogLevel, got, level)
+			}
+		}
+	})
+
+	t.Run("user resource attributes are added, not substituted", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.ResourceAttributes = map[string]string{
+			"deployment.environment": "staging",
+			"team":                   "storage",
+		}
+		cluster.Spec.WithDefaults()
+
+		got := environment(nodeStatefulSet(t, cluster))[envResourceAttrs]
+
+		// The operator's own attributes are what the dashboards read.
+		for _, want := range []string{
+			"fs.cluster=" + cluster.Name,
+			"k8s.namespace.name=" + cluster.Namespace,
+			"deployment.environment=staging",
+			"team=storage",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s = %q, want it to carry %q", envResourceAttrs, got, want)
+			}
+		}
+	})
+
+	t.Run("metrics pushed instead of scraped", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.OTLP.Endpoint = collectorEndpoint
+		cluster.Spec.Observability.Metrics.Exporter = fsv1alpha1.ExporterOTLP
+		cluster.Spec.Observability.Metrics.Protocol = protocolHTTP
+		cluster.Spec.WithDefaults()
+
+		set := nodeStatefulSet(t, cluster)
+		env := environment(set)
+
+		if got := env[envMetricsExport]; got != fsv1alpha1.ExporterOTLP {
+			t.Errorf("%s = %q, want %q", envMetricsExport, got, fsv1alpha1.ExporterOTLP)
+		}
+
+		// Nothing serves the scrape endpoint any more, so nothing should
+		// advertise it either.
+		if _, ok := env[envMetricsAddr]; ok {
+			t.Errorf("%s is set for an exporter that does not listen", envMetricsAddr)
+		}
+
+		for _, port := range set.Spec.Template.Spec.Containers[0].Ports {
+			if port.ContainerPort == MetricsPort {
+				t.Error("the pod still declares the metrics port")
+			}
+		}
+
+		// One signal asked for its own transport, so the base variable must
+		// not be rendered: the SDK reads it first and would shadow the rest.
+		if _, ok := env[envOTLPProtocol]; ok {
+			t.Errorf("%s shadows the per-signal transports", envOTLPProtocol)
+		}
+
+		if got := env[envOTLPMetricsProto]; got != protocolHTTP {
+			t.Errorf("%s = %q, want %q", envOTLPMetricsProto, got, protocolHTTP)
+		}
+
+		// Traces keep the shared default, spelled out per signal; logs
+		// export nothing, so they name no transport at all.
+		if got := env[envOTLPTracesProto]; got != fsv1alpha1.DefaultOTLPProtocol {
+			t.Errorf("%s = %q, want %q", envOTLPTracesProto, got, fsv1alpha1.DefaultOTLPProtocol)
+		}
+
+		if _, ok := env[envOTLPLogsProto]; ok {
+			t.Errorf("%s is set for a signal that is not exported", envOTLPLogsProto)
+		}
+	})
+
+	t.Run("one transport for every signal", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.OTLP.Endpoint = collectorEndpoint
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		if got := env[envOTLPProtocol]; got != fsv1alpha1.DefaultOTLPProtocol {
+			t.Errorf("%s = %q, want %q", envOTLPProtocol, got, fsv1alpha1.DefaultOTLPProtocol)
+		}
+
+		for _, name := range []string{envOTLPTracesProto, envOTLPLogsProto, envOTLPMetricsProto} {
+			if _, ok := env[name]; ok {
+				t.Errorf("%s is redundant when every signal shares the transport", name)
+			}
+		}
+	})
+
+	t.Run("pprof off", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.Pprof = ptr.To(false)
+		cluster.Spec.WithDefaults()
+
+		set := nodeStatefulSet(t, cluster)
+
+		if _, ok := environment(set)[envPprofAddr]; ok {
+			t.Errorf("%s is set; the SDK would serve pprof anyway", envPprofAddr)
+		}
+
+		for _, port := range set.Spec.Template.Spec.Containers[0].Ports {
+			if port.ContainerPort == PprofPort {
+				t.Error("the pod still declares the pprof port")
+			}
+		}
+
+		policy := NewNetworkPolicy(cluster, "fs-operator-system")
+		for _, rule := range policy.Spec.Ingress {
+			for _, port := range rule.Ports {
+				if port.Port != nil && port.Port.IntVal == PprofPort {
+					t.Error("the NetworkPolicy still opens the pprof port")
+				}
+			}
+		}
+	})
 }
 
 // volumeNamed returns a pod's volume by name.

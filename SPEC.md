@@ -328,11 +328,27 @@ spec:
     schemaMigration: Auto         # Auto | Manual
 
   observability:
-    # Standard OTEL env passthrough.
+    # go-faster/sdk env (github.com/go-faster/sdk#reference).
     otlp:
       endpoint: ""
-      protocol: grpc
+      protocol: grpc            # the transport a signal uses unless it
+                                # names its own
+    # Every exporter is named rather than defaulted: the SDK sends all three
+    # signals to OTLP at localhost:4318 otherwise. Traces follow the endpoint
+    # (otlp when there is one, none when not), metrics are scraped, and logs
+    # are none until asked for — fs writes them to stdout already.
+    # endpoint/protocol override otlp.* for one signal.
+    traces:  {exporter: "", endpoint: "", protocol: ""}   # otlp | none
+    logs:    {exporter: "", endpoint: "", protocol: ""}   # otlp | none
+    metrics: {exporter: "", endpoint: "", protocol: ""}   # prometheus | otlp | none
     logLevel: info
+    # PPROF_ADDR on :9010. false drops the listener, its container port and
+    # its NetworkPolicy rule.
+    pprof: true
+    # Added to the operator's OTEL_RESOURCE_ATTRIBUTES, not substituted for
+    # them. Anything else the SDK reads goes through podTemplate.extraEnv,
+    # which is applied last and wins.
+    resourceAttributes: {}
     # Create a PodMonitor for the fs pods' Prometheus metrics.
     podMonitor: false
 
@@ -361,6 +377,12 @@ spec:
   rules: exactly one disk, no `etcd`, and a warning that the node's loss is
   the data's loss. Rack names are DNS-label and immutable per entry; removing a rack
   or lowering a node count is a decommission (§8.4).
+- `observability`: an `otlp` exporter needs a destination — its own
+  `endpoint` or the shared `otlp.endpoint` — and
+  `podMonitor` needs `metrics.exporter: prometheus` — both are pairs the
+  API accepts field by field and neither reads as wrong on its own, which
+  is why they are checked together rather than discovered in an empty
+  dashboard.
 - `scheme`: pattern-validated by CEL (`rf2.5|rf3|ec:<k>,<m>`); the
   controller cross-checks it against the topology (distinct failure domains
   ≥ scheme requirement: 3 for rf2.5/rf3, k+m for EC) and refuses to apply a
@@ -830,9 +852,16 @@ removed deliberately wants the opposite. A key store that is merely
 - Events on every transition: rollout started/gated/halted/finished,
   migration run, drain progress, refused spec changes, reload verified.
   Event reasons are part of the documented API surface (§13).
-- fs pods get OTEL env passthrough and a metrics port;
-  `observability.podMonitor: true` creates the PodMonitor. Grafana
-  dashboards ship later (§16).
+- fs pods get their go-faster/sdk environment from `observability`: log
+  level, the shared OTLP destination, a per-signal exporter, endpoint and
+  transport for traces/logs/metrics, the pprof listener, and resource
+  attributes merged over the operator's own. Every exporter is named explicitly, since the
+  SDK defaults all three to OTLP at localhost. Two cross-field checks
+  (§5.1): an OTLP exporter with no endpoint, and `podMonitor` against a
+  metrics exporter that serves no port — which is also the switch behind
+  the metrics container port and its NetworkPolicy rule. The rest of the
+  SDK's variables are `podTemplate.extraEnv`, applied last so an override
+  wins. Grafana dashboards ship later (§16).
 
 ---
 

@@ -115,6 +115,10 @@ func Cluster(spec *fsv1alpha1.FSClusterSpec) *Failure {
 		}
 	}
 
+	if failure := observability(&spec.Observability); failure != nil {
+		return failure
+	}
+
 	for _, disk := range spec.Storage.Disks {
 		if disk.Name == fsv1alpha1.StateVolumeName {
 			return &Failure{
@@ -161,6 +165,43 @@ func singleNode(spec *fsv1alpha1.FSClusterSpec) *Failure {
 			Reason: fsv1alpha1.ReasonSpecInvalid,
 			Message: "a single-node cluster has no control plane to register in; leave etcd unset " +
 				"(a clustered topology of 3 or more nodes is what needs it)",
+		}
+	}
+
+	return nil
+}
+
+// observability checks the telemetry knobs against each other: an exporter
+// with nowhere to send, and a scrape target nothing serves.
+//
+// Both are combinations the API accepts field by field and no reader would
+// call wrong, which is exactly the kind that is found later, in a dashboard
+// with no data or a log line about localhost:4318.
+func observability(spec *fsv1alpha1.ObservabilitySpec) *Failure {
+	for signal, destination := range map[string][2]string{
+		"traces":  {spec.Traces.Exporter, spec.Traces.Endpoint},
+		"logs":    {spec.Logs.Exporter, spec.Logs.Endpoint},
+		"metrics": {spec.Metrics.Exporter, spec.Metrics.Endpoint},
+	} {
+		exporter, endpoint := destination[0], destination[1]
+
+		if exporter == fsv1alpha1.ExporterOTLP && endpoint == "" && spec.OTLP.Endpoint == "" {
+			return &Failure{
+				Reason: fsv1alpha1.ReasonSpecInvalid,
+				Message: fmt.Sprintf(
+					"observability.%s.exporter is %q with nowhere to send it: set observability.%s.endpoint or observability.otlp.endpoint",
+					signal, fsv1alpha1.ExporterOTLP, signal),
+			}
+		}
+	}
+
+	if spec.PodMonitor && spec.Metrics.Exporter != "" &&
+		spec.Metrics.Exporter != fsv1alpha1.ExporterPrometheus {
+		return &Failure{
+			Reason: fsv1alpha1.ReasonSpecInvalid,
+			Message: fmt.Sprintf(
+				"observability.podMonitor scrapes the metrics port, which only the %q exporter serves; metrics.exporter is %q",
+				fsv1alpha1.ExporterPrometheus, spec.Metrics.Exporter),
 		}
 	}
 

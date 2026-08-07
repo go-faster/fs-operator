@@ -493,11 +493,12 @@ _Appears in:_
 | `reclaimPolicy` _[ReclaimPolicy](#reclaimpolicy)_ | reclaimPolicy decides what happens to the members' volumes when the<br />cluster is deleted. Delete by default, unlike the data disks: this etcd<br />is a development convenience, and leaving its volumes behind means a<br />re-created cluster adopts a key store whose sealed credentials it can no<br />longer open (SPEC §8.6). | Delete | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 
 
-#### OTLPSpec
+#### MetricsSpec
 
 
 
-OTLPSpec is the OTLP exporter destination.
+MetricsSpec selects how metrics leave the node. It is its own type because
+metrics have an exporter the other signals do not: the scrape endpoint.
 
 
 
@@ -506,8 +507,31 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `endpoint` _string_ | endpoint is the OTLP endpoint URL; empty disables the OTLP exporters. |  | Optional: \{\} <br /> |
-| `protocol` _string_ | protocol is the OTLP transport. | grpc | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
+| `exporter` _string_ | exporter is "prometheus" (the default: served on the node's metrics<br />port for a scraper), "otlp" (pushed to an endpoint) or "none". |  | Enum: [prometheus otlp none] <br />Optional: \{\} <br /> |
+| `endpoint` _string_ | endpoint overrides otlp.endpoint for metrics alone, under the same<br />path rule as the other signals. Ignored unless the exporter is<br />"otlp". |  | Optional: \{\} <br /> |
+| `protocol` _string_ | protocol overrides otlp.protocol for metrics alone. Ignored unless<br />the exporter is "otlp". |  | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
+
+
+#### OTLPSpec
+
+
+
+OTLPSpec is the OTLP exporter destination shared by every signal.
+
+What is not here — Pyroscope, propagators, export intervals, pprof routes,
+the OTEL_GO_X_* switches — is reachable through podTemplate.extraEnv, which
+is applied last and therefore wins over what the operator sets. See the
+SDK's reference table: https://github.com/go-faster/sdk#reference
+
+
+
+_Appears in:_
+- [ObservabilitySpec](#observabilityspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `endpoint` _string_ | endpoint is the OTLP endpoint URL every signal exported over OTLP is<br />sent to unless it names its own. A signal whose exporter is "otlp"<br />needs one of the two: without a destination the SDK ships to<br />localhost:4318 and logs a failed upload every interval. |  | Optional: \{\} <br /> |
+| `protocol` _string_ | protocol is the transport every OTLP signal uses unless it names its<br />own. | grpc | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
 
 
 #### ObservabilitySpec
@@ -523,9 +547,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `otlp` _[OTLPSpec](#otlpspec)_ | otlp configures the OpenTelemetry exporter env of the fs pods. |  | Optional: \{\} <br /> |
-| `logLevel` _string_ | logLevel sets the fs log level. | info | Enum: [debug info warn error] <br />Optional: \{\} <br /> |
+| `otlp` _[OTLPSpec](#otlpspec)_ | otlp is the OTLP destination every signal exported over OTLP is sent<br />to, and the protocol they use unless a signal names its own. |  | Optional: \{\} <br /> |
+| `traces` _[SignalSpec](#signalspec)_ | traces selects the trace exporter, its destination and its transport.<br />Defaults to "otlp" when an endpoint is set and "none" when none is —<br />the SDK's own default is "otlp" unconditionally, which without a<br />destination means an upload to localhost failing every interval. |  | Optional: \{\} <br /> |
+| `logs` _[SignalSpec](#signalspec)_ | logs selects the log exporter and its transport. Defaults to "none"<br />even with an endpoint set: fs logs to stdout, where the cluster's log<br />pipeline already collects it, so a second copy over OTLP is a choice<br />and not the obvious consequence of having a collector. |  | Optional: \{\} <br /> |
+| `metrics` _[MetricsSpec](#metricsspec)_ | metrics selects the metric exporter and its transport. Defaults to<br />"prometheus": Kubernetes collects metrics by scraping, the operator<br />gives every node a metrics port for it, and podMonitor scrapes that<br />port. Choosing "otlp" or "none" retires the port with it. |  | Optional: \{\} <br /> |
+| `logLevel` _string_ | logLevel is OTEL_LOG_LEVEL, the level fs logs at. debug additionally<br />turns on per-request logging in fs itself, which on a busy endpoint is<br />a line per request.<br />The enum is the set go-faster/sdk can parse (zapcore levels), and it<br />earns its keep: the SDK panics on a level it does not recognise, so a<br />typo here would otherwise be a crash loop across every node rather<br />than a rejected field. Levels above error exist because the SDK has<br />them; a cluster that logs nothing below panic is not one you can<br />operate. | info | Enum: [debug info warn error dpanic panic fatal] <br />Optional: \{\} <br /> |
 | `podMonitor` _boolean_ | podMonitor creates a PodMonitor for the fs pods' Prometheus metrics<br />(requires the monitoring.coreos.com API group). |  | Optional: \{\} <br /> |
+| `pprof` _boolean_ | pprof serves go-faster/sdk's pprof endpoints on port 9010. On by<br />default, which is not the SDK's own default: a cluster that is<br />misbehaving is when profiles are wanted, and that is a bad moment to<br />discover the listener has to be turned on and the nodes restarted.<br />Turn it off where an open profiling endpoint is not acceptable — the<br />container port and its NetworkPolicy rule go with it. | true | Optional: \{\} <br /> |
+| `resourceAttributes` _object (keys:string, values:string)_ | resourceAttributes are added to OTEL_RESOURCE_ATTRIBUTES, alongside<br />the ones the operator derives (service, cluster, namespace, node,<br />rack). Setting the variable through podTemplate.extraEnv replaces<br />those instead, which is what the dashboards and the PodMonitor read. |  | Optional: \{\} <br /> |
 
 
 #### PodTemplate
@@ -709,6 +738,24 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `cluster` _integer_ | cluster is the schema version recorded in etcd. |  | Optional: \{\} <br /> |
 | `binary` _integer_ | binary is the schema version the deployed image implements. |  | Optional: \{\} <br /> |
+
+
+#### SignalSpec
+
+
+
+SignalSpec selects how one telemetry signal leaves the node.
+
+
+
+_Appears in:_
+- [ObservabilitySpec](#observabilityspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `exporter` _string_ | exporter is where the signal goes: "otlp" or "none". |  | Enum: [otlp none] <br />Optional: \{\} <br /> |
+| `endpoint` _string_ | endpoint overrides otlp.endpoint for this signal alone. Note the<br />OpenTelemetry rule the exporters implement: the shared endpoint has<br />"/v1/<signal>" appended over HTTP, a per-signal endpoint is used<br />exactly as written, path included. |  | Optional: \{\} <br /> |
+| `protocol` _string_ | protocol overrides otlp.protocol for this signal alone, which is what<br />a collector that speaks one transport on one port needs. |  | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
 
 
 #### StateSpec

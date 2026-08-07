@@ -613,12 +613,43 @@ const (
 
 // ObservabilitySpec configures telemetry of the fs pods.
 type ObservabilitySpec struct {
-	// otlp configures the OpenTelemetry exporter env of the fs pods.
+	// otlp is the OTLP destination every signal exported over OTLP is sent
+	// to, and the protocol they use unless a signal names its own.
 	// +optional
 	OTLP OTLPSpec `json:"otlp,omitempty"`
 
-	// logLevel sets the fs log level.
-	// +kubebuilder:validation:Enum=debug;info;warn;error
+	// traces selects the trace exporter, its destination and its transport.
+	// Defaults to "otlp" when an endpoint is set and "none" when none is —
+	// the SDK's own default is "otlp" unconditionally, which without a
+	// destination means an upload to localhost failing every interval.
+	// +optional
+	Traces SignalSpec `json:"traces,omitempty"`
+
+	// logs selects the log exporter and its transport. Defaults to "none"
+	// even with an endpoint set: fs logs to stdout, where the cluster's log
+	// pipeline already collects it, so a second copy over OTLP is a choice
+	// and not the obvious consequence of having a collector.
+	// +optional
+	Logs SignalSpec `json:"logs,omitempty"`
+
+	// metrics selects the metric exporter and its transport. Defaults to
+	// "prometheus": Kubernetes collects metrics by scraping, the operator
+	// gives every node a metrics port for it, and podMonitor scrapes that
+	// port. Choosing "otlp" or "none" retires the port with it.
+	// +optional
+	Metrics MetricsSpec `json:"metrics,omitempty"`
+
+	// logLevel is OTEL_LOG_LEVEL, the level fs logs at. debug additionally
+	// turns on per-request logging in fs itself, which on a busy endpoint is
+	// a line per request.
+	//
+	// The enum is the set go-faster/sdk can parse (zapcore levels), and it
+	// earns its keep: the SDK panics on a level it does not recognise, so a
+	// typo here would otherwise be a crash loop across every node rather
+	// than a rejected field. Levels above error exist because the SDK has
+	// them; a cluster that logs nothing below panic is not one you can
+	// operate.
+	// +kubebuilder:validation:Enum=debug;info;warn;error;dpanic;panic;fatal
 	// +kubebuilder:default=info
 	// +optional
 	LogLevel string `json:"logLevel,omitempty"`
@@ -627,17 +658,86 @@ type ObservabilitySpec struct {
 	// (requires the monitoring.coreos.com API group).
 	// +optional
 	PodMonitor bool `json:"podMonitor,omitempty"`
+
+	// pprof serves go-faster/sdk's pprof endpoints on port 9010. On by
+	// default, which is not the SDK's own default: a cluster that is
+	// misbehaving is when profiles are wanted, and that is a bad moment to
+	// discover the listener has to be turned on and the nodes restarted.
+	// Turn it off where an open profiling endpoint is not acceptable — the
+	// container port and its NetworkPolicy rule go with it.
+	// +kubebuilder:default=true
+	// +optional
+	Pprof *bool `json:"pprof,omitempty"`
+
+	// resourceAttributes are added to OTEL_RESOURCE_ATTRIBUTES, alongside
+	// the ones the operator derives (service, cluster, namespace, node,
+	// rack). Setting the variable through podTemplate.extraEnv replaces
+	// those instead, which is what the dashboards and the PodMonitor read.
+	// +optional
+	ResourceAttributes map[string]string `json:"resourceAttributes,omitempty"`
 }
 
-// OTLPSpec is the OTLP exporter destination.
+// OTLPSpec is the OTLP exporter destination shared by every signal.
+//
+// What is not here — Pyroscope, propagators, export intervals, pprof routes,
+// the OTEL_GO_X_* switches — is reachable through podTemplate.extraEnv, which
+// is applied last and therefore wins over what the operator sets. See the
+// SDK's reference table: https://github.com/go-faster/sdk#reference
 type OTLPSpec struct {
-	// endpoint is the OTLP endpoint URL; empty disables the OTLP exporters.
+	// endpoint is the OTLP endpoint URL every signal exported over OTLP is
+	// sent to unless it names its own. A signal whose exporter is "otlp"
+	// needs one of the two: without a destination the SDK ships to
+	// localhost:4318 and logs a failed upload every interval.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 
-	// protocol is the OTLP transport.
+	// protocol is the transport every OTLP signal uses unless it names its
+	// own.
 	// +kubebuilder:validation:Enum=grpc;http/protobuf
 	// +kubebuilder:default=grpc
+	// +optional
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// SignalSpec selects how one telemetry signal leaves the node.
+type SignalSpec struct {
+	// exporter is where the signal goes: "otlp" or "none".
+	// +kubebuilder:validation:Enum=otlp;none
+	// +optional
+	Exporter string `json:"exporter,omitempty"`
+
+	// endpoint overrides otlp.endpoint for this signal alone. Note the
+	// OpenTelemetry rule the exporters implement: the shared endpoint has
+	// "/v1/<signal>" appended over HTTP, a per-signal endpoint is used
+	// exactly as written, path included.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// protocol overrides otlp.protocol for this signal alone, which is what
+	// a collector that speaks one transport on one port needs.
+	// +kubebuilder:validation:Enum=grpc;http/protobuf
+	// +optional
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// MetricsSpec selects how metrics leave the node. It is its own type because
+// metrics have an exporter the other signals do not: the scrape endpoint.
+type MetricsSpec struct {
+	// exporter is "prometheus" (the default: served on the node's metrics
+	// port for a scraper), "otlp" (pushed to an endpoint) or "none".
+	// +kubebuilder:validation:Enum=prometheus;otlp;none
+	// +optional
+	Exporter string `json:"exporter,omitempty"`
+
+	// endpoint overrides otlp.endpoint for metrics alone, under the same
+	// path rule as the other signals. Ignored unless the exporter is
+	// "otlp".
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// protocol overrides otlp.protocol for metrics alone. Ignored unless
+	// the exporter is "otlp".
+	// +kubebuilder:validation:Enum=grpc;http/protobuf
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
 }

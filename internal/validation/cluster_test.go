@@ -108,6 +108,25 @@ func TestClusterRejects(t *testing.T) {
 			reason: fsv1alpha1.ReasonSpecInvalid,
 		},
 		{
+			// An OTLP exporter with no endpoint ships to localhost:4318 and
+			// logs the failure every interval.
+			name: "otlp exporter without a destination",
+			mutate: func(s *fsv1alpha1.FSClusterSpec) {
+				s.Observability.Logs.Exporter = fsv1alpha1.ExporterOTLP
+			},
+			reason: fsv1alpha1.ReasonSpecInvalid,
+		},
+		{
+			// Only the Prometheus exporter serves the port the PodMonitor
+			// scrapes; the pair would be a dashboard with no data.
+			name: "podMonitor scraping an exporter that does not listen",
+			mutate: func(s *fsv1alpha1.FSClusterSpec) {
+				s.Observability.PodMonitor = true
+				s.Observability.Metrics.Exporter = fsv1alpha1.ExporterNone
+			},
+			reason: fsv1alpha1.ReasonSpecInvalid,
+		},
+		{
 			name: "more nodes than fs supports",
 			mutate: func(s *fsv1alpha1.FSClusterSpec) {
 				nodes := int32(validation.MaxNodes + 1)
@@ -126,6 +145,21 @@ func TestClusterRejects(t *testing.T) {
 				t.Errorf("reason = %q, want %q (%s)", failure.Reason, tc.reason, failure.Message)
 			}
 		})
+	}
+}
+
+// TestClusterAcceptsASignalWithItsOwnEndpoint covers the destination a signal
+// brings itself: a collector that takes logs somewhere other than the rest.
+func TestClusterAcceptsASignalWithItsOwnEndpoint(t *testing.T) {
+	s := spec(func(s *fsv1alpha1.FSClusterSpec) {
+		s.Observability.Logs = fsv1alpha1.SignalSpec{
+			Exporter: fsv1alpha1.ExporterOTLP,
+			Endpoint: "http://loki-gateway.observability:4318/otlp/v1/logs",
+		}
+	})
+
+	if failure := validation.Cluster(s); failure != nil {
+		t.Fatalf("a signal with its own endpoint was refused: %v", failure)
 	}
 }
 
