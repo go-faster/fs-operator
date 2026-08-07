@@ -412,7 +412,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `repository` _string_ | repository is the image repository. | ghcr.io/go-faster/fs | Optional: \{\} <br /> |
-| `tag` _string_ | tag is the image tag. Defaults to the pinned fs release this operator<br />version is validated against — always set a pinned version, never a<br />floating tag: cluster upgrades are deliberate, one-node-at-a-time<br />operations. | v0.12.0 | MinLength: 1 <br />Optional: \{\} <br /> |
+| `tag` _string_ | tag is the image tag. Defaults to the pinned fs release this operator<br />version is validated against — always set a pinned version, never a<br />floating tag: cluster upgrades are deliberate, one-node-at-a-time<br />operations. | v0.13.0 | MinLength: 1 <br />Optional: \{\} <br /> |
 | `digest` _string_ | digest pins the image by content instead of by tag, as<br />"sha256:<hex>". When set it wins over tag, and the nodes run<br />repository@digest — the reference a mirror cannot silently change<br />under a cluster. A digest already written into repository is honoured<br />too, which is how the chart pins the operator's own image. |  | Pattern: `^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-fA-F0-9]\{32,128\}$` <br />Optional: \{\} <br /> |
 | `pullPolicy` _[PullPolicy](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#pullpolicy-v1-core)_ | pullPolicy is the image pull policy. | IfNotPresent | Enum: [Always IfNotPresent Never] <br />Optional: \{\} <br /> |
 | `pullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#localobjectreference-v1-core) array_ | pullSecrets are image pull secrets for the fs pods. |  | Optional: \{\} <br /> |
@@ -711,6 +711,31 @@ _Appears in:_
 | `binary` _integer_ | binary is the schema version the deployed image implements. |  | Optional: \{\} <br /> |
 
 
+#### StateSpec
+
+
+
+StateSpec sizes a node's state volume — the storage root, where fs keeps
+what it derives from the disks rather than the objects themselves.
+
+Since fs v0.13.0 that is the pebble object index: one entry per object the
+node holds, which is what answers a listing, a usage recount or a scrub
+sweep without reading every sidecar on every disk. The index is derived and
+never authoritative — losing it costs a rebuild by walking the disks — but
+on a node holding tens of millions of objects that walk is an event, which
+is why this is a claim and not an emptyDir.
+
+
+
+_Appears in:_
+- [StorageSpec](#storagespec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `size` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | size is the capacity requested for each node's state PVC. Defaults to<br />10Gi: the index runs to a few hundred bytes per object, so the default<br />carries a node with tens of millions of them. Like a disk it may only<br />grow, and growing it requires the StorageClass to allow expansion. |  | Optional: \{\} <br /> |
+| `storageClass` _string_ | storageClass selects the StorageClass for the state PVCs; empty uses<br />the cluster default. The index is written constantly and read on every<br />listing, so this is the one volume of a node worth putting on the<br />fastest class available. |  | Optional: \{\} <br /> |
+
+
 #### StorageSpec
 
 
@@ -725,7 +750,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `disks` _[DiskSpec](#diskspec) array_ | disks are this cluster's per-node storage devices: every entry becomes<br />one PersistentVolumeClaim on every node, mounted at<br />/var/lib/fs/disks/<name>. A single-node cluster declares exactly one:<br />fs's filesystem backend stores everything under a single root.<br />Entries may be added, and removed. Removing one is a decommission, not<br />a delete: the disk is drained out of placement on every node, and its<br />volumes go only once fs reports it holds nothing (SPEC §8.5). Sizes may<br />only grow. A disk is identified by its name, so renaming one reads as<br />removing a disk and adding an empty one — which is a slow, safe, and<br />almost certainly unintended way to spend a rebalance. |  | MaxItems: 32 <br />MinItems: 1 <br />Required: \{\} <br /> |
-| `reclaimPolicy` _[ReclaimPolicy](#reclaimpolicy)_ | reclaimPolicy controls what happens to a node's PVCs when the node is<br />removed or the cluster is deleted. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `state` _[StateSpec](#statespec)_ | state sizes the per-node volume holding fs's node-local state: the<br />object index it keeps beside the disks, at the storage root. Every<br />node gets one; it is not optional, because the container filesystem is<br />read-only and fs writes there at startup. | \{  \} | Optional: \{\} <br /> |
+| `reclaimPolicy` _[ReclaimPolicy](#reclaimpolicy)_ | reclaimPolicy controls what happens to a node's PVCs when the node is<br />removed or the cluster is deleted. It covers the state volume too:<br />Kubernetes sets the policy per StatefulSet, not per claim. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 
 
 #### TopologySpec

@@ -115,6 +115,17 @@ func Cluster(spec *fsv1alpha1.FSClusterSpec) *Failure {
 		}
 	}
 
+	for _, disk := range spec.Storage.Disks {
+		if disk.Name == fsv1alpha1.StateVolumeName {
+			return &Failure{
+				Reason: fsv1alpha1.ReasonSpecInvalid,
+				Message: fmt.Sprintf(
+					"disk name %q is reserved for the node's state volume (the storage root); rename the disk",
+					fsv1alpha1.StateVolumeName),
+			}
+		}
+	}
+
 	if total := int(spec.TotalNodes()); total > MaxNodes {
 		return &Failure{
 			Reason: fsv1alpha1.ReasonUnsupportedTopology,
@@ -224,6 +235,18 @@ func ClusterUpdate(old, updated *fsv1alpha1.FSClusterSpec) *Failure {
 			Reason: fsv1alpha1.ReasonDiskShrinkForbidden,
 			Message: fmt.Sprintf(
 				"disk(s) %v would shrink; disks may only grow", shrunk),
+		}
+	}
+
+	// The state volume is a PVC like any other: Kubernetes cannot shrink one,
+	// so a spec asking for it leaves the node stuck rather than resized.
+	if before, after := old.Storage.State.Size, updated.Storage.State.Size; before != nil &&
+		after != nil && after.Cmp(*before) < 0 {
+		return &Failure{
+			Reason: fsv1alpha1.ReasonDiskShrinkForbidden,
+			Message: fmt.Sprintf(
+				"storage.state.size would shrink (%s -> %s); it may only grow",
+				before.String(), after.String()),
 		}
 	}
 

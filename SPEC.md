@@ -221,9 +221,9 @@ spec:
   image:
     repository: ghcr.io/go-faster/fs
     # Defaults to the pinned fs release this operator version is validated
-    # against (currently v0.12.0). Always a pinned version, never a floating
+    # against (currently v0.13.0). Always a pinned version, never a floating
     # tag — cluster upgrades are deliberate, one-node-at-a-time operations.
-    tag: v0.12.0
+    tag: v0.13.0
     pullPolicy: IfNotPresent
     pullSecrets: []
 
@@ -259,6 +259,7 @@ spec:
   storage:
     # Each disk is one PVC on every node, mounted at
     # /var/lib/fs/disks/<name> and listed in cluster.disks with its weight.
+    # `state` is reserved: it is the node's storage-root claim, not a disk.
     disks:
       - name: d0
         size: 200Gi
@@ -409,7 +410,8 @@ What the operator does differently for it:
   both would abandon the data where it lies. A permanent warning says the
   node's loss is the data's loss.
 - **Rendering**: the storage root is the disk's mount path, so the pod, its
-  claim and its mounts are the cluster-mode ones. The public-read list is
+  claim and its mounts are the cluster-mode ones — minus the state claim,
+  which a root that is already a claim does not need. The public-read list is
   rendered into the config, because there is no etcd store to hold it; keys
   still go through the admin API, which persists them under the root.
 - **Skipped steps**: convergence, schema migration, the root-credential
@@ -584,7 +586,15 @@ apply (field manager `fs-operator`):
      secretKeyRef, OTEL env, `PPROF_ADDR`;
    - ports: http 8080, peer 7080, admin 8090, metrics 9464, pprof 9010;
    - probes: liveness `/health`, readiness `/ready`, generous startup probe;
-   - volumes: config Secret at `/etc/fs`, TLS Secret when set, disk PVCs;
+   - volumes: config Secret at `/etc/fs`, TLS Secret when set, and one PVC
+     per disk plus the **state PVC** mounted at the storage root
+     `/var/lib/fs` (`storage.state`, default 10Gi). The container filesystem
+     is read-only and fs writes node-local state under the root — since
+     v0.13.0 the pebble object index at `cluster/index`, which answers
+     listings, usage and scrub coverage without walking every sidecar. The
+     index is derived, but rebuilding it means walking every disk of the
+     node, so it outlives the pod. The root mount comes before the disk
+     mounts it contains: the kubelet mounts a nested path after its parent;
    - securityContext: runAsNonRoot 1000, readOnlyRootFilesystem, seccomp
      RuntimeDefault, drop ALL;
    - `fs.go-faster.org/restart-revision` pod annotation: the fingerprint of

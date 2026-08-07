@@ -46,6 +46,11 @@ const (
 	configVolumeName = "config"
 	tlsVolumeName    = "tls"
 	etcdTLSVolume    = "etcd-tls"
+
+	// stateVolumeName is the claim holding the writable storage root: what fs
+	// keeps beside the disks that mount below it. The API package owns the
+	// name because a disk may not take it.
+	stateVolumeName = fsv1alpha1.StateVolumeName
 )
 
 // The unprivileged identity fs runs as. It matches the uid the upstream image
@@ -389,7 +394,8 @@ func resourceAttributes(cluster *fsv1alpha1.FSCluster, node Node) string {
 }
 
 // volumes mounts the node's configuration and, when fs terminates TLS, the
-// certificate. Everything else the node writes lives on its claims.
+// certificate. Everything the node writes — its disks and its storage root —
+// comes from claim templates, not from here.
 func volumes(cluster *fsv1alpha1.FSCluster, node Node) []corev1.Volume {
 	vols := []corev1.Volume{{
 		Name: configVolumeName,
@@ -442,11 +448,27 @@ func diskNames(cluster *fsv1alpha1.FSCluster) []string {
 
 // volumeMounts mounts the configuration, the certificate and every disk.
 func volumeMounts(cluster *fsv1alpha1.FSCluster, retain []string) []corev1.VolumeMount {
-	mounts := []corev1.VolumeMount{{
+	mounts := make([]corev1.VolumeMount, 0, len(cluster.Spec.Storage.Disks)+4)
+
+	// The storage root comes first, before the disks that mount below it: the
+	// kubelet mounts a nested path after its parent, and a disk hidden under a
+	// later root mount would be an empty directory to fs.
+	//
+	// A single node has no such root to mount: its storage root *is* its disk
+	// (SPEC §5.2), so the index it would keep beside the disks lives on the
+	// one volume it has.
+	if !cluster.Spec.SingleNode() {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      stateVolumeName,
+			MountPath: StorageRoot,
+		})
+	}
+
+	mounts = append(mounts, corev1.VolumeMount{
 		Name:      configVolumeName,
 		MountPath: ConfigDir,
 		ReadOnly:  true,
-	}}
+	})
 
 	if external := cluster.Spec.Etcd.External; external != nil && external.TLS.SecretName != "" {
 		mounts = append(mounts, corev1.VolumeMount{
@@ -481,48 +503,62 @@ func volumeMounts(cluster *fsv1alpha1.FSCluster, retain []string) []corev1.Volum
 
 // volumeClaimTemplates turns each declared disk into one claim per node.
 func volumeClaimTemplates(cluster *fsv1alpha1.FSCluster, node Node, retain []string) []corev1.PersistentVolumeClaim {
-	claims := make([]corev1.PersistentVolumeClaim, 0, len(cluster.Spec.Storage.Disks))
+	claims := make([]corev1.PersistentVolumeClaim, 0, len(cluster.Spec.Storage.Disks)+1)
+
+	// The storage root. Not a disk — no data is placed on it and fs is never
+	// told about it — but a claim for the same reason a disk is one: fs writes
+	// its object index there at startup, the container filesystem is read-only,
+	// and an index that does not survive the pod is rebuilt by walking every
+	// sidecar on every disk of the node.
+	//
+	// Except on a single node, whose storage root is its disk: there the index
+	// already lives on a claim, and a second one would be an empty volume.
+	if !cluster.Spec.SingleNode() {
+		claims = append(claims, claimTemplate(cluster, node, stateVolumeName,
+			*cluster.Spec.Storage.State.Size, cluster.Spec.Storage.State.StorageClass))
+	}
 
 	for _, disk := range cluster.Spec.Storage.Disks {
-		claim := corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   disk.Name,
-				Labels: NodeObjectLabels(cluster.Name, node),
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceStorage: disk.Size},
-				},
-			},
-		}
-
-		if disk.StorageClass != "" {
-			claim.Spec.StorageClassName = ptr.To(disk.StorageClass)
-		}
-
-		claims = append(claims, claim)
+		claims = append(claims, claimTemplate(cluster, node, disk.Name, disk.Size, disk.StorageClass))
 	}
 
 	// A disk the spec dropped stays until its data has moved off. Its size is
 	// the live claim's, which is immutable anyway; the claim template only has
 	// to keep naming it so the pod keeps mounting it.
 	for _, name := range retain {
-		claims = append(claims, corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   name,
-				Labels: NodeObjectLabels(cluster.Name, node),
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceStorage: retainedDiskSize(cluster)},
-				},
-			},
-		})
+		claims = append(claims, claimTemplate(cluster, node, name, retainedDiskSize(cluster), ""))
 	}
 
 	return claims
+}
+
+// claimTemplate is one of a node's claims: a disk, a retained disk, or the
+// storage root.
+func claimTemplate(
+	cluster *fsv1alpha1.FSCluster,
+	node Node,
+	name string,
+	size resource.Quantity,
+	storageClass string,
+) corev1.PersistentVolumeClaim {
+	claim := corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: NodeObjectLabels(cluster.Name, node),
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: size},
+			},
+		},
+	}
+
+	if storageClass != "" {
+		claim.Spec.StorageClassName = ptr.To(storageClass)
+	}
+
+	return claim
 }
 
 // retainedDiskSize is the size a retained claim template declares. The live

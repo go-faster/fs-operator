@@ -348,6 +348,15 @@ func TestReconcileSingleNode(t *testing.T) {
 		t.Fatalf("%d nodes, want 1", len(nodes))
 	}
 
+	// Its storage root is its disk, so it carries no state claim: a second
+	// volume would be one nothing ever writes to.
+	set := NewStatefulSet(&cluster, nodes[0], "rev")
+	for _, claim := range set.Spec.VolumeClaimTemplates {
+		if claim.Name == fsv1alpha1.StateVolumeName {
+			t.Error("a single node was given a state volume it has no root for")
+		}
+	}
+
 	// No etcd is declared, so none of its resources may exist.
 	var sets appsv1.StatefulSetList
 	if err := r.List(t.Context(), &sets, client.InNamespace(key.Namespace)); err != nil {

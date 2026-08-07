@@ -119,7 +119,7 @@ type ImageSpec struct {
 	// floating tag: cluster upgrades are deliberate, one-node-at-a-time
 	// operations.
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:default="v0.12.0"
+	// +kubebuilder:default="v0.13.0"
 	// +optional
 	Tag string `json:"tag,omitempty"`
 
@@ -234,12 +234,51 @@ type StorageSpec struct {
 	// +required
 	Disks []DiskSpec `json:"disks"`
 
+	// state sizes the per-node volume holding fs's node-local state: the
+	// object index it keeps beside the disks, at the storage root. Every
+	// node gets one; it is not optional, because the container filesystem is
+	// read-only and fs writes there at startup.
+	// +kubebuilder:default={}
+	// +optional
+	State StateSpec `json:"state,omitempty"`
+
 	// reclaimPolicy controls what happens to a node's PVCs when the node is
-	// removed or the cluster is deleted.
+	// removed or the cluster is deleted. It covers the state volume too:
+	// Kubernetes sets the policy per StatefulSet, not per claim.
 	// +kubebuilder:validation:Enum=Retain;Delete
 	// +kubebuilder:default=Retain
 	// +optional
 	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
+}
+
+// StateVolumeName is the name of every node's state claim, and therefore a
+// name no disk may take: two claims of one name are one PVC, and the disk
+// would be the storage root.
+const StateVolumeName = "state"
+
+// StateSpec sizes a node's state volume — the storage root, where fs keeps
+// what it derives from the disks rather than the objects themselves.
+//
+// Since fs v0.13.0 that is the pebble object index: one entry per object the
+// node holds, which is what answers a listing, a usage recount or a scrub
+// sweep without reading every sidecar on every disk. The index is derived and
+// never authoritative — losing it costs a rebuild by walking the disks — but
+// on a node holding tens of millions of objects that walk is an event, which
+// is why this is a claim and not an emptyDir.
+type StateSpec struct {
+	// size is the capacity requested for each node's state PVC. Defaults to
+	// 10Gi: the index runs to a few hundred bytes per object, so the default
+	// carries a node with tens of millions of them. Like a disk it may only
+	// grow, and growing it requires the StorageClass to allow expansion.
+	// +optional
+	Size *resource.Quantity `json:"size,omitempty"`
+
+	// storageClass selects the StorageClass for the state PVCs; empty uses
+	// the cluster default. The index is written constantly and read on every
+	// listing, so this is the one volume of a node worth putting on the
+	// fastest class available.
+	// +optional
+	StorageClass string `json:"storageClass,omitempty"`
 }
 
 // ReclaimPolicy controls the fate of data-bearing resources on removal.

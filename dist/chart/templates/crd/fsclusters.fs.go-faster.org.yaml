@@ -390,7 +390,7 @@ spec:
                     description: repository is the image repository.
                     type: string
                   tag:
-                    default: v0.12.0
+                    default: v0.13.0
                     description: |-
                       tag is the image tag. Defaults to the pinned fs release this operator
                       version is validated against — always set a pinned version, never a
@@ -894,11 +894,39 @@ spec:
                     default: Retain
                     description: |-
                       reclaimPolicy controls what happens to a node's PVCs when the node is
-                      removed or the cluster is deleted.
+                      removed or the cluster is deleted. It covers the state volume too:
+                      Kubernetes sets the policy per StatefulSet, not per claim.
                     enum:
                     - Retain
                     - Delete
                     type: string
+                  state:
+                    default: {}
+                    description: |-
+                      state sizes the per-node volume holding fs's node-local state: the
+                      object index it keeps beside the disks, at the storage root. Every
+                      node gets one; it is not optional, because the container filesystem is
+                      read-only and fs writes there at startup.
+                    properties:
+                      size:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: |-
+                          size is the capacity requested for each node's state PVC. Defaults to
+                          10Gi: the index runs to a few hundred bytes per object, so the default
+                          carries a node with tens of millions of them. Like a disk it may only
+                          grow, and growing it requires the StorageClass to allow expansion.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      storageClass:
+                        description: |-
+                          storageClass selects the StorageClass for the state PVCs; empty uses
+                          the cluster default. The index is written constantly and read on every
+                          listing, so this is the one volume of a node worth putting on the
+                          fastest class available.
+                        type: string
+                    type: object
                 required:
                 - disks
                 type: object

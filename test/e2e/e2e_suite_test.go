@@ -194,7 +194,7 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 
 // fsImage is the fs release the operator defaults to; it has to be in the
 // cluster before a node can start.
-const fsImage = "ghcr.io/go-faster/fs:v0.12.0"
+const fsImage = "ghcr.io/go-faster/fs:v0.13.0"
 
 // loadFSImage pulls the fs image on the host and loads it into Kind.
 func loadFSImage() error {

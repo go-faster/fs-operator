@@ -17,6 +17,7 @@ limitations under the License.
 package fscluster
 
 import (
+	"slices"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -100,8 +101,99 @@ func TestReconcileDiskGrow(t *testing.T) {
 	var set appsv1.StatefulSet
 	get(t, r, key.Namespace, first.Name, &set)
 
-	if got := set.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage]; got.Cmp(resource.MustParse("500Gi")) != 0 {
+	claim := claimNamed(t, &set, "d0")
+	if got := claim.Spec.Resources.Requests[corev1.ResourceStorage]; got.Cmp(resource.MustParse("500Gi")) != 0 {
 		t.Errorf("recreated StatefulSet claim size = %s, want 500Gi", got.String())
+	}
+}
+
+// TestReconcileAddsTheStateVolumeToAnOlderNode covers the upgrade path of a
+// cluster built before nodes had a state volume: its StatefulSets have no such
+// claim template, and a claim template cannot be patched in. The node has to
+// go through the same orphan-recreate as a disk being added — one node at a
+// time, keeping the pod and its data — rather than the operator failing to
+// apply a StatefulSet forever.
+func TestReconcileAddsTheStateVolumeToAnOlderNode(t *testing.T) {
+	r, _, admin := reconcilerWithAdmin(t)
+
+	key := createCluster(t, r, "state-upgrade", nil)
+	nodes := steady(t, r, admin, key)
+	provisionPVCs(t, r, key, nodes, "200Gi")
+
+	// Rebuild the first node the way the previous operator version would
+	// have: every claim except the state volume.
+	first := nodes[0]
+
+	var before appsv1.StatefulSet
+	get(t, r, key.Namespace, first.Name, &before)
+
+	older := before.DeepCopy()
+	older.Spec.VolumeClaimTemplates = slices.DeleteFunc(older.Spec.VolumeClaimTemplates,
+		func(claim corev1.PersistentVolumeClaim) bool {
+			return claim.Name == fsv1alpha1.StateVolumeName
+		})
+
+	container := &older.Spec.Template.Spec.Containers[0]
+	container.VolumeMounts = slices.DeleteFunc(container.VolumeMounts,
+		func(mount corev1.VolumeMount) bool {
+			return mount.Name == fsv1alpha1.StateVolumeName
+		})
+
+	recreateStatefulSet(t, r, older)
+
+	// The replacement starts with an empty status, so put the node back in the
+	// serving state the storage step insists on before it touches anything.
+	serving(t, r, key, first)
+
+	reconcile(t, r, key)
+
+	var deleted appsv1.StatefulSet
+	get(t, r, key.Namespace, first.Name, &deleted)
+
+	if deleted.DeletionTimestamp == nil {
+		t.Fatalf("node %q was not orphan-deleted; its state volume can never appear", first.Name)
+	}
+
+	finishGarbageCollection(t, r, key.Namespace, first.Name)
+
+	reconcile(t, r, key)
+
+	var after appsv1.StatefulSet
+	get(t, r, key.Namespace, first.Name, &after)
+
+	claim := claimNamed(t, &after, fsv1alpha1.StateVolumeName)
+	if got := claim.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != fsv1alpha1.DefaultStateSize {
+		t.Errorf("state claim = %s, want %s", got.String(), fsv1alpha1.DefaultStateSize)
+	}
+}
+
+// recreateStatefulSet replaces a StatefulSet with one whose immutable fields
+// differ — what envtest cannot do with an update.
+func recreateStatefulSet(t *testing.T, r *Reconciler, set *appsv1.StatefulSet) {
+	t.Helper()
+
+	if err := r.Delete(t.Context(), set); err != nil {
+		t.Fatalf("delete statefulset %q: %v", set.Name, err)
+	}
+
+	var gone appsv1.StatefulSet
+	if err := r.Get(t.Context(), types.NamespacedName{Namespace: set.Namespace, Name: set.Name},
+		&gone); !apierrors.IsNotFound(err) {
+		t.Fatalf("statefulset %q did not go away (err=%v)", set.Name, err)
+	}
+
+	fresh := set.DeepCopy()
+	fresh.ObjectMeta = metav1.ObjectMeta{
+		Name:            set.Name,
+		Namespace:       set.Namespace,
+		Labels:          set.Labels,
+		Annotations:     set.Annotations,
+		OwnerReferences: set.OwnerReferences,
+	}
+	fresh.Status = appsv1.StatefulSetStatus{}
+
+	if err := r.Create(t.Context(), fresh); err != nil {
+		t.Fatalf("recreate statefulset %q: %v", set.Name, err)
 	}
 }
 
