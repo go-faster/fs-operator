@@ -1025,6 +1025,10 @@ examples/
   06-buckets-and-keys.yaml   FSBucket + FSAccessKey round-trip
   07-production.yaml         full production shape (resources, monitor,
                              network policy, external etcd w/ TLS)
+  08-managed-etcd.yaml       self-contained dev cluster, operator-run etcd
+  09-etcd-tls.yaml           external etcd with client certificates
+  10-telemetry.yaml          every observability knob: per-signal exporters,
+                             endpoints, transports, pprof, extraEnv
 ```
 
 Every example is exercised in e2e (applied, or at minimum server-side
