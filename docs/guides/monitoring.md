@@ -119,14 +119,52 @@ spec:
 ```
 
 Without an endpoint both exporters are explicitly `none`. That matters: fs runs
-on [go-faster/sdk](https://github.com/go-faster/sdk), whose traces and logs
-default to OTLP at `localhost:4318`, so an unset exporter is a failed upload
-logged every interval rather than silence. Prometheus scraping is unaffected —
-metrics are always exported through the scrape endpoint, not pushed.
+on [go-faster/sdk](https://github.com/go-faster/sdk), whose traces, logs **and**
+metrics all default to OTLP at `localhost:4318`, so an unset exporter is a
+failed upload logged every interval rather than silence.
 
-### Configuring the SDK
+### Per-signal exporters
 
-`spec.observability` covers the knobs a cluster usually needs:
+Each signal picks its own exporter and, if it needs one, its own transport:
+
+```yaml
+spec:
+  observability:
+    otlp:
+      endpoint: http://otel-collector.observability:4317
+      protocol: grpc            # OTEL_EXPORTER_OTLP_PROTOCOL
+    traces:
+      exporter: otlp            # OTEL_TRACES_EXPORTER: otlp | none
+    logs:
+      exporter: none            # OTEL_LOGS_EXPORTER
+    metrics:
+      exporter: otlp            # OTEL_METRICS_EXPORTER: prometheus | otlp | none
+      protocol: http/protobuf   # OTEL_EXPORTER_OTLP_METRICS_PROTOCOL
+```
+
+| Field | Default | Notes |
+|---|---|---|
+| `traces.exporter` | `otlp` with an endpoint, else `none` | |
+| `logs.exporter` | `otlp` with an endpoint, else `none` | fs always logs to stdout; this ships a copy |
+| `metrics.exporter` | `prometheus` | Kubernetes collects by scraping |
+| `*.protocol` | `otlp.protocol` | per-signal override |
+
+Two combinations are refused at apply time rather than left to fail quietly:
+an `otlp` exporter with no `otlp.endpoint`, and `podMonitor: true` with a
+`metrics.exporter` other than `prometheus` — nothing would be listening on the
+port it scrapes.
+
+`metrics.exporter` also decides the plumbing around the port: choose `otlp` or
+`none` and the node stops advertising the metrics container port, and the
+NetworkPolicy stops opening it.
+
+**A transport subtlety the operator handles for you.** The SDK reads
+`OTEL_EXPORTER_OTLP_PROTOCOL` *first* and consults the per-signal variables
+only when it is unset — the reverse of the OpenTelemetry specification. So the
+operator renders one or the other, never both: the shared variable when every
+signal agrees, and only per-signal variables as soon as one of them differs.
+
+### Configuring the rest of the SDK
 
 ```yaml
 spec:

@@ -104,7 +104,10 @@ func NewNetworkPolicy(cluster *fsv1alpha1.FSCluster, operatorNamespace string) *
 	// but it also tells the next reader the endpoint is there.
 	open := []networkingv1.NetworkPolicyPort{
 		policyPort(cluster.Spec.S3.Service.Port),
-		policyPort(MetricsPort),
+	}
+
+	if MetricsScraped(cluster) {
+		open = append(open, policyPort(MetricsPort))
 	}
 
 	if pprofEnabled(cluster) {

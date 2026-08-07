@@ -108,6 +108,25 @@ func TestClusterRejects(t *testing.T) {
 			reason: fsv1alpha1.ReasonSpecInvalid,
 		},
 		{
+			// An OTLP exporter with no endpoint ships to localhost:4318 and
+			// logs the failure every interval.
+			name: "otlp exporter without a destination",
+			mutate: func(s *fsv1alpha1.FSClusterSpec) {
+				s.Observability.Traces.Exporter = fsv1alpha1.ExporterOTLP
+			},
+			reason: fsv1alpha1.ReasonSpecInvalid,
+		},
+		{
+			// Only the Prometheus exporter serves the port the PodMonitor
+			// scrapes; the pair would be a dashboard with no data.
+			name: "podMonitor scraping an exporter that does not listen",
+			mutate: func(s *fsv1alpha1.FSClusterSpec) {
+				s.Observability.PodMonitor = true
+				s.Observability.Metrics.Exporter = fsv1alpha1.ExporterNone
+			},
+			reason: fsv1alpha1.ReasonSpecInvalid,
+		},
+		{
 			name: "more nodes than fs supports",
 			mutate: func(s *fsv1alpha1.FSClusterSpec) {
 				nodes := int32(validation.MaxNodes + 1)

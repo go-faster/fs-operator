@@ -78,6 +78,11 @@ const (
 
 	// DefaultOTLPProtocol is the default OTLP transport.
 	DefaultOTLPProtocol = "grpc"
+
+	// Exporter values, as go-faster/sdk spells them.
+	ExporterOTLP       = "otlp"
+	ExporterPrometheus = "prometheus"
+	ExporterNone       = "none"
 )
 
 // ApplyRegistry rewrites the registry host of an image repository to registry,
@@ -176,6 +181,33 @@ func (s *FSClusterSpec) WithDefaults() {
 
 	if s.Observability.Pprof == nil {
 		s.Observability.Pprof = ptr.To(true)
+	}
+
+	s.Observability.withSignalDefaults()
+}
+
+// withSignalDefaults resolves each signal's exporter and transport.
+//
+// Traces and logs follow the destination: there is no sense exporting to an
+// endpoint nobody gave, and the SDK's own default (otlp, to localhost) is the
+// one answer that is wrong either way. Metrics default to the scrape endpoint,
+// which is how Kubernetes collects them.
+func (o *ObservabilitySpec) withSignalDefaults() {
+	pushed := ExporterNone
+	if o.OTLP.Endpoint != "" {
+		pushed = ExporterOTLP
+	}
+
+	if o.Traces.Exporter == "" {
+		o.Traces.Exporter = pushed
+	}
+
+	if o.Logs.Exporter == "" {
+		o.Logs.Exporter = pushed
+	}
+
+	if o.Metrics.Exporter == "" {
+		o.Metrics.Exporter = ExporterPrometheus
 	}
 }
 

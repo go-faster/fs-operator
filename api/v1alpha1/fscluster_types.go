@@ -613,9 +613,29 @@ const (
 
 // ObservabilitySpec configures telemetry of the fs pods.
 type ObservabilitySpec struct {
-	// otlp configures the OpenTelemetry exporter env of the fs pods.
+	// otlp is the OTLP destination every signal exported over OTLP is sent
+	// to, and the protocol they use unless a signal names its own.
 	// +optional
 	OTLP OTLPSpec `json:"otlp,omitempty"`
+
+	// traces selects the trace exporter and its transport. Defaults to
+	// "otlp" when otlp.endpoint is set and "none" when it is not — the SDK's
+	// own default is "otlp" unconditionally, which without a destination
+	// means an upload to localhost failing every interval.
+	// +optional
+	Traces SignalSpec `json:"traces,omitempty"`
+
+	// logs selects the log exporter and its transport, on the same rule as
+	// traces. fs always logs to stdout; this is about shipping a copy.
+	// +optional
+	Logs SignalSpec `json:"logs,omitempty"`
+
+	// metrics selects the metric exporter and its transport. Defaults to
+	// "prometheus": Kubernetes collects metrics by scraping, the operator
+	// gives every node a metrics port for it, and podMonitor scrapes that
+	// port. Choosing "otlp" or "none" retires the port with it.
+	// +optional
+	Metrics MetricsSpec `json:"metrics,omitempty"`
 
 	// logLevel sets the fs log level.
 	// +kubebuilder:validation:Enum=debug;info;warn;error
@@ -646,23 +666,54 @@ type ObservabilitySpec struct {
 	ResourceAttributes map[string]string `json:"resourceAttributes,omitempty"`
 }
 
-// OTLPSpec is the OTLP exporter destination.
+// OTLPSpec is the OTLP exporter destination shared by every signal.
 //
-// Everything else go-faster/sdk reads from the environment — Pyroscope,
-// propagators, export intervals, pprof routes, per-signal protocols — is
-// reachable through podTemplate.extraEnv, which is applied last and therefore
-// wins over what the operator sets. See its reference table:
-// https://github.com/go-faster/sdk#reference
+// What is not here — Pyroscope, propagators, export intervals, pprof routes,
+// the OTEL_GO_X_* switches — is reachable through podTemplate.extraEnv, which
+// is applied last and therefore wins over what the operator sets. See the
+// SDK's reference table: https://github.com/go-faster/sdk#reference
 type OTLPSpec struct {
-	// endpoint is the OTLP endpoint URL; empty disables the OTLP exporters
-	// (traces and logs), because the SDK otherwise ships them to
-	// localhost:4318 and logs a failed upload every interval.
+	// endpoint is the OTLP endpoint URL. Required by any signal whose
+	// exporter is "otlp", and refused with none of them: the SDK would ship
+	// to localhost:4318 and log a failed upload every interval.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 
-	// protocol is the OTLP transport.
+	// protocol is the transport every OTLP signal uses unless it names its
+	// own.
 	// +kubebuilder:validation:Enum=grpc;http/protobuf
 	// +kubebuilder:default=grpc
+	// +optional
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// SignalSpec selects how one telemetry signal leaves the node.
+type SignalSpec struct {
+	// exporter is where the signal goes: "otlp" (to otlp.endpoint) or
+	// "none".
+	// +kubebuilder:validation:Enum=otlp;none
+	// +optional
+	Exporter string `json:"exporter,omitempty"`
+
+	// protocol overrides otlp.protocol for this signal alone, which is what
+	// a collector that speaks one transport on one port needs.
+	// +kubebuilder:validation:Enum=grpc;http/protobuf
+	// +optional
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// MetricsSpec selects how metrics leave the node. It is its own type because
+// metrics have an exporter the other signals do not: the scrape endpoint.
+type MetricsSpec struct {
+	// exporter is "prometheus" (the default: served on the node's metrics
+	// port for a scraper), "otlp" (pushed to otlp.endpoint) or "none".
+	// +kubebuilder:validation:Enum=prometheus;otlp;none
+	// +optional
+	Exporter string `json:"exporter,omitempty"`
+
+	// protocol overrides otlp.protocol for metrics alone. Ignored unless
+	// the exporter is "otlp".
+	// +kubebuilder:validation:Enum=grpc;http/protobuf
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
 }

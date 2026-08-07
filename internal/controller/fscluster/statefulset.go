@@ -113,14 +113,14 @@ const (
 	envMetricsExport  = "OTEL_METRICS_EXPORTER"
 	envOTLPEndpoint   = "OTEL_EXPORTER_OTLP_ENDPOINT"
 	envOTLPProtocol   = "OTEL_EXPORTER_OTLP_PROTOCOL"
-	envResourceAttrs  = "OTEL_RESOURCE_ATTRIBUTES"
-)
 
-// Telemetry exporter names of the OpenTelemetry SDK.
-const (
-	exporterOTLP       = "otlp"
-	exporterPrometheus = "prometheus"
-	exporterNone       = "none"
+	// Per-signal transports. The SDK reads envOTLPProtocol first and only
+	// falls through to these when it is empty (autometer, autotracer,
+	// autologs), so the two are rendered as alternatives, never together.
+	envOTLPTracesProto  = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"
+	envOTLPLogsProto    = "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"
+	envOTLPMetricsProto = "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"
+	envResourceAttrs    = "OTEL_RESOURCE_ATTRIBUTES"
 )
 
 // NewStatefulSet builds the single-pod StatefulSet running one fs node.
@@ -284,7 +284,12 @@ func containerPorts(cluster *fsv1alpha1.FSCluster) []corev1.ContainerPort {
 		containerPort(PortNameS3, S3Port),
 		containerPort(PortNamePeer, PeerPort),
 		containerPort(PortNameAdmin, AdminPort),
-		containerPort(PortNameMetrics, MetricsPort),
+	}
+
+	// Only the Prometheus exporter serves this port; pushed or disabled
+	// metrics leave nothing behind it.
+	if MetricsScraped(cluster) {
+		ports = append(ports, containerPort(PortNameMetrics, MetricsPort))
 	}
 
 	if pprofEnabled(cluster) {
@@ -336,16 +341,11 @@ func env(cluster *fsv1alpha1.FSCluster, node Node) []corev1.EnvVar {
 		secretEnv(envRootAccessKey, RootCredentialsSource(cluster), AccessKeyKey),
 		secretEnv(envRootSecretKey, RootCredentialsSource(cluster), SecretKeyKey),
 
-		// The SDK binds its Prometheus listener only when told to, and
-		// defaults it to localhost.
-		{Name: envMetricsAddr, Value: listenAddr(MetricsPort)},
 		{Name: envLogLevel, Value: spec.Observability.LogLevel},
-
-		// Metrics are always scrapeable: pull is how Kubernetes collects them,
-		// and the optional PodMonitor targets this port.
-		{Name: envMetricsExport, Value: exporterPrometheus},
 		{Name: envResourceAttrs, Value: resourceAttributes(cluster, node)},
 	}
+
+	vars = append(vars, telemetryEnv(&spec.Observability)...)
 
 	// etcd credentials go through the environment, never the rendered config:
 	// a config Secret is readable by anything that can read Secrets in the
@@ -364,26 +364,80 @@ func env(cluster *fsv1alpha1.FSCluster, node Node) []corev1.EnvVar {
 		vars = append(vars, corev1.EnvVar{Name: envPprofAddr, Value: listenAddr(PprofPort)})
 	}
 
-	// Traces and logs both default to OTLP in the SDK, and both then ship to
-	// localhost:4318 — a failed upload logged every interval on a cluster
-	// that never asked for a collector. Named explicitly in either direction.
-	if endpoint := spec.Observability.OTLP.Endpoint; endpoint != "" {
-		vars = append(vars,
-			corev1.EnvVar{Name: envTracesExporter, Value: exporterOTLP},
-			corev1.EnvVar{Name: envLogsExporter, Value: exporterOTLP},
-			corev1.EnvVar{Name: envOTLPEndpoint, Value: endpoint},
-			corev1.EnvVar{Name: envOTLPProtocol, Value: spec.Observability.OTLP.Protocol},
-		)
-	} else {
-		vars = append(vars,
-			corev1.EnvVar{Name: envTracesExporter, Value: exporterNone},
-			corev1.EnvVar{Name: envLogsExporter, Value: exporterNone},
-		)
-	}
-
 	// User variables come last so that a deliberate override wins: with
 	// duplicate names the kubelet keeps the last one.
 	return append(vars, spec.PodTemplate.ExtraEnv...)
+}
+
+// telemetryEnv renders the exporter selection of every signal.
+//
+// Every exporter is named rather than left to the SDK, whose defaults are
+// "otlp" for all three: on a cluster with no collector that is three uploads
+// to localhost:4318 failing every interval, and on one *with* a collector it
+// would push metrics that Kubernetes is already scraping.
+func telemetryEnv(spec *fsv1alpha1.ObservabilitySpec) []corev1.EnvVar {
+	vars := []corev1.EnvVar{
+		{Name: envTracesExporter, Value: spec.Traces.Exporter},
+		{Name: envLogsExporter, Value: spec.Logs.Exporter},
+		{Name: envMetricsExport, Value: spec.Metrics.Exporter},
+	}
+
+	// The Prometheus exporter serves the node's metrics port; the SDK binds
+	// it only when told to, and defaults it to localhost.
+	if spec.Metrics.Exporter == fsv1alpha1.ExporterPrometheus {
+		vars = append(vars, corev1.EnvVar{Name: envMetricsAddr, Value: listenAddr(MetricsPort)})
+	}
+
+	if !exportsOTLP(spec) {
+		return vars
+	}
+
+	vars = append(vars, corev1.EnvVar{Name: envOTLPEndpoint, Value: spec.OTLP.Endpoint})
+
+	// The transports, and the one place the SDK's precedence has to be
+	// respected rather than described: it reads OTEL_EXPORTER_OTLP_PROTOCOL
+	// first and consults the per-signal variables only when that is unset, so
+	// rendering both would silently ignore whichever signal asked for its
+	// own. Either every signal shares the base protocol, or none of them
+	// sees it.
+	perSignal := []corev1.EnvVar{
+		signalProtocol(envOTLPTracesProto, spec.Traces.Exporter, spec.Traces.Protocol, spec.OTLP.Protocol),
+		signalProtocol(envOTLPLogsProto, spec.Logs.Exporter, spec.Logs.Protocol, spec.OTLP.Protocol),
+		signalProtocol(envOTLPMetricsProto, spec.Metrics.Exporter, spec.Metrics.Protocol, spec.OTLP.Protocol),
+	}
+
+	if spec.Traces.Protocol == "" && spec.Logs.Protocol == "" && spec.Metrics.Protocol == "" {
+		return append(vars, corev1.EnvVar{Name: envOTLPProtocol, Value: spec.OTLP.Protocol})
+	}
+
+	for _, v := range perSignal {
+		if v.Name != "" {
+			vars = append(vars, v)
+		}
+	}
+
+	return vars
+}
+
+// signalProtocol is one signal's transport variable, or the zero value when
+// the signal does not travel over OTLP.
+func signalProtocol(name, exporter, protocol, fallback string) corev1.EnvVar {
+	if exporter != fsv1alpha1.ExporterOTLP {
+		return corev1.EnvVar{}
+	}
+
+	if protocol == "" {
+		protocol = fallback
+	}
+
+	return corev1.EnvVar{Name: name, Value: protocol}
+}
+
+// exportsOTLP reports whether any signal is pushed to the OTLP endpoint.
+func exportsOTLP(spec *fsv1alpha1.ObservabilitySpec) bool {
+	return spec.Traces.Exporter == fsv1alpha1.ExporterOTLP ||
+		spec.Logs.Exporter == fsv1alpha1.ExporterOTLP ||
+		spec.Metrics.Exporter == fsv1alpha1.ExporterOTLP
 }
 
 // secretEnv reads one key of a Secret into an environment variable, which is
@@ -422,6 +476,15 @@ func resourceAttributes(cluster *fsv1alpha1.FSCluster, node Node) string {
 	}
 
 	return strings.Join(attributes, ",")
+}
+
+// MetricsScraped reports whether the nodes serve Prometheus metrics on the
+// metrics port — which decides the container port, the PodMonitor and the
+// NetworkPolicy rule alike.
+func MetricsScraped(cluster *fsv1alpha1.FSCluster) bool {
+	exporter := cluster.Spec.Observability.Metrics.Exporter
+
+	return exporter == "" || exporter == fsv1alpha1.ExporterPrometheus
 }
 
 // pprofEnabled reports whether this cluster serves pprof. Defaulting happens

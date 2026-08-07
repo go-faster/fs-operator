@@ -436,19 +436,69 @@ spec:
                     - warn
                     - error
                     type: string
+                  logs:
+                    description: |-
+                      logs selects the log exporter and its transport, on the same rule as
+                      traces. fs always logs to stdout; this is about shipping a copy.
+                    properties:
+                      exporter:
+                        description: |-
+                          exporter is where the signal goes: "otlp" (to otlp.endpoint) or
+                          "none".
+                        enum:
+                        - otlp
+                        - none
+                        type: string
+                      protocol:
+                        description: |-
+                          protocol overrides otlp.protocol for this signal alone, which is what
+                          a collector that speaks one transport on one port needs.
+                        enum:
+                        - grpc
+                        - http/protobuf
+                        type: string
+                    type: object
+                  metrics:
+                    description: |-
+                      metrics selects the metric exporter and its transport. Defaults to
+                      "prometheus": Kubernetes collects metrics by scraping, the operator
+                      gives every node a metrics port for it, and podMonitor scrapes that
+                      port. Choosing "otlp" or "none" retires the port with it.
+                    properties:
+                      exporter:
+                        description: |-
+                          exporter is "prometheus" (the default: served on the node's metrics
+                          port for a scraper), "otlp" (pushed to otlp.endpoint) or "none".
+                        enum:
+                        - prometheus
+                        - otlp
+                        - none
+                        type: string
+                      protocol:
+                        description: |-
+                          protocol overrides otlp.protocol for metrics alone. Ignored unless
+                          the exporter is "otlp".
+                        enum:
+                        - grpc
+                        - http/protobuf
+                        type: string
+                    type: object
                   otlp:
-                    description: otlp configures the OpenTelemetry exporter env of
-                      the fs pods.
+                    description: |-
+                      otlp is the OTLP destination every signal exported over OTLP is sent
+                      to, and the protocol they use unless a signal names its own.
                     properties:
                       endpoint:
                         description: |-
-                          endpoint is the OTLP endpoint URL; empty disables the OTLP exporters
-                          (traces and logs), because the SDK otherwise ships them to
-                          localhost:4318 and logs a failed upload every interval.
+                          endpoint is the OTLP endpoint URL. Required by any signal whose
+                          exporter is "otlp", and refused with none of them: the SDK would ship
+                          to localhost:4318 and log a failed upload every interval.
                         type: string
                       protocol:
                         default: grpc
-                        description: protocol is the OTLP transport.
+                        description: |-
+                          protocol is the transport every OTLP signal uses unless it names its
+                          own.
                         enum:
                         - grpc
                         - http/protobuf
@@ -477,6 +527,30 @@ spec:
                       the ones the operator derives (service, cluster, namespace, node,
                       rack). Setting the variable through podTemplate.extraEnv replaces
                       those instead, which is what the dashboards and the PodMonitor read.
+                    type: object
+                  traces:
+                    description: |-
+                      traces selects the trace exporter and its transport. Defaults to
+                      "otlp" when otlp.endpoint is set and "none" when it is not — the SDK's
+                      own default is "otlp" unconditionally, which without a destination
+                      means an upload to localhost failing every interval.
+                    properties:
+                      exporter:
+                        description: |-
+                          exporter is where the signal goes: "otlp" (to otlp.endpoint) or
+                          "none".
+                        enum:
+                        - otlp
+                        - none
+                        type: string
+                      protocol:
+                        description: |-
+                          protocol overrides otlp.protocol for this signal alone, which is what
+                          a collector that speaks one transport on one port needs.
+                        enum:
+                        - grpc
+                        - http/protobuf
+                        type: string
                     type: object
                 type: object
               podTemplate:
