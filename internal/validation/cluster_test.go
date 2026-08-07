@@ -112,7 +112,7 @@ func TestClusterRejects(t *testing.T) {
 			// logs the failure every interval.
 			name: "otlp exporter without a destination",
 			mutate: func(s *fsv1alpha1.FSClusterSpec) {
-				s.Observability.Traces.Exporter = fsv1alpha1.ExporterOTLP
+				s.Observability.Logs.Exporter = fsv1alpha1.ExporterOTLP
 			},
 			reason: fsv1alpha1.ReasonSpecInvalid,
 		},
@@ -145,6 +145,21 @@ func TestClusterRejects(t *testing.T) {
 				t.Errorf("reason = %q, want %q (%s)", failure.Reason, tc.reason, failure.Message)
 			}
 		})
+	}
+}
+
+// TestClusterAcceptsASignalWithItsOwnEndpoint covers the destination a signal
+// brings itself: a collector that takes logs somewhere other than the rest.
+func TestClusterAcceptsASignalWithItsOwnEndpoint(t *testing.T) {
+	s := spec(func(s *fsv1alpha1.FSClusterSpec) {
+		s.Observability.Logs = fsv1alpha1.SignalSpec{
+			Exporter: fsv1alpha1.ExporterOTLP,
+			Endpoint: "http://loki-gateway.observability:4318/otlp/v1/logs",
+		}
+	})
+
+	if failure := validation.Cluster(s); failure != nil {
+		t.Fatalf("a signal with its own endpoint was refused: %v", failure)
 	}
 }
 

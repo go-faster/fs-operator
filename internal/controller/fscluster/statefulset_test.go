@@ -525,6 +525,10 @@ func TestStatefulSetMountsAWritableStorageRoot(t *testing.T) {
 // collectorEndpoint stands in for an OTLP collector in this package's tests.
 const collectorEndpoint = "http://collector.observability:4317"
 
+// protocolHTTP is the OTLP transport a signal picks when it does not want the
+// shared one.
+const protocolHTTP = "http/protobuf"
+
 // TestStatefulSetSDKEnvironment covers what steers go-faster/sdk in the fs
 // container: the exporters it would otherwise point at localhost, the pprof
 // listener it serves only when given an address, and the resource attributes
@@ -557,13 +561,77 @@ func TestStatefulSetSDKEnvironment(t *testing.T) {
 
 		env := environment(nodeStatefulSet(t, cluster))
 
-		for _, name := range []string{envTracesExporter, envLogsExporter} {
-			if got := env[name]; got != fsv1alpha1.ExporterOTLP {
-				t.Errorf("%s = %q, want %q", name, got, fsv1alpha1.ExporterOTLP)
-			}
+		if got := env[envTracesExporter]; got != fsv1alpha1.ExporterOTLP {
+			t.Errorf("%s = %q, want %q", envTracesExporter, got, fsv1alpha1.ExporterOTLP)
+		}
+
+		// Logs are the exception: fs writes them to stdout, where the
+		// cluster already collects them, so a second copy is asked for and
+		// not inherited from an endpoint that was set for traces.
+		if got := env[envLogsExporter]; got != fsv1alpha1.ExporterNone {
+			t.Errorf("%s = %q, want %q by default", envLogsExporter, got, fsv1alpha1.ExporterNone)
+		}
+
+		if got := env[envOTLPEndpoint]; got != collectorEndpoint {
+			t.Errorf("%s = %q, want %q", envOTLPEndpoint, got, collectorEndpoint)
 		}
 	})
 
+	t.Run("a signal with its own destination", func(t *testing.T) {
+		const logsEndpoint = "http://loki-gateway.observability:4318/otlp/v1/logs"
+
+		cluster := testCluster()
+		cluster.Spec.Observability.OTLP.Endpoint = collectorEndpoint
+		cluster.Spec.Observability.Logs = fsv1alpha1.SignalSpec{
+			Exporter: fsv1alpha1.ExporterOTLP,
+			Endpoint: logsEndpoint,
+			Protocol: protocolHTTP,
+		}
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		// The exporters resolve this themselves, and per the specification a
+		// signal's own endpoint wins — so both are rendered, unlike the
+		// protocol.
+		if got := env[envOTLPEndpoint]; got != collectorEndpoint {
+			t.Errorf("%s = %q, want the shared endpoint to stay", envOTLPEndpoint, got)
+		}
+
+		if got := env[envOTLPLogsEndpoint]; got != logsEndpoint {
+			t.Errorf("%s = %q, want %q", envOTLPLogsEndpoint, got, logsEndpoint)
+		}
+
+		// Traces have no endpoint of their own to declare.
+		if _, ok := env[envOTLPTracesEndpoint]; ok {
+			t.Errorf("%s is set for a signal that uses the shared endpoint", envOTLPTracesEndpoint)
+		}
+	})
+
+	t.Run("a signal with no shared endpoint behind it", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.Traces = fsv1alpha1.SignalSpec{
+			Exporter: fsv1alpha1.ExporterOTLP,
+			Endpoint: collectorEndpoint,
+		}
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		if _, ok := env[envOTLPEndpoint]; ok {
+			t.Errorf("%s is set though no shared endpoint was given", envOTLPEndpoint)
+		}
+
+		if got := env[envOTLPTracesEndpoint]; got != collectorEndpoint {
+			t.Errorf("%s = %q, want %q", envOTLPTracesEndpoint, got, collectorEndpoint)
+		}
+	})
+
+}
+
+// TestStatefulSetSDKListeners covers the rest of the SDK's environment: what
+// the node says about itself, and what it listens on.
+func TestStatefulSetSDKListeners(t *testing.T) {
 	t.Run("user resource attributes are added, not substituted", func(t *testing.T) {
 		cluster := testCluster()
 		cluster.Spec.Observability.ResourceAttributes = map[string]string{
@@ -591,7 +659,7 @@ func TestStatefulSetSDKEnvironment(t *testing.T) {
 		cluster := testCluster()
 		cluster.Spec.Observability.OTLP.Endpoint = collectorEndpoint
 		cluster.Spec.Observability.Metrics.Exporter = fsv1alpha1.ExporterOTLP
-		cluster.Spec.Observability.Metrics.Protocol = "http/protobuf"
+		cluster.Spec.Observability.Metrics.Protocol = protocolHTTP
 		cluster.Spec.WithDefaults()
 
 		set := nodeStatefulSet(t, cluster)
@@ -619,15 +687,18 @@ func TestStatefulSetSDKEnvironment(t *testing.T) {
 			t.Errorf("%s shadows the per-signal transports", envOTLPProtocol)
 		}
 
-		if got := env[envOTLPMetricsProto]; got != "http/protobuf" {
-			t.Errorf("%s = %q, want http/protobuf", envOTLPMetricsProto, got)
+		if got := env[envOTLPMetricsProto]; got != protocolHTTP {
+			t.Errorf("%s = %q, want %q", envOTLPMetricsProto, got, protocolHTTP)
 		}
 
-		// Traces and logs keep the shared default, spelled out per signal.
-		for _, name := range []string{envOTLPTracesProto, envOTLPLogsProto} {
-			if got := env[name]; got != fsv1alpha1.DefaultOTLPProtocol {
-				t.Errorf("%s = %q, want %q", name, got, fsv1alpha1.DefaultOTLPProtocol)
-			}
+		// Traces keep the shared default, spelled out per signal; logs
+		// export nothing, so they name no transport at all.
+		if got := env[envOTLPTracesProto]; got != fsv1alpha1.DefaultOTLPProtocol {
+			t.Errorf("%s = %q, want %q", envOTLPTracesProto, got, fsv1alpha1.DefaultOTLPProtocol)
+		}
+
+		if _, ok := env[envOTLPLogsProto]; ok {
+			t.Errorf("%s is set for a signal that is not exported", envOTLPLogsProto)
 		}
 	})
 

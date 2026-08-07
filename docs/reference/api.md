@@ -507,7 +507,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `exporter` _string_ | exporter is "prometheus" (the default: served on the node's metrics<br />port for a scraper), "otlp" (pushed to otlp.endpoint) or "none". |  | Enum: [prometheus otlp none] <br />Optional: \{\} <br /> |
+| `exporter` _string_ | exporter is "prometheus" (the default: served on the node's metrics<br />port for a scraper), "otlp" (pushed to an endpoint) or "none". |  | Enum: [prometheus otlp none] <br />Optional: \{\} <br /> |
+| `endpoint` _string_ | endpoint overrides otlp.endpoint for metrics alone, under the same<br />path rule as the other signals. Ignored unless the exporter is<br />"otlp". |  | Optional: \{\} <br /> |
 | `protocol` _string_ | protocol overrides otlp.protocol for metrics alone. Ignored unless<br />the exporter is "otlp". |  | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
 
 
@@ -529,7 +530,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `endpoint` _string_ | endpoint is the OTLP endpoint URL. Required by any signal whose<br />exporter is "otlp", and refused with none of them: the SDK would ship<br />to localhost:4318 and log a failed upload every interval. |  | Optional: \{\} <br /> |
+| `endpoint` _string_ | endpoint is the OTLP endpoint URL every signal exported over OTLP is<br />sent to unless it names its own. A signal whose exporter is "otlp"<br />needs one of the two: without a destination the SDK ships to<br />localhost:4318 and logs a failed upload every interval. |  | Optional: \{\} <br /> |
 | `protocol` _string_ | protocol is the transport every OTLP signal uses unless it names its<br />own. | grpc | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
 
 
@@ -547,8 +548,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `otlp` _[OTLPSpec](#otlpspec)_ | otlp is the OTLP destination every signal exported over OTLP is sent<br />to, and the protocol they use unless a signal names its own. |  | Optional: \{\} <br /> |
-| `traces` _[SignalSpec](#signalspec)_ | traces selects the trace exporter and its transport. Defaults to<br />"otlp" when otlp.endpoint is set and "none" when it is not — the SDK's<br />own default is "otlp" unconditionally, which without a destination<br />means an upload to localhost failing every interval. |  | Optional: \{\} <br /> |
-| `logs` _[SignalSpec](#signalspec)_ | logs selects the log exporter and its transport, on the same rule as<br />traces. fs always logs to stdout; this is about shipping a copy. |  | Optional: \{\} <br /> |
+| `traces` _[SignalSpec](#signalspec)_ | traces selects the trace exporter, its destination and its transport.<br />Defaults to "otlp" when an endpoint is set and "none" when none is —<br />the SDK's own default is "otlp" unconditionally, which without a<br />destination means an upload to localhost failing every interval. |  | Optional: \{\} <br /> |
+| `logs` _[SignalSpec](#signalspec)_ | logs selects the log exporter and its transport. Defaults to "none"<br />even with an endpoint set: fs logs to stdout, where the cluster's log<br />pipeline already collects it, so a second copy over OTLP is a choice<br />and not the obvious consequence of having a collector. |  | Optional: \{\} <br /> |
 | `metrics` _[MetricsSpec](#metricsspec)_ | metrics selects the metric exporter and its transport. Defaults to<br />"prometheus": Kubernetes collects metrics by scraping, the operator<br />gives every node a metrics port for it, and podMonitor scrapes that<br />port. Choosing "otlp" or "none" retires the port with it. |  | Optional: \{\} <br /> |
 | `logLevel` _string_ | logLevel sets the fs log level. | info | Enum: [debug info warn error] <br />Optional: \{\} <br /> |
 | `podMonitor` _boolean_ | podMonitor creates a PodMonitor for the fs pods' Prometheus metrics<br />(requires the monitoring.coreos.com API group). |  | Optional: \{\} <br /> |
@@ -752,7 +753,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `exporter` _string_ | exporter is where the signal goes: "otlp" (to otlp.endpoint) or<br />"none". |  | Enum: [otlp none] <br />Optional: \{\} <br /> |
+| `exporter` _string_ | exporter is where the signal goes: "otlp" or "none". |  | Enum: [otlp none] <br />Optional: \{\} <br /> |
+| `endpoint` _string_ | endpoint overrides otlp.endpoint for this signal alone. Note the<br />OpenTelemetry rule the exporters implement: the shared endpoint has<br />"/v1/<signal>" appended over HTTP, a per-signal endpoint is used<br />exactly as written, path included. |  | Optional: \{\} <br /> |
 | `protocol` _string_ | protocol overrides otlp.protocol for this signal alone, which is what<br />a collector that speaks one transport on one port needs. |  | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
 
 

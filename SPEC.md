@@ -334,11 +334,13 @@ spec:
       protocol: grpc            # the transport a signal uses unless it
                                 # names its own
     # Every exporter is named rather than defaulted: the SDK sends all three
-    # signals to OTLP at localhost:4318 otherwise. traces/logs follow the
-    # endpoint (otlp when set, none when not); metrics are scraped.
-    traces:  {exporter: "", protocol: ""}   # otlp | none
-    logs:    {exporter: "", protocol: ""}   # otlp | none
-    metrics: {exporter: "", protocol: ""}   # prometheus | otlp | none
+    # signals to OTLP at localhost:4318 otherwise. Traces follow the endpoint
+    # (otlp when there is one, none when not), metrics are scraped, and logs
+    # are none until asked for — fs writes them to stdout already.
+    # endpoint/protocol override otlp.* for one signal.
+    traces:  {exporter: "", endpoint: "", protocol: ""}   # otlp | none
+    logs:    {exporter: "", endpoint: "", protocol: ""}   # otlp | none
+    metrics: {exporter: "", endpoint: "", protocol: ""}   # prometheus | otlp | none
     logLevel: info
     # PPROF_ADDR on :9010. false drops the listener, its container port and
     # its NetworkPolicy rule.
@@ -375,7 +377,8 @@ spec:
   rules: exactly one disk, no `etcd`, and a warning that the node's loss is
   the data's loss. Rack names are DNS-label and immutable per entry; removing a rack
   or lowering a node count is a decommission (§8.4).
-- `observability`: an `otlp` exporter needs `otlp.endpoint`, and
+- `observability`: an `otlp` exporter needs a destination — its own
+  `endpoint` or the shared `otlp.endpoint` — and
   `podMonitor` needs `metrics.exporter: prometheus` — both are pairs the
   API accepts field by field and neither reads as wrong on its own, which
   is why they are checked together rather than discovered in an empty
@@ -850,9 +853,9 @@ removed deliberately wants the opposite. A key store that is merely
   migration run, drain progress, refused spec changes, reload verified.
   Event reasons are part of the documented API surface (§13).
 - fs pods get their go-faster/sdk environment from `observability`: log
-  level, the OTLP destination, a per-signal exporter and transport for
-  traces/logs/metrics, the pprof listener, and resource attributes merged
-  over the operator's own. Every exporter is named explicitly, since the
+  level, the shared OTLP destination, a per-signal exporter, endpoint and
+  transport for traces/logs/metrics, the pprof listener, and resource
+  attributes merged over the operator's own. Every exporter is named explicitly, since the
   SDK defaults all three to OTLP at localhost. Two cross-field checks
   (§5.1): an OTLP exporter with no endpoint, and `podMonitor` against a
   metrics exporter that serves no port — which is also the switch behind

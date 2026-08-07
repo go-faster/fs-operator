@@ -618,15 +618,17 @@ type ObservabilitySpec struct {
 	// +optional
 	OTLP OTLPSpec `json:"otlp,omitempty"`
 
-	// traces selects the trace exporter and its transport. Defaults to
-	// "otlp" when otlp.endpoint is set and "none" when it is not — the SDK's
-	// own default is "otlp" unconditionally, which without a destination
-	// means an upload to localhost failing every interval.
+	// traces selects the trace exporter, its destination and its transport.
+	// Defaults to "otlp" when an endpoint is set and "none" when none is —
+	// the SDK's own default is "otlp" unconditionally, which without a
+	// destination means an upload to localhost failing every interval.
 	// +optional
 	Traces SignalSpec `json:"traces,omitempty"`
 
-	// logs selects the log exporter and its transport, on the same rule as
-	// traces. fs always logs to stdout; this is about shipping a copy.
+	// logs selects the log exporter and its transport. Defaults to "none"
+	// even with an endpoint set: fs logs to stdout, where the cluster's log
+	// pipeline already collects it, so a second copy over OTLP is a choice
+	// and not the obvious consequence of having a collector.
 	// +optional
 	Logs SignalSpec `json:"logs,omitempty"`
 
@@ -673,9 +675,10 @@ type ObservabilitySpec struct {
 // is applied last and therefore wins over what the operator sets. See the
 // SDK's reference table: https://github.com/go-faster/sdk#reference
 type OTLPSpec struct {
-	// endpoint is the OTLP endpoint URL. Required by any signal whose
-	// exporter is "otlp", and refused with none of them: the SDK would ship
-	// to localhost:4318 and log a failed upload every interval.
+	// endpoint is the OTLP endpoint URL every signal exported over OTLP is
+	// sent to unless it names its own. A signal whose exporter is "otlp"
+	// needs one of the two: without a destination the SDK ships to
+	// localhost:4318 and logs a failed upload every interval.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 
@@ -689,11 +692,17 @@ type OTLPSpec struct {
 
 // SignalSpec selects how one telemetry signal leaves the node.
 type SignalSpec struct {
-	// exporter is where the signal goes: "otlp" (to otlp.endpoint) or
-	// "none".
+	// exporter is where the signal goes: "otlp" or "none".
 	// +kubebuilder:validation:Enum=otlp;none
 	// +optional
 	Exporter string `json:"exporter,omitempty"`
+
+	// endpoint overrides otlp.endpoint for this signal alone. Note the
+	// OpenTelemetry rule the exporters implement: the shared endpoint has
+	// "/v1/<signal>" appended over HTTP, a per-signal endpoint is used
+	// exactly as written, path included.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
 
 	// protocol overrides otlp.protocol for this signal alone, which is what
 	// a collector that speaks one transport on one port needs.
@@ -706,10 +715,16 @@ type SignalSpec struct {
 // metrics have an exporter the other signals do not: the scrape endpoint.
 type MetricsSpec struct {
 	// exporter is "prometheus" (the default: served on the node's metrics
-	// port for a scraper), "otlp" (pushed to otlp.endpoint) or "none".
+	// port for a scraper), "otlp" (pushed to an endpoint) or "none".
 	// +kubebuilder:validation:Enum=prometheus;otlp;none
 	// +optional
 	Exporter string `json:"exporter,omitempty"`
+
+	// endpoint overrides otlp.endpoint for metrics alone, under the same
+	// path rule as the other signals. Ignored unless the exporter is
+	// "otlp".
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
 
 	// protocol overrides otlp.protocol for metrics alone. Ignored unless
 	// the exporter is "otlp".

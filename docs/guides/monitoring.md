@@ -108,7 +108,7 @@ The operator creates a `PodMonitor` selecting the cluster's pods — but only wh
 the `monitoring.coreos.com` CRDs are installed. Without them, the field is a
 warning (`PodMonitorUnavailable` event), not an error.
 
-Traces and logs go to a collector when one is configured:
+Traces go to a collector when one is configured:
 
 ```yaml
 spec:
@@ -118,25 +118,28 @@ spec:
       protocol: grpc   # or http/protobuf
 ```
 
-Without an endpoint both exporters are explicitly `none`. That matters: fs runs
+Every exporter is named explicitly, in either direction. That matters: fs runs
 on [go-faster/sdk](https://github.com/go-faster/sdk), whose traces, logs **and**
 metrics all default to OTLP at `localhost:4318`, so an unset exporter is a
 failed upload logged every interval rather than silence.
 
 ### Per-signal exporters
 
-Each signal picks its own exporter and, if it needs one, its own transport:
+Each signal picks its own exporter and, where it needs to, its own destination
+and transport:
 
 ```yaml
 spec:
   observability:
     otlp:
-      endpoint: http://otel-collector.observability:4317
-      protocol: grpc            # OTEL_EXPORTER_OTLP_PROTOCOL
+      endpoint: http://otel-collector.observability:4317   # OTEL_EXPORTER_OTLP_ENDPOINT
+      protocol: grpc                                       # OTEL_EXPORTER_OTLP_PROTOCOL
     traces:
       exporter: otlp            # OTEL_TRACES_EXPORTER: otlp | none
     logs:
-      exporter: none            # OTEL_LOGS_EXPORTER
+      exporter: otlp            # OTEL_LOGS_EXPORTER
+      endpoint: http://loki-gateway.observability:4318/otlp/v1/logs
+      protocol: http/protobuf   # OTEL_EXPORTER_OTLP_LOGS_{ENDPOINT,PROTOCOL}
     metrics:
       exporter: otlp            # OTEL_METRICS_EXPORTER: prometheus | otlp | none
       protocol: http/protobuf   # OTEL_EXPORTER_OTLP_METRICS_PROTOCOL
@@ -145,12 +148,19 @@ spec:
 | Field | Default | Notes |
 |---|---|---|
 | `traces.exporter` | `otlp` with an endpoint, else `none` | |
-| `logs.exporter` | `otlp` with an endpoint, else `none` | fs always logs to stdout; this ships a copy |
+| `logs.exporter` | `none` | fs logs to stdout, where the cluster already collects them; OTLP logs are a second copy, so they are asked for rather than inherited from an endpoint set for traces |
 | `metrics.exporter` | `prometheus` | Kubernetes collects by scraping |
-| `*.protocol` | `otlp.protocol` | per-signal override |
+| `*.endpoint` | `otlp.endpoint` | per-signal destination |
+| `*.protocol` | `otlp.protocol` | per-signal transport |
+
+A signal's own endpoint is enough on its own — `otlp.endpoint` may be left
+unset if every exporter names where it sends. Mind the OpenTelemetry path rule
+the exporters implement: the **shared** endpoint gets `/v1/<signal>` appended
+over HTTP, while a **per-signal** endpoint is used exactly as written, path
+included.
 
 Two combinations are refused at apply time rather than left to fail quietly:
-an `otlp` exporter with no `otlp.endpoint`, and `podMonitor: true` with a
+an `otlp` exporter with no destination at all, and `podMonitor: true` with a
 `metrics.exporter` other than `prometheus` — nothing would be listening on the
 port it scrapes.
 
@@ -163,6 +173,8 @@ NetworkPolicy stops opening it.
 only when it is unset — the reverse of the OpenTelemetry specification. So the
 operator renders one or the other, never both: the shared variable when every
 signal agrees, and only per-signal variables as soon as one of them differs.
+Endpoints have no such quirk — the exporters resolve those themselves, and a
+signal's own wins — so both are rendered together.
 
 ### Configuring the rest of the SDK
 

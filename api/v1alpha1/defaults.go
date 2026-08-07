@@ -186,24 +186,29 @@ func (s *FSClusterSpec) WithDefaults() {
 	s.Observability.withSignalDefaults()
 }
 
-// withSignalDefaults resolves each signal's exporter and transport.
+// withSignalDefaults resolves each signal's exporter.
 //
-// Traces and logs follow the destination: there is no sense exporting to an
-// endpoint nobody gave, and the SDK's own default (otlp, to localhost) is the
-// one answer that is wrong either way. Metrics default to the scrape endpoint,
+// Traces follow the destination: there is no sense exporting to an endpoint
+// nobody gave, and the SDK's own default (otlp, to localhost) is the one
+// answer that is wrong either way. Metrics default to the scrape endpoint,
 // which is how Kubernetes collects them.
+//
+// Logs default to none even when a destination exists. fs writes them to
+// stdout, where the cluster's log pipeline already collects them, so OTLP
+// logs are a second copy — worth having when the collector is where you look,
+// and worth asking for rather than inheriting from an endpoint that was set
+// for traces.
 func (o *ObservabilitySpec) withSignalDefaults() {
-	pushed := ExporterNone
-	if o.OTLP.Endpoint != "" {
-		pushed = ExporterOTLP
-	}
-
 	if o.Traces.Exporter == "" {
-		o.Traces.Exporter = pushed
+		o.Traces.Exporter = ExporterNone
+
+		if o.Traces.Endpoint != "" || o.OTLP.Endpoint != "" {
+			o.Traces.Exporter = ExporterOTLP
+		}
 	}
 
 	if o.Logs.Exporter == "" {
-		o.Logs.Exporter = pushed
+		o.Logs.Exporter = ExporterNone
 	}
 
 	if o.Metrics.Exporter == "" {

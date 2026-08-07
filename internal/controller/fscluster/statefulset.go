@@ -120,7 +120,14 @@ const (
 	envOTLPTracesProto  = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"
 	envOTLPLogsProto    = "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"
 	envOTLPMetricsProto = "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"
-	envResourceAttrs    = "OTEL_RESOURCE_ATTRIBUTES"
+
+	// Per-signal destinations. These the exporters resolve themselves, the
+	// way the OpenTelemetry specification says: a signal's own endpoint wins
+	// over the shared one, so both may be rendered together.
+	envOTLPTracesEndpoint  = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+	envOTLPLogsEndpoint    = "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"
+	envOTLPMetricsEndpoint = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
+	envResourceAttrs       = "OTEL_RESOURCE_ATTRIBUTES"
 )
 
 // NewStatefulSet builds the single-pod StatefulSet running one fs node.
@@ -392,7 +399,19 @@ func telemetryEnv(spec *fsv1alpha1.ObservabilitySpec) []corev1.EnvVar {
 		return vars
 	}
 
-	vars = append(vars, corev1.EnvVar{Name: envOTLPEndpoint, Value: spec.OTLP.Endpoint})
+	if spec.OTLP.Endpoint != "" {
+		vars = append(vars, corev1.EnvVar{Name: envOTLPEndpoint, Value: spec.OTLP.Endpoint})
+	}
+
+	for _, v := range []corev1.EnvVar{
+		signalEndpoint(envOTLPTracesEndpoint, spec.Traces.Exporter, spec.Traces.Endpoint),
+		signalEndpoint(envOTLPLogsEndpoint, spec.Logs.Exporter, spec.Logs.Endpoint),
+		signalEndpoint(envOTLPMetricsEndpoint, spec.Metrics.Exporter, spec.Metrics.Endpoint),
+	} {
+		if v.Name != "" {
+			vars = append(vars, v)
+		}
+	}
 
 	// The transports, and the one place the SDK's precedence has to be
 	// respected rather than described: it reads OTEL_EXPORTER_OTLP_PROTOCOL
@@ -417,6 +436,16 @@ func telemetryEnv(spec *fsv1alpha1.ObservabilitySpec) []corev1.EnvVar {
 	}
 
 	return vars
+}
+
+// signalEndpoint is one signal's destination variable, or the zero value when
+// the signal has none of its own to declare.
+func signalEndpoint(name, exporter, endpoint string) corev1.EnvVar {
+	if endpoint == "" || exporter != fsv1alpha1.ExporterOTLP {
+		return corev1.EnvVar{}
+	}
+
+	return corev1.EnvVar{Name: name, Value: endpoint}
 }
 
 // signalProtocol is one signal's transport variable, or the zero value when

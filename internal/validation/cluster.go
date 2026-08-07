@@ -178,19 +178,19 @@ func singleNode(spec *fsv1alpha1.FSClusterSpec) *Failure {
 // call wrong, which is exactly the kind that is found later, in a dashboard
 // with no data or a log line about localhost:4318.
 func observability(spec *fsv1alpha1.ObservabilitySpec) *Failure {
-	if spec.OTLP.Endpoint == "" {
-		for signal, exporter := range map[string]string{
-			"traces":  spec.Traces.Exporter,
-			"logs":    spec.Logs.Exporter,
-			"metrics": spec.Metrics.Exporter,
-		} {
-			if exporter == fsv1alpha1.ExporterOTLP {
-				return &Failure{
-					Reason: fsv1alpha1.ReasonSpecInvalid,
-					Message: fmt.Sprintf(
-						"observability.%s.exporter is %q with no observability.otlp.endpoint to send to",
-						signal, fsv1alpha1.ExporterOTLP),
-				}
+	for signal, destination := range map[string][2]string{
+		"traces":  {spec.Traces.Exporter, spec.Traces.Endpoint},
+		"logs":    {spec.Logs.Exporter, spec.Logs.Endpoint},
+		"metrics": {spec.Metrics.Exporter, spec.Metrics.Endpoint},
+	} {
+		exporter, endpoint := destination[0], destination[1]
+
+		if exporter == fsv1alpha1.ExporterOTLP && endpoint == "" && spec.OTLP.Endpoint == "" {
+			return &Failure{
+				Reason: fsv1alpha1.ReasonSpecInvalid,
+				Message: fmt.Sprintf(
+					"observability.%s.exporter is %q with nowhere to send it: set observability.%s.endpoint or observability.otlp.endpoint",
+					signal, fsv1alpha1.ExporterOTLP, signal),
 			}
 		}
 	}
