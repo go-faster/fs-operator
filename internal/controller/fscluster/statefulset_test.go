@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap/zapcore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -632,6 +633,26 @@ func TestStatefulSetSDKEnvironment(t *testing.T) {
 // TestStatefulSetSDKListeners covers the rest of the SDK's environment: what
 // the node says about itself, and what it listens on.
 func TestStatefulSetSDKListeners(t *testing.T) {
+	t.Run("log level", func(t *testing.T) {
+		// Every level the CRD admits has to be one go-faster/sdk can parse:
+		// it panics on anything else, so a level that passes admission and
+		// kills the process is the failure this enum exists to prevent.
+		for _, level := range []string{debugLogLevel, "info", "warn", "error", "dpanic", "panic", "fatal"} {
+			cluster := testCluster()
+			cluster.Spec.Observability.LogLevel = level
+			cluster.Spec.WithDefaults()
+
+			var parsed zapcore.Level
+			if err := parsed.UnmarshalText([]byte(level)); err != nil {
+				t.Errorf("the API admits %q, which the SDK cannot parse: %v", level, err)
+			}
+
+			if got := environment(nodeStatefulSet(t, cluster))[envLogLevel]; got != level {
+				t.Errorf("%s = %q, want %q", envLogLevel, got, level)
+			}
+		}
+	})
+
 	t.Run("user resource attributes are added, not substituted", func(t *testing.T) {
 		cluster := testCluster()
 		cluster.Spec.Observability.ResourceAttributes = map[string]string{

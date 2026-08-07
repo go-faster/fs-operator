@@ -639,8 +639,17 @@ type ObservabilitySpec struct {
 	// +optional
 	Metrics MetricsSpec `json:"metrics,omitempty"`
 
-	// logLevel sets the fs log level.
-	// +kubebuilder:validation:Enum=debug;info;warn;error
+	// logLevel is OTEL_LOG_LEVEL, the level fs logs at. debug additionally
+	// turns on per-request logging in fs itself, which on a busy endpoint is
+	// a line per request.
+	//
+	// The enum is the set go-faster/sdk can parse (zapcore levels), and it
+	// earns its keep: the SDK panics on a level it does not recognise, so a
+	// typo here would otherwise be a crash loop across every node rather
+	// than a rejected field. Levels above error exist because the SDK has
+	// them; a cluster that logs nothing below panic is not one you can
+	// operate.
+	// +kubebuilder:validation:Enum=debug;info;warn;error;dpanic;panic;fatal
 	// +kubebuilder:default=info
 	// +optional
 	LogLevel string `json:"logLevel,omitempty"`

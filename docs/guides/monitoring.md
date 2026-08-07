@@ -181,13 +181,19 @@ signal's own wins — so both are rendered together.
 ```yaml
 spec:
   observability:
-    logLevel: info            # OTEL_LOG_LEVEL
+    logLevel: info            # OTEL_LOG_LEVEL: debug | info | warn |
+                              # error | dpanic | panic | fatal
     pprof: true               # PPROF_ADDR on :9010; false removes the
                               # listener, its container port and its
                               # NetworkPolicy rule
     resourceAttributes:       # added to OTEL_RESOURCE_ATTRIBUTES
       deployment.environment: staging
 ```
+
+`logLevel` is an enum of exactly what the SDK can parse. That is not
+tidiness: the SDK panics on a level it does not recognise, so a typo the API
+accepted would be a crash loop on every node at once. `debug` also turns on
+fs's per-request logging, which on a busy endpoint is a line per request.
 
 `resourceAttributes` are **added** to the ones the operator derives —
 `fs.cluster`, `k8s.namespace.name`, `fs.node`, `fs.rack` — which is why they

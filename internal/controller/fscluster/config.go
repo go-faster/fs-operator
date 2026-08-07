@@ -138,7 +138,8 @@ const DrainWeight = -1.0
 
 // debugLogLevel is the only log level at which the operator turns on fs's
 // per-request logging: on a busy S3 endpoint one line per request is a cost,
-// not an insight.
+// not an insight. Every other level go-faster/sdk accepts — up to fatal —
+// leaves it off (SPEC §5, observability.logLevel).
 const debugLogLevel = "debug"
 
 // RenderOptions carries the inputs a rendered config needs beyond the
