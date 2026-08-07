@@ -387,7 +387,7 @@ spec:
                     description: repository is the image repository.
                     type: string
                   tag:
-                    default: v0.13.0
+                    default: v0.13.1
                     description: |-
                       tag is the image tag. Defaults to the pinned fs release this operator
                       version is validated against — always set a pinned version, never a

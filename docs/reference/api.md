@@ -412,7 +412,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `repository` _string_ | repository is the image repository. | ghcr.io/go-faster/fs | Optional: \{\} <br /> |
-| `tag` _string_ | tag is the image tag. Defaults to the pinned fs release this operator<br />version is validated against — always set a pinned version, never a<br />floating tag: cluster upgrades are deliberate, one-node-at-a-time<br />operations. | v0.13.0 | MinLength: 1 <br />Optional: \{\} <br /> |
+| `tag` _string_ | tag is the image tag. Defaults to the pinned fs release this operator<br />version is validated against — always set a pinned version, never a<br />floating tag: cluster upgrades are deliberate, one-node-at-a-time<br />operations. | v0.13.1 | MinLength: 1 <br />Optional: \{\} <br /> |
 | `digest` _string_ | digest pins the image by content instead of by tag, as<br />"sha256:<hex>". When set it wins over tag, and the nodes run<br />repository@digest — the reference a mirror cannot silently change<br />under a cluster. A digest already written into repository is honoured<br />too, which is how the chart pins the operator's own image. |  | Pattern: `^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-fA-F0-9]\{32,128\}$` <br />Optional: \{\} <br /> |
 | `pullPolicy` _[PullPolicy](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#pullpolicy-v1-core)_ | pullPolicy is the image pull policy. | IfNotPresent | Enum: [Always IfNotPresent Never] <br />Optional: \{\} <br /> |
 | `pullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#localobjectreference-v1-core) array_ | pullSecrets are image pull secrets for the fs pods. |  | Optional: \{\} <br /> |
