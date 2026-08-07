@@ -470,7 +470,7 @@ func TestStatefulSetMountsItsOwnConfig(t *testing.T) {
 	for _, node := range Nodes(cluster) {
 		set := NewStatefulSet(cluster, node, testRevision)
 
-		volume := set.Spec.Template.Spec.Volumes[0]
+		volume := volumeNamed(t, set, configVolumeName)
 		if got, want := volume.Secret.SecretName, ConfigSecretName(node.Name); got != want {
 			t.Errorf("node %s mounts %q, want %q", node.Name, got, want)
 		}
@@ -479,6 +479,63 @@ func TestStatefulSetMountsItsOwnConfig(t *testing.T) {
 			t.Errorf("node %s mounts its config unreadable by its own group", node.Name)
 		}
 	}
+}
+
+// TestStatefulSetMountsAWritableStorageRoot covers what a read-only container
+// filesystem takes away: fs writes node-local state directly under the storage
+// root — since v0.13.0 the object index — and without somewhere to put it the
+// node exits at startup with "mkdir /var/lib/fs/cluster: read-only file
+// system", which is a crash loop rather than a degraded node.
+func TestStatefulSetMountsAWritableStorageRoot(t *testing.T) {
+	cluster := testCluster()
+	cluster.Spec.WithDefaults()
+
+	set := NewStatefulSet(cluster, Nodes(cluster)[0], testRevision)
+
+	if volume := volumeNamed(t, set, stateVolumeName); volume.EmptyDir == nil {
+		t.Errorf("the storage root is %+v, want an emptyDir", volume.VolumeSource)
+	}
+
+	mounts := set.Spec.Template.Spec.Containers[0].VolumeMounts
+
+	index := -1
+
+	for i, mount := range mounts {
+		if mount.MountPath == StorageRoot {
+			index = i
+
+			if mount.ReadOnly {
+				t.Error("the storage root is mounted read-only; fs writes under it")
+			}
+		}
+	}
+
+	if index == -1 {
+		t.Fatalf("no mount at %s", StorageRoot)
+	}
+
+	// The disks mount below the root, and the kubelet mounts a nested path
+	// after its parent: a disk hidden under a later root mount reads as empty.
+	for _, mount := range mounts[:index] {
+		if strings.HasPrefix(mount.MountPath, StorageRoot+"/") {
+			t.Errorf("%s mounts before the storage root it lives under", mount.MountPath)
+		}
+	}
+}
+
+// volumeNamed returns a pod's volume by name.
+func volumeNamed(t *testing.T, set *appsv1.StatefulSet, name string) corev1.Volume {
+	t.Helper()
+
+	for _, volume := range set.Spec.Template.Spec.Volumes {
+		if volume.Name == name {
+			return volume
+		}
+	}
+
+	t.Fatalf("no volume named %q", name)
+
+	return corev1.Volume{}
 }
 
 // environment flattens a pod's container environment for lookup.

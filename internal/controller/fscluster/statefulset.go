@@ -46,6 +46,10 @@ const (
 	configVolumeName = "config"
 	tlsVolumeName    = "tls"
 	etcdTLSVolume    = "etcd-tls"
+
+	// stateVolumeName is the writable storage root. The disks mount below it
+	// and hold the data; this is for what fs keeps beside them.
+	stateVolumeName = "state"
 )
 
 // The unprivileged identity fs runs as. It matches the uid the upstream image
@@ -388,10 +392,26 @@ func resourceAttributes(cluster *fsv1alpha1.FSCluster, node Node) string {
 	return strings.Join(attributes, ",")
 }
 
-// volumes mounts the node's configuration and, when fs terminates TLS, the
-// certificate. Everything else the node writes lives on its claims.
+// volumes mounts the node's configuration, its writable storage root and,
+// when fs terminates TLS, the certificate. The object data lives on claims.
+//
+// The root is an emptyDir because the container's own filesystem is read-only
+// and fs writes node-local state directly under it — since v0.13.0 the pebble
+// object index at <root>/cluster/index, which is what every listing, usage
+// recount and scrub sweep reads instead of walking every sidecar on every
+// disk. That index is derived and never authoritative: the sidecars next to
+// the data are the commit point, so losing it costs a rebuild from the disks
+// and nothing else.
+//
+// Which is the ceiling of this choice: an emptyDir is lost with the pod, so
+// every rollout makes each node rebuild its index by walking its disks. On a
+// node holding tens of millions of objects that walk is an event, and the fix
+// then is a small node-state claim rather than a bigger emptyDir.
 func volumes(cluster *fsv1alpha1.FSCluster, node Node) []corev1.Volume {
 	vols := []corev1.Volume{{
+		Name:         stateVolumeName,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}, {
 		Name: configVolumeName,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
@@ -442,7 +462,13 @@ func diskNames(cluster *fsv1alpha1.FSCluster) []string {
 
 // volumeMounts mounts the configuration, the certificate and every disk.
 func volumeMounts(cluster *fsv1alpha1.FSCluster, retain []string) []corev1.VolumeMount {
+	// The storage root comes first, before the disks that mount below it: the
+	// kubelet mounts a nested path after its parent, and a disk hidden under a
+	// later root mount would be an empty directory to fs.
 	mounts := []corev1.VolumeMount{{
+		Name:      stateVolumeName,
+		MountPath: StorageRoot,
+	}, {
 		Name:      configVolumeName,
 		MountPath: ConfigDir,
 		ReadOnly:  true,

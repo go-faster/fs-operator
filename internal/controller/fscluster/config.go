@@ -64,8 +64,9 @@ const (
 // Paths inside the fs container.
 const (
 	// StorageRoot is fs's storage root. In cluster mode object data lives on
-	// the disks below it and the root itself only holds node-local state, so
-	// it is backed by an emptyDir rather than a claim.
+	// the disks below it and the root itself holds node-local state fs can
+	// rebuild — the object index of fs v0.13.0 — so it is backed by an
+	// emptyDir rather than a claim (see volumes in statefulset.go).
 	StorageRoot = "/var/lib/fs"
 
 	// DisksDir holds one mounted claim per disk: <DisksDir>/<disk name>.
