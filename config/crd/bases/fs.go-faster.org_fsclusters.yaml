@@ -438,8 +438,10 @@ spec:
                       the fs pods.
                     properties:
                       endpoint:
-                        description: endpoint is the OTLP endpoint URL; empty disables
-                          the OTLP exporters.
+                        description: |-
+                          endpoint is the OTLP endpoint URL; empty disables the OTLP exporters
+                          (traces and logs), because the SDK otherwise ships them to
+                          localhost:4318 and logs a failed upload every interval.
                         type: string
                       protocol:
                         default: grpc
@@ -454,6 +456,25 @@ spec:
                       podMonitor creates a PodMonitor for the fs pods' Prometheus metrics
                       (requires the monitoring.coreos.com API group).
                     type: boolean
+                  pprof:
+                    default: true
+                    description: |-
+                      pprof serves go-faster/sdk's pprof endpoints on port 9010. On by
+                      default, which is not the SDK's own default: a cluster that is
+                      misbehaving is when profiles are wanted, and that is a bad moment to
+                      discover the listener has to be turned on and the nodes restarted.
+                      Turn it off where an open profiling endpoint is not acceptable — the
+                      container port and its NetworkPolicy rule go with it.
+                    type: boolean
+                  resourceAttributes:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      resourceAttributes are added to OTEL_RESOURCE_ATTRIBUTES, alongside
+                      the ones the operator derives (service, cluster, namespace, node,
+                      rack). Setting the variable through podTemplate.extraEnv replaces
+                      those instead, which is what the dashboards and the PodMonitor read.
+                    type: object
                 type: object
               podTemplate:
                 description: |-

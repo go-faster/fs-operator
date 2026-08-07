@@ -108,7 +108,7 @@ The operator creates a `PodMonitor` selecting the cluster's pods — but only wh
 the `monitoring.coreos.com` CRDs are installed. Without them, the field is a
 warning (`PodMonitorUnavailable` event), not an error.
 
-Traces and OTLP metrics go to a collector when one is configured:
+Traces and logs go to a collector when one is configured:
 
 ```yaml
 spec:
@@ -118,8 +118,64 @@ spec:
       protocol: grpc   # or http/protobuf
 ```
 
-Without an OTLP endpoint the SDK does not export (no failed-export noise);
-Prometheus scraping still works.
+Without an endpoint both exporters are explicitly `none`. That matters: fs runs
+on [go-faster/sdk](https://github.com/go-faster/sdk), whose traces and logs
+default to OTLP at `localhost:4318`, so an unset exporter is a failed upload
+logged every interval rather than silence. Prometheus scraping is unaffected —
+metrics are always exported through the scrape endpoint, not pushed.
+
+### Configuring the SDK
+
+`spec.observability` covers the knobs a cluster usually needs:
+
+```yaml
+spec:
+  observability:
+    logLevel: info            # OTEL_LOG_LEVEL
+    pprof: true               # PPROF_ADDR on :9010; false removes the
+                              # listener, its container port and its
+                              # NetworkPolicy rule
+    resourceAttributes:       # added to OTEL_RESOURCE_ATTRIBUTES
+      deployment.environment: staging
+```
+
+`resourceAttributes` are **added** to the ones the operator derives —
+`fs.cluster`, `k8s.namespace.name`, `fs.node`, `fs.rack` — which is why they
+have their own field: setting `OTEL_RESOURCE_ATTRIBUTES` directly replaces
+those, and the dashboards and alerts here read them.
+
+pprof is on by default, which is not the SDK's own default. A node worth
+profiling is usually a node already misbehaving, and that is a bad moment to
+discover the listener needs turning on and the pods restarting. It is
+unauthenticated and a heap profile carries whatever is in memory — see
+[security.md](security.md) for the exposure and how to close it.
+
+Everything else in the SDK's
+[environment reference](https://github.com/go-faster/sdk#reference) — Pyroscope,
+propagators, export intervals, per-signal protocols, pprof routes — goes
+through `podTemplate.extraEnv`, which the operator applies last, so it wins
+over what the operator sets:
+
+```yaml
+spec:
+  podTemplate:
+    extraEnv:
+      - name: PYROSCOPE_ENABLE
+        value: "true"
+      - name: PYROSCOPE_URL
+        value: http://pyroscope.observability:4040
+      - name: PYROSCOPE_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: pyroscope-auth
+            key: password
+      - name: OTEL_METRIC_EXPORT_INTERVAL
+        value: "30000"
+```
+
+Overriding an operator-set variable this way is supported but on you: pointing
+`METRICS_ADDR` elsewhere, for instance, leaves the `PodMonitor` scraping a port
+nothing serves.
 
 ### Operator metrics
 

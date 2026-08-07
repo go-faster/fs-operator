@@ -328,11 +328,20 @@ spec:
     schemaMigration: Auto         # Auto | Manual
 
   observability:
-    # Standard OTEL env passthrough.
+    # go-faster/sdk env (github.com/go-faster/sdk#reference). Empty endpoint
+    # sets the traces and logs exporters to "none": the SDK defaults both to
+    # OTLP at localhost:4318, which is a failed upload every interval.
     otlp:
       endpoint: ""
       protocol: grpc
     logLevel: info
+    # PPROF_ADDR on :9010. false drops the listener, its container port and
+    # its NetworkPolicy rule.
+    pprof: true
+    # Added to the operator's OTEL_RESOURCE_ATTRIBUTES, not substituted for
+    # them. Anything else the SDK reads goes through podTemplate.extraEnv,
+    # which is applied last and wins.
+    resourceAttributes: {}
     # Create a PodMonitor for the fs pods' Prometheus metrics.
     podMonitor: false
 
@@ -830,9 +839,13 @@ removed deliberately wants the opposite. A key store that is merely
 - Events on every transition: rollout started/gated/halted/finished,
   migration run, drain progress, refused spec changes, reload verified.
   Event reasons are part of the documented API surface (§13).
-- fs pods get OTEL env passthrough and a metrics port;
-  `observability.podMonitor: true` creates the PodMonitor. Grafana
-  dashboards ship later (§16).
+- fs pods get their go-faster/sdk environment from `observability`: log
+  level, the OTLP destination (with both exporters named explicitly in
+  either direction, since the SDK's default destination is localhost), the
+  pprof listener, and resource attributes merged over the operator's own.
+  `observability.podMonitor: true` creates the PodMonitor. The rest of the
+  SDK's variables are `podTemplate.extraEnv`, applied last so an override
+  wins. Grafana dashboards ship later (§16).
 
 ---
 

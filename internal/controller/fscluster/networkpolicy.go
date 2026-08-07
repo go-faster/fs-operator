@@ -99,6 +99,18 @@ func NewNetworkPolicy(cluster *fsv1alpha1.FSCluster, operatorNamespace string) *
 		})
 	}
 
+	// The open ports. pprof is only among them when the node serves it: an
+	// allow-list naming a port nothing listens on grants access to nothing,
+	// but it also tells the next reader the endpoint is there.
+	open := []networkingv1.NetworkPolicyPort{
+		policyPort(cluster.Spec.S3.Service.Port),
+		policyPort(MetricsPort),
+	}
+
+	if pprofEnabled(cluster) {
+		open = append(open, policyPort(PprofPort))
+	}
+
 	return &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -111,12 +123,8 @@ func NewNetworkPolicy(cluster *fsv1alpha1.FSCluster, operatorNamespace string) *
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
-					// S3, metrics and pprof: unrestricted.
-					Ports: []networkingv1.NetworkPolicyPort{
-						policyPort(cluster.Spec.S3.Service.Port),
-						policyPort(MetricsPort),
-						policyPort(PprofPort),
-					},
+					// S3, metrics and (when served) pprof: unrestricted.
+					Ports: open,
 				},
 				{
 					// Peer replication and the admin API: cluster + operator.

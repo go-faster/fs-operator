@@ -51,7 +51,7 @@ the config would make **rotating a password restart every node**.
 | 9464 | Prometheus metrics | open, so it can be scraped |
 | 7080 | peer replication | cluster-internal |
 | 8090 | admin API | cluster-internal |
-| 9010 | pprof | open, deliberately — see below |
+| 9010 | pprof | open, deliberately — see below; `observability.pprof: false` removes it |
 
 **Peer traffic on 7080 is HMAC-authenticated but not encrypted.** Authenticated
 means a node cannot be impersonated without the cluster secret; it does not
@@ -66,7 +66,7 @@ token Secret never leaves the namespace.
 
 **pprof listens on 9010, on all interfaces, with no authentication, and the
 network policy deliberately leaves it open.** Any pod in the cluster can pull
-a profile, and there is currently no switch to turn it off.
+a profile.
 
 That is a real grant, so it is worth being precise about what it gives away. A
 heap profile is a slice of the process's memory: object bytes in flight, and —
@@ -75,17 +75,31 @@ secret, the admin token and the root credentials. Goroutine and CPU profiles
 are cheaper but still let an unauthenticated caller make a node do work.
 
 **Treat every pod in the cluster as able to read fs's memory.** If your
-namespace runs untrusted or multi-tenant workloads, that is the wrong trade,
-and the fix is one line in `NewNetworkPolicy` — moving port 9010 from the open
-ingress rule to the restricted one, alongside the peer and admin ports. It is
-open because reaching a struggling node's profiler without first arranging
-network access is worth more, in the environments this is built for, than the
-exposure costs.
+namespace runs untrusted or multi-tenant workloads, that is the wrong trade.
+Turn the listener off:
+
+```yaml
+spec:
+  observability:
+    pprof: false
+```
+
+The nodes then run without `PPROF_ADDR`, so the SDK serves no profiler at all,
+and the container port and the NetworkPolicy rule go with it — closing the
+port rather than restricting who may reach it. Keeping it but limiting the
+callers is the other option, and that one is still a line in
+`NewNetworkPolicy`: move 9010 from the open ingress rule to the restricted one
+beside the peer and admin ports.
+
+It defaults to on because reaching a struggling node's profiler without first
+arranging network access is worth more, in the environments this is built for,
+than the exposure costs.
 
 ### Network policy
 
 `spec.networkPolicy: true` restricts 7080 and 8090 to the cluster's own pods
-and the operator's namespace. S3, metrics and pprof stay reachable — a
+and the operator's namespace. S3, metrics and (unless disabled) pprof stay
+reachable — a
 NetworkPolicy ingress list is an allow-list, so anything meant to stay open is
 named explicitly rather than left out.
 

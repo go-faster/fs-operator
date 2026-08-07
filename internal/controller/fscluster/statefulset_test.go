@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 )
@@ -519,6 +520,96 @@ func TestStatefulSetMountsAWritableStorageRoot(t *testing.T) {
 			t.Errorf("%s mounts before the storage root it lives under", mount.MountPath)
 		}
 	}
+}
+
+// TestStatefulSetSDKEnvironment covers what steers go-faster/sdk in the fs
+// container: the exporters it would otherwise point at localhost, the pprof
+// listener it serves only when given an address, and the resource attributes
+// the operator derives.
+func TestStatefulSetSDKEnvironment(t *testing.T) {
+	t.Run("without a collector", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		// Both default to OTLP in the SDK, which means an upload to
+		// localhost:4318 failing every interval on a cluster that never
+		// asked for one.
+		for _, name := range []string{envTracesExporter, envLogsExporter} {
+			if got := env[name]; got != exporterNone {
+				t.Errorf("%s = %q, want %q", name, got, exporterNone)
+			}
+		}
+
+		if got := env[envMetricsExport]; got != exporterPrometheus {
+			t.Errorf("%s = %q, want %q: metrics are scraped, not pushed", envMetricsExport, got, exporterPrometheus)
+		}
+	})
+
+	t.Run("with a collector", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.OTLP.Endpoint = "http://collector.observability:4317"
+		cluster.Spec.WithDefaults()
+
+		env := environment(nodeStatefulSet(t, cluster))
+
+		for _, name := range []string{envTracesExporter, envLogsExporter} {
+			if got := env[name]; got != exporterOTLP {
+				t.Errorf("%s = %q, want %q", name, got, exporterOTLP)
+			}
+		}
+	})
+
+	t.Run("user resource attributes are added, not substituted", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.ResourceAttributes = map[string]string{
+			"deployment.environment": "staging",
+			"team":                   "storage",
+		}
+		cluster.Spec.WithDefaults()
+
+		got := environment(nodeStatefulSet(t, cluster))[envResourceAttrs]
+
+		// The operator's own attributes are what the dashboards read.
+		for _, want := range []string{
+			"fs.cluster=" + cluster.Name,
+			"k8s.namespace.name=" + cluster.Namespace,
+			"deployment.environment=staging",
+			"team=storage",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s = %q, want it to carry %q", envResourceAttrs, got, want)
+			}
+		}
+	})
+
+	t.Run("pprof off", func(t *testing.T) {
+		cluster := testCluster()
+		cluster.Spec.Observability.Pprof = ptr.To(false)
+		cluster.Spec.WithDefaults()
+
+		set := nodeStatefulSet(t, cluster)
+
+		if _, ok := environment(set)[envPprofAddr]; ok {
+			t.Errorf("%s is set; the SDK would serve pprof anyway", envPprofAddr)
+		}
+
+		for _, port := range set.Spec.Template.Spec.Containers[0].Ports {
+			if port.ContainerPort == PprofPort {
+				t.Error("the pod still declares the pprof port")
+			}
+		}
+
+		policy := NewNetworkPolicy(cluster, "fs-operator-system")
+		for _, rule := range policy.Spec.Ingress {
+			for _, port := range rule.Ports {
+				if port.Port != nil && port.Port.IntVal == PprofPort {
+					t.Error("the NetworkPolicy still opens the pprof port")
+				}
+			}
+		}
+	})
 }
 
 // volumeNamed returns a pod's volume by name.

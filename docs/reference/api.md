@@ -499,6 +499,12 @@ _Appears in:_
 
 OTLPSpec is the OTLP exporter destination.
 
+Everything else go-faster/sdk reads from the environment — Pyroscope,
+propagators, export intervals, pprof routes, per-signal protocols — is
+reachable through podTemplate.extraEnv, which is applied last and therefore
+wins over what the operator sets. See its reference table:
+https://github.com/go-faster/sdk#reference
+
 
 
 _Appears in:_
@@ -506,7 +512,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `endpoint` _string_ | endpoint is the OTLP endpoint URL; empty disables the OTLP exporters. |  | Optional: \{\} <br /> |
+| `endpoint` _string_ | endpoint is the OTLP endpoint URL; empty disables the OTLP exporters<br />(traces and logs), because the SDK otherwise ships them to<br />localhost:4318 and logs a failed upload every interval. |  | Optional: \{\} <br /> |
 | `protocol` _string_ | protocol is the OTLP transport. | grpc | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
 
 
@@ -526,6 +532,8 @@ _Appears in:_
 | `otlp` _[OTLPSpec](#otlpspec)_ | otlp configures the OpenTelemetry exporter env of the fs pods. |  | Optional: \{\} <br /> |
 | `logLevel` _string_ | logLevel sets the fs log level. | info | Enum: [debug info warn error] <br />Optional: \{\} <br /> |
 | `podMonitor` _boolean_ | podMonitor creates a PodMonitor for the fs pods' Prometheus metrics<br />(requires the monitoring.coreos.com API group). |  | Optional: \{\} <br /> |
+| `pprof` _boolean_ | pprof serves go-faster/sdk's pprof endpoints on port 9010. On by<br />default, which is not the SDK's own default: a cluster that is<br />misbehaving is when profiles are wanted, and that is a bad moment to<br />discover the listener has to be turned on and the nodes restarted.<br />Turn it off where an open profiling endpoint is not acceptable — the<br />container port and its NetworkPolicy rule go with it. | true | Optional: \{\} <br /> |
+| `resourceAttributes` _object (keys:string, values:string)_ | resourceAttributes are added to OTEL_RESOURCE_ATTRIBUTES, alongside<br />the ones the operator derives (service, cluster, namespace, node,<br />rack). Setting the variable through podTemplate.extraEnv replaces<br />those instead, which is what the dashboards and the PodMonitor read. |  | Optional: \{\} <br /> |
 
 
 #### PodTemplate

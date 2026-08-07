@@ -627,11 +627,36 @@ type ObservabilitySpec struct {
 	// (requires the monitoring.coreos.com API group).
 	// +optional
 	PodMonitor bool `json:"podMonitor,omitempty"`
+
+	// pprof serves go-faster/sdk's pprof endpoints on port 9010. On by
+	// default, which is not the SDK's own default: a cluster that is
+	// misbehaving is when profiles are wanted, and that is a bad moment to
+	// discover the listener has to be turned on and the nodes restarted.
+	// Turn it off where an open profiling endpoint is not acceptable — the
+	// container port and its NetworkPolicy rule go with it.
+	// +kubebuilder:default=true
+	// +optional
+	Pprof *bool `json:"pprof,omitempty"`
+
+	// resourceAttributes are added to OTEL_RESOURCE_ATTRIBUTES, alongside
+	// the ones the operator derives (service, cluster, namespace, node,
+	// rack). Setting the variable through podTemplate.extraEnv replaces
+	// those instead, which is what the dashboards and the PodMonitor read.
+	// +optional
+	ResourceAttributes map[string]string `json:"resourceAttributes,omitempty"`
 }
 
 // OTLPSpec is the OTLP exporter destination.
+//
+// Everything else go-faster/sdk reads from the environment — Pyroscope,
+// propagators, export intervals, pprof routes, per-signal protocols — is
+// reachable through podTemplate.extraEnv, which is applied last and therefore
+// wins over what the operator sets. See its reference table:
+// https://github.com/go-faster/sdk#reference
 type OTLPSpec struct {
-	// endpoint is the OTLP endpoint URL; empty disables the OTLP exporters.
+	// endpoint is the OTLP endpoint URL; empty disables the OTLP exporters
+	// (traces and logs), because the SDK otherwise ships them to
+	// localhost:4318 and logs a failed upload every interval.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
 

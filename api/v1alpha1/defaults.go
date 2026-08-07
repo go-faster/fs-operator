@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 // Static defaults. Where a value also carries a +kubebuilder:default marker
@@ -171,6 +172,10 @@ func (s *FSClusterSpec) WithDefaults() {
 
 	if s.Observability.OTLP.Protocol == "" {
 		s.Observability.OTLP.Protocol = DefaultOTLPProtocol
+	}
+
+	if s.Observability.Pprof == nil {
+		s.Observability.Pprof = ptr.To(true)
 	}
 }
 

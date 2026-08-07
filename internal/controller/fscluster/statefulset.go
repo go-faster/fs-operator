@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/go-faster/errors"
@@ -108,6 +109,7 @@ const (
 	envPprofAddr      = "PPROF_ADDR"
 	envLogLevel       = "OTEL_LOG_LEVEL"
 	envTracesExporter = "OTEL_TRACES_EXPORTER"
+	envLogsExporter   = "OTEL_LOGS_EXPORTER"
 	envMetricsExport  = "OTEL_METRICS_EXPORTER"
 	envOTLPEndpoint   = "OTEL_EXPORTER_OTLP_ENDPOINT"
 	envOTLPProtocol   = "OTEL_EXPORTER_OTLP_PROTOCOL"
@@ -228,19 +230,13 @@ func fsContainer(cluster *fsv1alpha1.FSCluster, node Node, retain []string) core
 		Image:           Image(cluster),
 		ImagePullPolicy: spec.Image.PullPolicy,
 		Args:            []string{"s3", flagConfig, ConfigPath},
-		Ports: []corev1.ContainerPort{
-			containerPort(PortNameS3, S3Port),
-			containerPort(PortNamePeer, PeerPort),
-			containerPort(PortNameAdmin, AdminPort),
-			containerPort(PortNameMetrics, MetricsPort),
-			containerPort(PortNamePprof, PprofPort),
-		},
-		Env:            env(cluster, node),
-		VolumeMounts:   volumeMounts(cluster, retain),
-		Resources:      spec.PodTemplate.Resources,
-		StartupProbe:   probe(cluster, healthPath, startupPeriodSeconds, startupFailureThreshold),
-		LivenessProbe:  probe(cluster, healthPath, livenessPeriodSeconds, livenessFailureThreshold),
-		ReadinessProbe: probe(cluster, readyPath, readinessPeriodSeconds, readinessFailureThreshold),
+		Ports:           containerPorts(cluster),
+		Env:             env(cluster, node),
+		VolumeMounts:    volumeMounts(cluster, retain),
+		Resources:       spec.PodTemplate.Resources,
+		StartupProbe:    probe(cluster, healthPath, startupPeriodSeconds, startupFailureThreshold),
+		LivenessProbe:   probe(cluster, healthPath, livenessPeriodSeconds, livenessFailureThreshold),
+		ReadinessProbe:  probe(cluster, readyPath, readinessPeriodSeconds, readinessFailureThreshold),
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
 			ReadOnlyRootFilesystem:   ptr.To(true),
@@ -279,6 +275,23 @@ func Image(cluster *fsv1alpha1.FSCluster) string {
 	}
 
 	return image.Repository + ":" + image.Tag
+}
+
+// containerPorts are the node's listeners. pprof is there only when the SDK
+// was given an address to serve it on.
+func containerPorts(cluster *fsv1alpha1.FSCluster) []corev1.ContainerPort {
+	ports := []corev1.ContainerPort{
+		containerPort(PortNameS3, S3Port),
+		containerPort(PortNamePeer, PeerPort),
+		containerPort(PortNameAdmin, AdminPort),
+		containerPort(PortNameMetrics, MetricsPort),
+	}
+
+	if pprofEnabled(cluster) {
+		ports = append(ports, containerPort(PortNamePprof, PprofPort))
+	}
+
+	return ports
 }
 
 // containerPort names a port so Services and probes can target it by name.
@@ -323,10 +336,9 @@ func env(cluster *fsv1alpha1.FSCluster, node Node) []corev1.EnvVar {
 		secretEnv(envRootAccessKey, RootCredentialsSource(cluster), AccessKeyKey),
 		secretEnv(envRootSecretKey, RootCredentialsSource(cluster), SecretKeyKey),
 
-		// The SDK binds its Prometheus and pprof listeners only when told to,
-		// and defaults the Prometheus one to localhost.
+		// The SDK binds its Prometheus listener only when told to, and
+		// defaults it to localhost.
 		{Name: envMetricsAddr, Value: listenAddr(MetricsPort)},
-		{Name: envPprofAddr, Value: listenAddr(PprofPort)},
 		{Name: envLogLevel, Value: spec.Observability.LogLevel},
 
 		// Metrics are always scrapeable: pull is how Kubernetes collects them,
@@ -346,16 +358,27 @@ func env(cluster *fsv1alpha1.FSCluster, node Node) []corev1.EnvVar {
 		)
 	}
 
+	// The SDK serves pprof only when given an address, and the port and the
+	// NetworkPolicy rule follow this same switch.
+	if pprofEnabled(cluster) {
+		vars = append(vars, corev1.EnvVar{Name: envPprofAddr, Value: listenAddr(PprofPort)})
+	}
+
+	// Traces and logs both default to OTLP in the SDK, and both then ship to
+	// localhost:4318 — a failed upload logged every interval on a cluster
+	// that never asked for a collector. Named explicitly in either direction.
 	if endpoint := spec.Observability.OTLP.Endpoint; endpoint != "" {
 		vars = append(vars,
 			corev1.EnvVar{Name: envTracesExporter, Value: exporterOTLP},
+			corev1.EnvVar{Name: envLogsExporter, Value: exporterOTLP},
 			corev1.EnvVar{Name: envOTLPEndpoint, Value: endpoint},
 			corev1.EnvVar{Name: envOTLPProtocol, Value: spec.Observability.OTLP.Protocol},
 		)
 	} else {
-		// Without a destination the SDK would still build an OTLP exporter
-		// and log a failed export every interval.
-		vars = append(vars, corev1.EnvVar{Name: envTracesExporter, Value: exporterNone})
+		vars = append(vars,
+			corev1.EnvVar{Name: envTracesExporter, Value: exporterNone},
+			corev1.EnvVar{Name: envLogsExporter, Value: exporterNone},
+		)
 	}
 
 	// User variables come last so that a deliberate override wins: with
@@ -390,7 +413,23 @@ func resourceAttributes(cluster *fsv1alpha1.FSCluster, node Node) string {
 		attributes = append(attributes, "fs.rack="+node.Rack)
 	}
 
+	// The user's own attributes, in a stable order so an unchanged spec
+	// renders an unchanged pod template. They come last, which is also how
+	// the SDK resolves a repeated key.
+	extra := cluster.Spec.Observability.ResourceAttributes
+	for _, key := range slices.Sorted(maps.Keys(extra)) {
+		attributes = append(attributes, key+"="+extra[key])
+	}
+
 	return strings.Join(attributes, ",")
+}
+
+// pprofEnabled reports whether this cluster serves pprof. Defaulting happens
+// on the spec, but a builder called with a spec that never went through it
+// should still produce the documented default rather than a node with no
+// profiling and no explanation.
+func pprofEnabled(cluster *fsv1alpha1.FSCluster) bool {
+	return cluster.Spec.Observability.Pprof == nil || *cluster.Spec.Observability.Pprof
 }
 
 // volumes mounts the node's configuration and, when fs terminates TLS, the
