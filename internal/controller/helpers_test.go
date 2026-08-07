@@ -63,6 +63,31 @@ func makeCluster(ctx context.Context, name string) {
 	})
 }
 
+// makeSingleNodeCluster creates the development shape: one node on fs's
+// filesystem backend, with no etcd and no replication.
+func makeSingleNodeCluster(ctx context.Context, name string) {
+	nodes := int32(1)
+
+	cluster := &fsv1alpha1.FSCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		Spec: fsv1alpha1.FSClusterSpec{
+			Topology: fsv1alpha1.TopologySpec{Nodes: &nodes},
+			Storage: fsv1alpha1.StorageSpec{
+				Disks: []fsv1alpha1.DiskSpec{{Name: "d0", Size: resource.MustParse("10Gi")}},
+			},
+		},
+	}
+	Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+	makeSecret(ctx, fscluster.RootCredentialsSecretName(name), map[string]string{
+		fscluster.AccessKeyKey: "AKROOT",
+		fscluster.SecretKeyKey: "root-secret-key-0123456789",
+	})
+	makeSecret(ctx, fscluster.AdminTokenSecretName(name), map[string]string{
+		fscluster.AdminTokenKey: "admin-token-value",
+	})
+}
+
 // makeSecret creates an opaque Secret with the given string data in the test
 // namespace.
 func makeSecret(ctx context.Context, name string, data map[string]string) {

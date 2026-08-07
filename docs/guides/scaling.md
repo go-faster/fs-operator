@@ -18,7 +18,45 @@ A failure domain is a rack, or — in the flat topology — a single node. The
 operator refuses a spec whose topology cannot host its scheme
 (`SpecValid=False`, reason `SchemeTopologyMismatch`) and one outside the 3–16
 envelope (`UnsupportedTopology`) without mutating the running cluster. A cluster
-of 1–2 nodes is admitted for development only, with a warning event.
+of 2 nodes is admitted for development only, with a warning event.
+
+## Single node
+
+`topology.nodes: 1` is a different thing from a small cluster. No scheme can be
+placed on one node — every one of them needs three distinct disks, or k+m — so
+that node runs **fs's non-clustered filesystem backend** instead:
+
+```yaml
+spec:
+  topology:
+    nodes: 1
+  storage:
+    disks:
+      - name: d0
+        size: 5Gi
+  # no etcd
+```
+
+- **Exactly one disk**, and it is the storage root. More is refused
+  (`UnsupportedTopology`); renaming it later is refused too, because the node
+  has no cluster to drain the data into.
+- **No `spec.etcd`.** There is no control plane to register in, so declaring one
+  is refused rather than quietly ignored.
+- **`spec.scheme` is ignored**, along with rebalancing, repair, scrub-driven
+  convergence and schema migration: there is one copy of every object on one
+  volume. `Converged` is trivially `True`, `SchemaCurrent` is not reported, and
+  `Ready` is `True` once the only node is serving.
+- **Per-bucket schemes are unavailable**: an `FSBucket` with `spec.scheme` on a
+  single-node cluster is `Ready=False`, reason `SchemeRejected`. Access keys and
+  public-read buckets work as usual.
+
+What you give up is everything the failure domains were for: one copy of every
+object on one machine, no repair, no failure tolerance. Losing the node loses the
+data. And it **cannot be grown into a cluster in place** — the two backends store
+data differently, so raising `nodes` is refused; create a new `FSCluster` and copy
+the objects over. [`examples/00-single-node.yaml`](../../examples/00-single-node.yaml)
+is a complete one, and the operator warns about the shape at apply time and on
+the object.
 
 ## Scale up
 
@@ -111,7 +149,9 @@ declared again stops draining and returns to placement.
 A spec whose remaining node count would fall below the scheme's domain
 requirement is refused outright (`SpecValid=False`, reason
 `SchemeTopologyMismatch`) — no node is drained on the way to a cluster that
-cannot host its own data.
+cannot host its own data. Scaling all the way down to 1 is refused for a
+different reason (`UnsupportedTopology`): that is a different storage backend,
+not a smaller cluster, and the data does not come with it.
 
 ## Related
 

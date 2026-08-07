@@ -44,6 +44,15 @@ const MaxNodes = 16
 // Below it a cluster is a development toy — allowed, but it says so.
 const DevClusterNodes = 3
 
+// SingleNodeWarning is what a one-node cluster is told. It is not the "below
+// the minimum" caveat a two-node cluster gets: a single node is not a small
+// cluster, it is fs's non-clustered backend, with a different set of things it
+// cannot do.
+const SingleNodeWarning = "cluster has a single node (development only): it runs fs's " +
+	"filesystem backend — one disk, no replication, no repair, no failure tolerance — so losing " +
+	"the node loses the data. It cannot be grown into a cluster in place: declare 3 or more " +
+	"nodes from the start for anything you keep"
+
 // ManagedEtcdWarning is what every cluster running the operator-managed etcd
 // is told, at apply time and again on the object. It is a permanent property
 // of that mode, not a caveat that gets softened later (SPEC §2).
@@ -76,12 +85,16 @@ func Cluster(spec *fsv1alpha1.FSClusterSpec) *Failure {
 		return &Failure{Reason: fsv1alpha1.ReasonSpecInvalid, Message: err.Error()}
 	}
 
-	if domains := int(spec.FailureDomains()); domains < parsed.MinDomains() {
+	if spec.SingleNode() {
+		return singleNode(spec)
+	}
+
+	if domains := int(spec.FailureDomains()); domains < parsed.Copies() {
 		return &Failure{
 			Reason: fsv1alpha1.ReasonSchemeTopologyMismatch,
 			Message: fmt.Sprintf(
 				"scheme %q places copies on %d distinct failure domains, the topology provides %d",
-				spec.Scheme, parsed.MinDomains(), domains),
+				spec.Scheme, parsed.Copies(), domains),
 		}
 	}
 
@@ -124,13 +137,46 @@ func Cluster(spec *fsv1alpha1.FSClusterSpec) *Failure {
 	return nil
 }
 
+// singleNode checks the shape a one-node cluster has to have.
+//
+// It is not a small cluster with the rules relaxed: fs cannot place any scheme
+// on one node — every scheme needs three distinct disks or k+m of them, and a
+// bucket record needs three — so the node runs the non-clustered filesystem
+// backend instead. That backend stores everything under one root and has no
+// control plane, which is exactly the two things checked here. The scheme is
+// left alone: it is the default on a field the user may never have touched, and
+// nothing reads it in this mode.
+func singleNode(spec *fsv1alpha1.FSClusterSpec) *Failure {
+	if disks := len(spec.Storage.Disks); disks != 1 {
+		return &Failure{
+			Reason: fsv1alpha1.ReasonUnsupportedTopology,
+			Message: fmt.Sprintf(
+				"a single-node cluster stores objects under one root and declares exactly 1 disk, got %d",
+				disks),
+		}
+	}
+
+	if spec.Etcd.External != nil || spec.Etcd.Managed != nil {
+		return &Failure{
+			Reason: fsv1alpha1.ReasonSpecInvalid,
+			Message: "a single-node cluster has no control plane to register in; leave etcd unset " +
+				"(a clustered topology of 3 or more nodes is what needs it)",
+		}
+	}
+
+	return nil
+}
+
 // ClusterWarnings are the things worth saying about a spec that is still
 // allowed. A validating webhook can return these alongside an admission, so a
 // user sees them at apply time instead of hunting for an event.
 func ClusterWarnings(spec *fsv1alpha1.FSClusterSpec) []string {
 	var warnings []string
 
-	if total := int(spec.TotalNodes()); total < DevClusterNodes {
+	switch total := int(spec.TotalNodes()); {
+	case total == 1:
+		warnings = append(warnings, SingleNodeWarning)
+	case total < DevClusterNodes:
 		warnings = append(warnings, fmt.Sprintf(
 			"cluster has %d nodes, below the supported minimum of %d: suitable for development only",
 			total, DevClusterNodes))
@@ -145,10 +191,41 @@ func ClusterWarnings(spec *fsv1alpha1.FSClusterSpec) []string {
 
 // ClusterUpdate checks a change against what the spec used to be.
 //
-// Only disk shrink for now, and it is here rather than in CEL for the reason
-// SPEC §8.5 gives: comparing every disk's old and new size costs more than the
-// API server's per-schema validation budget allows for a list this long.
+// Disk shrink and the single-node boundary, both here rather than in CEL for
+// the reason SPEC §8.5 gives: comparing every disk's old and new size costs
+// more than the API server's per-schema validation budget allows for a list
+// this long.
 func ClusterUpdate(old, updated *fsv1alpha1.FSClusterSpec) *Failure {
+	// Checked before the spec is judged on its own, so that growing a
+	// single-node cluster is reported as the backend switch it is rather than
+	// as the missing etcd a clustered topology would also need.
+	//
+	// A single node runs a different storage backend, under a different root,
+	// with none of its objects registered anywhere. Crossing that line in
+	// place is not a scale-up or a scale-down — it is a cluster that comes
+	// back empty, with the old data still on a volume nothing reads.
+	if old.SingleNode() != updated.SingleNode() {
+		return &Failure{
+			Reason: fsv1alpha1.ReasonUnsupportedTopology,
+			Message: "a single-node cluster and a clustered one store data differently; " +
+				"switching between them in place would abandon the data. Create a new FSCluster " +
+				"and copy the objects over",
+		}
+	}
+
+	// Same reason, one level down: the single node's root is its disk's mount
+	// path, so renaming the disk is a new empty volume and an orphaned old one.
+	if updated.SingleNode() && len(old.Storage.Disks) == 1 && len(updated.Storage.Disks) == 1 &&
+		old.Storage.Disks[0].Name != updated.Storage.Disks[0].Name {
+		return &Failure{
+			Reason: fsv1alpha1.ReasonUnsupportedTopology,
+			Message: fmt.Sprintf(
+				"a single-node cluster's disk %q holds everything it has and cannot be renamed to %q; "+
+					"the node has no cluster to drain it into",
+				old.Storage.Disks[0].Name, updated.Storage.Disks[0].Name),
+		}
+	}
+
 	if failure := Cluster(updated); failure != nil {
 		return failure
 	}

@@ -9,7 +9,12 @@
 # preceded by a comment saying why it is safe. A line with no justification is
 # a line nobody reviewed.
 
-# Adding managed etcd made spec.etcd.external optional, which needs a rule to
-# keep "exactly one of them" true. Every object stored before this has external
-# set — it was a required field — so all of them satisfy the new rule.
-FSCluster/v1alpha1.spec.etcd: new validation rule 'has(self.external) != has(self.managed)'
+# Single-node mode made spec.etcd optional altogether, so the "exactly one of
+# them" rule became "at most one": a single-node cluster declares neither, and
+# which case applies is a cross-field question CEL cannot answer from inside
+# spec.etcd (internal/validation does). The new rule is strictly weaker than
+# the one it replaces — anything that satisfied "exactly one" satisfies "at
+# most one" — so every stored object still validates. It supersedes the rule
+# acknowledged here before it, which the CRD no longer carries:
+# 'has(self.external) != has(self.managed)'.
+FSCluster/v1alpha1.spec.etcd: new validation rule '!has(self.external) || !has(self.managed)'

@@ -39,7 +39,7 @@ off: the controller runs the same checks either way.
 |---|---|---|
 | `SpecValid` / `SpecInvalid` | `SpecValid` | Spec passed / an unparseable value (e.g. bad scheme). |
 | `SchemeTopologyMismatch` | `SpecValid` | The scheme needs more failure domains than the topology has. |
-| `UnsupportedTopology` | `SpecValid` | Node count outside the 3–16 envelope. |
+| `UnsupportedTopology` | `SpecValid` | Node count outside the 3–16 envelope; a [single-node](scaling.md#single-node) cluster declaring more than one disk, renaming it, or being grown into a cluster. Also the reason on the warning event a 1–2 node development cluster carries. |
 | `DiskShrinkForbidden` | `SpecValid` | A disk would shrink; disks may only grow. |
 | `SecretNotFound` / `SecretInvalid` | `SpecValid` | A referenced Secret is missing or lacks the expected keys. |
 | `ReconcileFinished` / `ReconcileError` | `ReconcileSucceeded` | The pass finished / the pass failed (message carries the error). |

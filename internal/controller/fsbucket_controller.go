@@ -177,6 +177,19 @@ func (r *FSBucketReconciler) reconcile(ctx context.Context, req ctrl.Request) (c
 // returns the effective scheme. A rejected scheme is a terminal Ready=False
 // (the user must fix the spec); an unreachable cluster requeues.
 func (r *FSBucketReconciler) reconcileScheme(ctx context.Context, cluster *fsv1alpha1.FSCluster, bucket, scheme string) (string, *readyCondition, bool) {
+	// A single-node cluster replicates nothing, and fs answers the scheme
+	// endpoints with 501 there. Asking anyway would retry forever against a
+	// cluster that is working exactly as declared, so the bucket is ready and
+	// an override is refused as the spec error it is.
+	if cluster.Spec.SingleNode() {
+		if scheme != "" {
+			return "", falseCondition(fsv1alpha1.ReasonSchemeRejected,
+				"spec.scheme is not available on a single-node cluster: it stores one copy on one disk"), false
+		}
+
+		return "", nil, false
+	}
+
 	admin, err := r.clusterAdmin(ctx, cluster)
 	if err != nil {
 		return "", falseCondition(fsv1alpha1.ReasonClusterNotReady, err.Error()), true

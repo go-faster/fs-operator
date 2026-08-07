@@ -1,0 +1,26 @@
+# Single-node development cluster: one fs node, one disk, nothing else — no
+# etcd, no peers, no replication. It fits a laptop kind/minikube cluster and
+# needs nothing else in the namespace.
+#
+# DEVELOPMENT ONLY. This node runs fs's non-clustered filesystem backend: one
+# copy of every object on one volume, no repair, no failure tolerance. Losing
+# the node loses the data. It also cannot be grown into a cluster in place —
+# the backends store data differently — so anything you keep starts at three
+# nodes: see 01-minimal.yaml and 07-production.yaml.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-dev
+spec:
+  topology:
+    # One node selects the single-node backend. Anti-affinity is moot with a
+    # single pod, and spec.scheme is ignored: nothing is replicated.
+    nodes: 1
+  storage:
+    # Exactly one disk: it is the node's storage root. Renaming it later is
+    # refused — there is no cluster to drain the data into.
+    disks:
+      - name: d0
+        size: 5Gi
+  # No etcd block: a single node registers in no control plane, and declaring
+  # one is refused rather than quietly ignored.

@@ -68,6 +68,65 @@ var _ = Describe("FSBucket Controller", func() {
 		Expect(ready.Reason).To(Equal(fsv1alpha1.ReasonBucketReady))
 	})
 
+	It("creates the bucket on a single-node cluster, which has no schemes", func() {
+		makeSingleNodeCluster(ctx, "solo-cluster")
+
+		s3 := newFakeS3()
+		admin := newFakeAdmin()
+		r := &FSBucketReconciler{
+			Client: k8sClient, Scheme: k8sClient.Scheme(),
+			S3: s3.factory(), Admin: admin.client,
+		}
+
+		bucket := &fsv1alpha1.FSBucket{
+			ObjectMeta: metav1.ObjectMeta{Name: "solo", Namespace: namespace},
+			Spec:       fsv1alpha1.FSBucketSpec{ClusterRef: fsv1alpha1.ClusterReference{Name: "solo-cluster"}},
+		}
+		Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
+
+		key := types.NamespacedName{Name: "solo", Namespace: namespace}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(s3.buckets["solo"]).To(BeTrue(), "bucket should have been created")
+
+		Expect(k8sClient.Get(ctx, key, bucket)).To(Succeed())
+		ready := meta.FindStatusCondition(bucket.Status.Conditions, fsv1alpha1.ConditionReady)
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		Expect(bucket.Status.Scheme).To(BeEmpty())
+	})
+
+	It("refuses a per-bucket scheme on a single-node cluster", func() {
+		makeSingleNodeCluster(ctx, "solo-scheme-cluster")
+
+		s3 := newFakeS3()
+		admin := newFakeAdmin()
+		r := &FSBucketReconciler{
+			Client: k8sClient, Scheme: k8sClient.Scheme(),
+			S3: s3.factory(), Admin: admin.client,
+		}
+
+		bucket := &fsv1alpha1.FSBucket{
+			ObjectMeta: metav1.ObjectMeta{Name: "solo-ec", Namespace: namespace},
+			Spec: fsv1alpha1.FSBucketSpec{
+				ClusterRef: fsv1alpha1.ClusterReference{Name: "solo-scheme-cluster"},
+				Scheme:     "rf3",
+			},
+		}
+		Expect(k8sClient.Create(ctx, bucket)).To(Succeed())
+
+		key := types.NamespacedName{Name: "solo-ec", Namespace: namespace}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, key, bucket)).To(Succeed())
+		ready := meta.FindStatusCondition(bucket.Status.Conditions, fsv1alpha1.ConditionReady)
+		Expect(ready).NotTo(BeNil())
+		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		Expect(ready.Reason).To(Equal(fsv1alpha1.ReasonSchemeRejected))
+	})
+
 	It("reports SchemeRejected for a scheme the cluster cannot host", func() {
 		makeCluster(ctx, "reject-cluster")
 

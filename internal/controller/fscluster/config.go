@@ -241,7 +241,7 @@ func nodeConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) (f
 
 	spec := &cluster.Spec
 
-	return fsconfig.Config{
+	cfg := fsconfig.Config{
 		Server: serverConfig(spec),
 		Storage: fsconfig.Storage{
 			Root: StorageRoot,
@@ -255,7 +255,30 @@ func nodeConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) (f
 		Cluster:       clusterConfig(cluster, node, opts, opts.Drained[node.Name]),
 		Integrity:     integrityConfig(spec),
 		Observability: observabilityConfig(cluster),
-	}, nil
+	}
+
+	if spec.SingleNode() {
+		singleNodeConfig(spec, &cfg)
+	}
+
+	return cfg, nil
+}
+
+// singleNodeConfig turns a node's config into fs's non-clustered form: the
+// filesystem backend rooted at the node's one disk, no cluster section, and no
+// etcd to hold credentials or a public-read list — so both of those are
+// rendered into the file instead, where fs hot-reloads them (SPEC §5.2).
+//
+// The disk is mounted where it is in cluster mode, so nothing about the pod or
+// its claims changes with the backend.
+func singleNodeConfig(spec *fsv1alpha1.FSClusterSpec, cfg *fsconfig.Config) {
+	cfg.Storage.Root = DiskPath(spec.Storage.Disks[0].Name)
+	cfg.Storage.Type = fsconfig.StorageTypeFilesystem
+	cfg.Cluster = fsconfig.Cluster{}
+	cfg.Auth = fsconfig.Auth{
+		Source:            fsconfig.AuthSourceFile,
+		PublicReadBuckets: spec.Auth.PublicReadBuckets,
+	}
 }
 
 // serverConfig renders the S3 listener, terminating TLS in fs itself when the

@@ -72,6 +72,13 @@ const (
 func (r *Reconciler) reconcileRootCredential(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	log := logf.FromContext(ctx)
 
+	if p.cluster.Spec.SingleNode() {
+		// This check exists for the etcd credential store — an adopted prefix
+		// whose seal no longer matches (SPEC §8.6). A single node reads its
+		// root credential straight from the environment on every start.
+		return pipeline.Continue()
+	}
+
 	serving := servingNodes(p)
 	if len(serving) == 0 {
 		return pipeline.Continue()

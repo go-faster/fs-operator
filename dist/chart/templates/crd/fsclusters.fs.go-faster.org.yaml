@@ -107,8 +107,11 @@ spec:
                 - message: clusterSecretRef is immutable
                   rule: self == oldSelf
               etcd:
-                description: etcd configures the control plane the cluster registers
-                  in.
+                description: |-
+                  etcd configures the control plane the cluster registers in. Required
+                  for a clustered topology; a single-node cluster runs fs's
+                  non-clustered filesystem backend, which has no control plane, and
+                  must leave it unset.
                 properties:
                   cleanupOnDelete:
                     description: |-
@@ -338,8 +341,8 @@ spec:
                 - message: etcd.prefix is immutable
                   rule: has(self.prefix) == has(oldSelf.prefix) && (!has(self.prefix)
                     || self.prefix == oldSelf.prefix)
-                - message: exactly one of etcd.external or etcd.managed must be set
-                  rule: has(self.external) != has(self.managed)
+                - message: at most one of etcd.external or etcd.managed may be set
+                  rule: '!has(self.external) || !has(self.managed)'
               image:
                 default: {}
                 description: |-
@@ -819,7 +822,8 @@ spec:
                   (Reed-Solomon). Changeable at runtime: new writes use it immediately
                   and existing objects converge via repair/rebalance. The controller
                   refuses a scheme the topology cannot host (distinct failure domains
-                  below the scheme requirement).
+                  below the scheme requirement). Ignored by a single-node cluster,
+                  which stores objects on one disk and replicates nothing.
                 pattern: ^(rf2\.5|rf3|ec:[1-9][0-9]*,[1-9][0-9]*)$
                 type: string
               storage:
@@ -831,7 +835,8 @@ spec:
                     description: |-
                       disks are this cluster's per-node storage devices: every entry becomes
                       one PersistentVolumeClaim on every node, mounted at
-                      /var/lib/fs/disks/<name>.
+                      /var/lib/fs/disks/<name>. A single-node cluster declares exactly one:
+                      fs's filesystem backend stores everything under a single root.
 
                       Entries may be added, and removed. Removing one is a decommission, not
                       a delete: the disk is drained out of placement on every node, and its
@@ -929,8 +934,11 @@ spec:
                 description: topology declares the cluster's nodes and failure domains.
                 properties:
                   nodes:
-                    description: 'nodes is the flat topology: N nodes, each its own
-                      failure domain.'
+                    description: |-
+                      nodes is the flat topology: N nodes, each its own failure domain.
+                      One node is a development install: that node runs fs's single-node
+                      filesystem backend — one disk, no etcd, no replication, no failure
+                      tolerance — instead of joining a cluster.
                     format: int32
                     maximum: 16
                     minimum: 1
@@ -1020,7 +1028,6 @@ spec:
                     type: string
                 type: object
             required:
-            - etcd
             - storage
             - topology
             type: object

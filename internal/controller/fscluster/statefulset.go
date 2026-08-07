@@ -448,17 +448,27 @@ func diskNames(cluster *fsv1alpha1.FSCluster) []string {
 
 // volumeMounts mounts the configuration, the certificate and every disk.
 func volumeMounts(cluster *fsv1alpha1.FSCluster, retain []string) []corev1.VolumeMount {
+	mounts := make([]corev1.VolumeMount, 0, len(cluster.Spec.Storage.Disks)+4)
+
 	// The storage root comes first, before the disks that mount below it: the
 	// kubelet mounts a nested path after its parent, and a disk hidden under a
 	// later root mount would be an empty directory to fs.
-	mounts := []corev1.VolumeMount{{
-		Name:      stateVolumeName,
-		MountPath: StorageRoot,
-	}, {
+	//
+	// A single node has no such root to mount: its storage root *is* its disk
+	// (SPEC §5.2), so the index it would keep beside the disks lives on the
+	// one volume it has.
+	if !cluster.Spec.SingleNode() {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      stateVolumeName,
+			MountPath: StorageRoot,
+		})
+	}
+
+	mounts = append(mounts, corev1.VolumeMount{
 		Name:      configVolumeName,
 		MountPath: ConfigDir,
 		ReadOnly:  true,
-	}}
+	})
 
 	if external := cluster.Spec.Etcd.External; external != nil && external.TLS.SecretName != "" {
 		mounts = append(mounts, corev1.VolumeMount{
@@ -500,8 +510,13 @@ func volumeClaimTemplates(cluster *fsv1alpha1.FSCluster, node Node, retain []str
 	// its object index there at startup, the container filesystem is read-only,
 	// and an index that does not survive the pod is rebuilt by walking every
 	// sidecar on every disk of the node.
-	claims = append(claims, claimTemplate(cluster, node, stateVolumeName,
-		*cluster.Spec.Storage.State.Size, cluster.Spec.Storage.State.StorageClass))
+	//
+	// Except on a single node, whose storage root is its disk: there the index
+	// already lives on a claim, and a second one would be an empty volume.
+	if !cluster.Spec.SingleNode() {
+		claims = append(claims, claimTemplate(cluster, node, stateVolumeName,
+			*cluster.Spec.Storage.State.Size, cluster.Spec.Storage.State.StorageClass))
+	}
 
 	for _, disk := range cluster.Spec.Storage.Disks {
 		claims = append(claims, claimTemplate(cluster, node, disk.Name, disk.Size, disk.StorageClass))

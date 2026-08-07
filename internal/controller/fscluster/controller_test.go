@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -323,6 +324,78 @@ func TestReconcileReportsQuorum(t *testing.T) {
 	if cluster.Status.CurrentRevision != "" {
 		t.Errorf("current revision = %q, want none until every node runs it", cluster.Status.CurrentRevision)
 	}
+}
+
+// TestReconcileSingleNode covers the development shape end to end: one node
+// running fs's filesystem backend, with no etcd to reach and no quorum to
+// wait for. The cluster-mode steps must stay out of its way — a cluster that
+// is serving everything it has is Ready.
+func TestReconcileSingleNode(t *testing.T) {
+	r, _ := reconciler(t)
+	key := createCluster(t, r, "single-node", singleNodeSpec)
+
+	reconcile(t, r, key)
+
+	var cluster fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	if c := condition(t, r, key, fsv1alpha1.ConditionSpecValid); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("SpecValid = %v, want True: a single node is a supported dev shape", c)
+	}
+
+	nodes := Nodes(&cluster)
+	if len(nodes) != 1 {
+		t.Fatalf("%d nodes, want 1", len(nodes))
+	}
+
+	// Its storage root is its disk, so it carries no state claim: a second
+	// volume would be one nothing ever writes to.
+	set := NewStatefulSet(&cluster, nodes[0], "rev")
+	for _, claim := range set.Spec.VolumeClaimTemplates {
+		if claim.Name == fsv1alpha1.StateVolumeName {
+			t.Error("a single node was given a state volume it has no root for")
+		}
+	}
+
+	// No etcd is declared, so none of its resources may exist.
+	var sets appsv1.StatefulSetList
+	if err := r.List(t.Context(), &sets, client.InNamespace(key.Namespace)); err != nil {
+		t.Fatalf("list statefulsets: %v", err)
+	}
+
+	if len(sets.Items) != 1 || sets.Items[0].Name != nodes[0].Name {
+		t.Fatalf("statefulsets = %v, want only the node's", setNames(sets.Items))
+	}
+
+	serving(t, r, key, nodes[0])
+	reconcile(t, r, key)
+
+	if c := condition(t, r, key, fsv1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %v, want True once the only node is serving", c)
+	}
+
+	// Schema currency is a control-plane property; a single node has none.
+	if c := condition(t, r, key, fsv1alpha1.ConditionSchemaCurrent); c != nil {
+		t.Errorf("SchemaCurrent = %v, want unset on a single-node cluster", c)
+	}
+}
+
+// singleNodeSpec is the development shape: one node, one disk, no etcd.
+func singleNodeSpec(c *fsv1alpha1.FSCluster) {
+	nodes := int32(1)
+	c.Spec.Topology.Nodes = &nodes
+	c.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{{Name: "d0", Size: resource.MustParse("10Gi")}}
+	c.Spec.Etcd = fsv1alpha1.EtcdSpec{}
+}
+
+// setNames names StatefulSets for a failure message.
+func setNames(sets []appsv1.StatefulSet) []string {
+	names := make([]string, 0, len(sets))
+	for i := range sets {
+		names = append(names, sets[i].Name)
+	}
+
+	return names
 }
 
 // serving stands in for the StatefulSet controller: it reports the node's

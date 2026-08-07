@@ -31,7 +31,9 @@ credential store, sealed with the cluster secret. It is small (kilobytes) and
 absolutely load-bearing: lose it and you lose the cluster, not just its
 metadata.
 
-Exactly one of `external` or `managed` must be set.
+Exactly one of `external` or `managed` must be set — unless the cluster is a
+[single node](scaling.md#single-node), which has no control plane and must set
+neither.
 
 ### `external` — the production mode
 

@@ -20,18 +20,18 @@ import "testing"
 
 func TestParse(t *testing.T) {
 	for _, tc := range []struct {
-		scheme  string
-		domains int
-		quorum  int
+		scheme string
+		copies int
+		quorum int
 	}{
 		// Two full replicas are acknowledged synchronously; the third target
 		// — parity or the third replica — follows behind the async queue.
-		{scheme: RF25, domains: 3, quorum: 2},
-		{scheme: RF3, domains: 3, quorum: 2},
+		{scheme: RF25, copies: 3, quorum: 2},
+		{scheme: RF3, copies: 3, quorum: 2},
 		// Erasure coding has no async path to complete a shard set, so every
 		// shard is placed and acknowledged synchronously.
-		{scheme: "ec:4,2", domains: 6, quorum: 6},
-		{scheme: "ec:8,3", domains: 11, quorum: 11},
+		{scheme: "ec:4,2", copies: 6, quorum: 6},
+		{scheme: "ec:8,3", copies: 11, quorum: 11},
 	} {
 		t.Run(tc.scheme, func(t *testing.T) {
 			scheme, err := Parse(tc.scheme)
@@ -39,8 +39,8 @@ func TestParse(t *testing.T) {
 				t.Fatalf("parse: %v", err)
 			}
 
-			if got := scheme.MinDomains(); got != tc.domains {
-				t.Errorf("MinDomains = %d, want %d", got, tc.domains)
+			if got := scheme.Copies(); got != tc.copies {
+				t.Errorf("Copies = %d, want %d", got, tc.copies)
 			}
 
 			if got := scheme.WriteQuorumDomains(); got != tc.quorum {

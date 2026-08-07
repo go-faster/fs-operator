@@ -37,9 +37,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// StorageTypeCluster is the replicated cluster storage backend — the only
-// backend the operator deploys.
-const StorageTypeCluster = "cluster"
+// Storage backends the operator deploys: the replicated cluster backend, and
+// the single-node filesystem backend a one-node development cluster runs.
+const (
+	StorageTypeCluster    = "cluster"
+	StorageTypeFilesystem = "filesystem"
+)
 
 // Config is one fs node's configuration file.
 type Config struct {
@@ -274,15 +277,26 @@ func (c *Config) Validate() error {
 		return errors.New("storage.root is required")
 	}
 
-	if c.Storage.Type != StorageTypeCluster {
-		return errors.Errorf("storage.type must be %q, got %q", StorageTypeCluster, c.Storage.Type)
-	}
-
 	if c.Observability.ServiceName == "" {
 		return errors.New("observability.service_name is required")
 	}
 
-	return c.validateCluster()
+	switch c.Storage.Type {
+	case StorageTypeFilesystem:
+		// fs rejects the cluster-wide credential store without cluster
+		// storage; nothing else in the file is cluster-only.
+		if c.Auth.Source == AuthSourceEtcd {
+			return errors.Errorf("auth.source %q requires storage.type %q",
+				AuthSourceEtcd, StorageTypeCluster)
+		}
+
+		return nil
+	case StorageTypeCluster:
+		return c.validateCluster()
+	default:
+		return errors.Errorf("storage.type must be %q or %q, got %q",
+			StorageTypeCluster, StorageTypeFilesystem, c.Storage.Type)
+	}
 }
 
 // validateCluster checks the cluster section.

@@ -43,6 +43,9 @@ question without reading every sidecar on every disk.
   state volume behind along with its disks. It holds nothing that is not on the
   disks; delete it whenever.
 
+A [single-node cluster](scaling.md#single-node) has no state volume: its
+storage root is its one disk, so the index already lives on a claim.
+
 Nodes that predate this volume get it the same way they get a new disk: the
 operator orphan-recreates each StatefulSet, one node at a time, gated on the
 cluster being healthy and converged. The pods and the data stay.
