@@ -100,7 +100,16 @@ func TestValidate(t *testing.T) {
 		{name: "no listener", mutate: func(c *Config) { c.Server.Addr = "" }},
 		{name: "no timeouts", mutate: func(c *Config) { c.Server.WriteTimeout = 0 }},
 		{name: "no storage root", mutate: func(c *Config) { c.Storage.Root = "" }},
-		{name: "single-node storage", mutate: func(c *Config) { c.Storage.Type = "filesystem" }},
+		{name: "unknown storage type", mutate: func(c *Config) { c.Storage.Type = "s3" }},
+		{
+			// fs refuses the cluster-wide credential store without cluster
+			// storage behind it.
+			name: "etcd credentials on the filesystem backend",
+			mutate: func(c *Config) {
+				c.Storage.Type = StorageTypeFilesystem
+				c.Auth.Source = AuthSourceEtcd
+			},
+		},
 		{name: "no service name", mutate: func(c *Config) { c.Observability.ServiceName = "" }},
 		{name: "no node id", mutate: func(c *Config) { c.Cluster.NodeID = "" }},
 		{name: "no advertise address", mutate: func(c *Config) { c.Cluster.AdvertiseAddr = "" }},
@@ -121,6 +130,20 @@ func TestValidate(t *testing.T) {
 				t.Error("validation passed, want an error")
 			}
 		})
+	}
+}
+
+// TestValidateAcceptsFilesystemBackend covers the single-node development
+// config: no cluster section at all, and none of the cluster checks applied to
+// it.
+func TestValidateAcceptsFilesystemBackend(t *testing.T) {
+	cfg := valid()
+	cfg.Storage.Type = StorageTypeFilesystem
+	cfg.Auth.Source = AuthSourceFile
+	cfg.Cluster = Cluster{}
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("a single-node config was refused: %v", err)
 	}
 }
 

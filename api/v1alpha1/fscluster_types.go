@@ -39,7 +39,8 @@ type FSClusterSpec struct {
 	// (Reed-Solomon). Changeable at runtime: new writes use it immediately
 	// and existing objects converge via repair/rebalance. The controller
 	// refuses a scheme the topology cannot host (distinct failure domains
-	// below the scheme requirement).
+	// below the scheme requirement). Ignored by a single-node cluster,
+	// which stores objects on one disk and replicates nothing.
 	// +kubebuilder:validation:Pattern=`^(rf2\.5|rf3|ec:[1-9][0-9]*,[1-9][0-9]*)$`
 	// +kubebuilder:default="rf2.5"
 	// +optional
@@ -54,9 +55,12 @@ type FSClusterSpec struct {
 	// +required
 	Storage StorageSpec `json:"storage"`
 
-	// etcd configures the control plane the cluster registers in.
-	// +required
-	Etcd EtcdSpec `json:"etcd"`
+	// etcd configures the control plane the cluster registers in. Required
+	// for a clustered topology; a single-node cluster runs fs's
+	// non-clustered filesystem backend, which has no control plane, and
+	// must leave it unset.
+	// +optional
+	Etcd EtcdSpec `json:"etcd,omitempty"`
 
 	// clusterSecretRef references a Secret with key "secret" holding the
 	// shared cluster secret (HMAC peer auth, min 16 characters). Generated
@@ -144,6 +148,9 @@ type ImageSpec struct {
 // +kubebuilder:validation:XValidation:rule="has(self.nodes) != has(self.racks)",message="exactly one of nodes or racks must be set"
 type TopologySpec struct {
 	// nodes is the flat topology: N nodes, each its own failure domain.
+	// One node is a development install: that node runs fs's single-node
+	// filesystem backend — one disk, no etcd, no replication, no failure
+	// tolerance — instead of joining a cluster.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=16
 	// +optional
@@ -211,7 +218,8 @@ type RackSpec struct {
 type StorageSpec struct {
 	// disks are this cluster's per-node storage devices: every entry becomes
 	// one PersistentVolumeClaim on every node, mounted at
-	// /var/lib/fs/disks/<name>.
+	// /var/lib/fs/disks/<name>. A single-node cluster declares exactly one:
+	// fs's filesystem backend stores everything under a single root.
 	//
 	// Entries may be added, and removed. Removing one is a decommission, not
 	// a delete: the disk is drained out of placement on every node, and its
@@ -272,12 +280,18 @@ type DiskSpec struct {
 }
 
 // EtcdSpec configures the etcd control plane connection.
+//
+// CEL only rules out having both: a clustered topology needs exactly one, a
+// single-node cluster needs neither, and which of those applies is a
+// cross-field question CEL cannot see from here. internal/validation decides
+// it, at admission and again in the controller.
+//
 // The prefix rule spells out the absent case: a rule that reads self.prefix
 // directly fails evaluation — and rejects every update, including status
 // writes — while the field is unset, and setting it later would move the
 // cluster's keys.
 // +kubebuilder:validation:XValidation:rule="has(self.prefix) == has(oldSelf.prefix) && (!has(self.prefix) || self.prefix == oldSelf.prefix)",message="etcd.prefix is immutable"
-// +kubebuilder:validation:XValidation:rule="has(self.external) != has(self.managed)",message="exactly one of etcd.external or etcd.managed must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.external) || !has(self.managed)",message="at most one of etcd.external or etcd.managed may be set"
 type EtcdSpec struct {
 	// external points the cluster at user-operated etcd endpoints. This is
 	// the production mode, and the only supported one.

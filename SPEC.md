@@ -98,7 +98,14 @@ Facts about go-faster/fs that drive the design (source: `cmd/fs/config.go`,
   the auto-rebalancer moves existing data off it). Weights live in the
   node's config and are registered in etcd at startup.
 - Supported envelope: 3–16 nodes. `rf2.5`/`rf3` need ≥3 distinct failure
-  domains; `ec:k,m` needs ≥ k+m.
+  domains; `ec:k,m` needs ≥ k+m. Placement degrades over what the topology
+  affords — racks, then nodes, then disks — but never below the scheme's
+  copy count: fewer usable disks than copies is `ErrInsufficientTargets`,
+  and a bucket record needs three targets of its own.
+- **Single-node mode** is a different backend, not a small cluster:
+  `storage.type: filesystem` under one root, `auth.source: file`, no etcd,
+  no peers, no placement. It is fs's oldest and most conformance-tested
+  path, and the only way one node and one disk can serve S3 at all.
 - Health endpoints: `/health` (liveness) and `/ready` (readiness, probes
   storage → 200/503) on the S3 listener.
 - Admin API (separate listener, bearer token, default `localhost:8090`):
@@ -347,9 +354,11 @@ spec:
 ### 5.1 Field semantics and validation
 
 - `topology`: exactly one of `nodes`/`racks` (CEL). Total nodes must be
-  within the supported envelope (3–16); 1–2 nodes are admitted only for dev
+  within the supported envelope (3–16); 2 nodes are admitted only for dev
   (with a warning event) and only when the scheme's domain requirement
-  allows. Rack names are DNS-label and immutable per entry; removing a rack
+  allows. **1 node selects single-node mode** (§5.2), which has its own
+  rules: exactly one disk, no `etcd`, and a warning that the node's loss is
+  the data's loss. Rack names are DNS-label and immutable per entry; removing a rack
   or lowering a node count is a decommission (§8.4).
 - `scheme`: pattern-validated by CEL (`rf2.5|rf3|ec:<k>,<m>`); the
   controller cross-checks it against the topology (distinct failure domains
@@ -384,7 +393,34 @@ spec:
   carry `+kubebuilder:default` markers so `kubectl explain` and the CRD
   schema tell the truth.
 
-### 5.2 Status
+### 5.2 Single-node mode
+
+`topology.nodes: 1` is not a small cluster; it is fs's other backend. No
+scheme is placeable on one node — every one needs three distinct disks, or
+k+m, and a bucket record needs three targets — so the node runs
+`storage.type: filesystem` under one root, with `auth.source: file`, no
+cluster section and no etcd.
+
+What the operator does differently for it:
+
+- **Validation** (§5.1): exactly one disk (`UnsupportedTopology` otherwise),
+  no `etcd` (`SpecInvalid`), `scheme` ignored. Crossing the line in either
+  direction — 1 ↔ N nodes — is refused on update, as is renaming the disk:
+  both would abandon the data where it lies. A permanent warning says the
+  node's loss is the data's loss.
+- **Rendering**: the storage root is the disk's mount path, so the pod, its
+  claim and its mounts are the cluster-mode ones. The public-read list is
+  rendered into the config, because there is no etcd store to hold it; keys
+  still go through the admin API, which persists them under the root.
+- **Skipped steps**: convergence, schema migration, the root-credential
+  registration check and the public-read call all speak to a control plane
+  that is not there (fs answers 501). Convergence is reported as converged
+  rather than unknown — unknown is what holds a rollout.
+- **Readiness**: no quorum, so `Ready` follows the one node.
+- **`FSBucket`**: `spec.scheme` is refused (`SchemeRejected`); everything
+  else about buckets and access keys is unchanged.
+
+### 5.3 Status
 
 ```yaml
 status:
@@ -941,6 +977,7 @@ docs/
     api.md               GENERATED from api/v1alpha1 (crd-ref-docs);
                          CI fails when stale
 examples/
+  00-single-node.yaml        1 node, 1 disk, no etcd (single-node mode)
   01-minimal.yaml            3-node flat dev cluster
   02-zonal-racks.yaml        3 racks × 2 nodes across zones
   03-multi-disk.yaml         multiple disks per node, weights
@@ -995,14 +1032,19 @@ registry segment), shared between the chart template and the operator's
 - **envtest**: controller behavior against a real API server — secret
   generation idempotency, ownership/GC, per-node STS fan-out, status
   conditions, refusal paths (scheme/topology mismatch, undrained
-  scale-down, disk shrink). fs admin/S3 endpoints faked with httptest.
+  scale-down, disk shrink), and the single-node pass (§5.2): one node, no
+  etcd resources, Ready without a quorum. fs admin/S3 endpoints faked with
+  httptest.
 - **e2e (kind)**: 1 control-plane + 3 workers with zone topology labels;
   deploy the operator via `dist/chart`, a minimal 3-pod etcd, then: 3-node
   FSCluster → S3 smoke (bucket, put/get via minio-go) → FSBucket +
   FSAccessKey round-trip → image bump → observe strictly-one-at-a-time roll
   with convergence gates → scale 3→4 → decommission 4→3 → delete cluster,
-  assert cleanup. Examples gallery validated in the same run. E2E specs are
-  labeled per area so a single scenario can run in isolation.
+  assert cleanup. Plus two shapes that only exist end-to-end: the managed
+  etcd, and the single-node cluster (§5.2) — applied from its example,
+  Ready, S3 round trip, refused when grown. Examples gallery validated in
+  the same run. E2E specs are labeled per area so a single scenario can run
+  in isolation.
 - **Chaos (later)**: kill a pod mid-rollout, assert the operator halts.
 
 ## 16. Phasing

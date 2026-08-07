@@ -243,9 +243,21 @@ func (r *Reconciler) summarizeReadiness(p *pass) {
 		return
 	}
 
+	// A single node writes to its own disk: there is no quorum to reach, so
+	// the one node serving is the whole answer. Left to the domain rule it
+	// would need two of them and never be Ready.
 	quorum := parsed.WriteQuorumDomains()
 	message := fmt.Sprintf("%d failure domains are serving, %d needed to acknowledge a write",
 		p.health.readyDomains, quorum)
+
+	if p.cluster.Spec.SingleNode() {
+		quorum = 1
+		message = "the cluster's only node is serving"
+
+		if p.health.readyDomains < quorum {
+			message = "the cluster's only node is not serving"
+		}
+	}
 
 	if p.health.readyDomains >= quorum {
 		// Quorum is only half of usable. A cluster whose key store does not

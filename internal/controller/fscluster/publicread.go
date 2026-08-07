@@ -34,6 +34,12 @@ import (
 func (r *Reconciler) reconcilePublicRead(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	log := logf.FromContext(ctx)
 
+	if p.cluster.Spec.SingleNode() {
+		// Without the etcd store the admin API refuses the list (501); the
+		// renderer writes it into the node's config, which fs hot-reloads.
+		return pipeline.Continue()
+	}
+
 	serving := servingNodes(p)
 	if len(serving) == 0 {
 		// No node is up to accept the list yet; a later pass applies it.

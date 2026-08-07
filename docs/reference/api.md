@@ -121,6 +121,12 @@ _Appears in:_
 
 
 EtcdSpec configures the etcd control plane connection.
+
+CEL only rules out having both: a clustered topology needs exactly one, a
+single-node cluster needs neither, and which of those applies is a
+cross-field question CEL cannot see from here. internal/validation decides
+it, at admission and again in the controller.
+
 The prefix rule spells out the absent case: a rule that reads self.prefix
 directly fails evaluation — and rejects every update, including status
 writes — while the field is unset, and setting it later would move the
@@ -331,10 +337,10 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `image` _[ImageSpec](#imagespec)_ | image is the fs container image to run on every node. Defaults to the<br />pinned fs release this operator version is validated against. | \{  \} | Optional: \{\} <br /> |
-| `scheme` _string_ | scheme is the default replication scheme for all buckets: "rf2.5"<br />(2 replicas + half parity), "rf3" (3 replicas) or "ec:k,m"<br />(Reed-Solomon). Changeable at runtime: new writes use it immediately<br />and existing objects converge via repair/rebalance. The controller<br />refuses a scheme the topology cannot host (distinct failure domains<br />below the scheme requirement). | rf2.5 | Pattern: `^(rf2\.5\|rf3\|ec:[1-9][0-9]*,[1-9][0-9]*)$` <br />Optional: \{\} <br /> |
+| `scheme` _string_ | scheme is the default replication scheme for all buckets: "rf2.5"<br />(2 replicas + half parity), "rf3" (3 replicas) or "ec:k,m"<br />(Reed-Solomon). Changeable at runtime: new writes use it immediately<br />and existing objects converge via repair/rebalance. The controller<br />refuses a scheme the topology cannot host (distinct failure domains<br />below the scheme requirement). Ignored by a single-node cluster,<br />which stores objects on one disk and replicates nothing. | rf2.5 | Pattern: `^(rf2\.5\|rf3\|ec:[1-9][0-9]*,[1-9][0-9]*)$` <br />Optional: \{\} <br /> |
 | `topology` _[TopologySpec](#topologyspec)_ | topology declares the cluster's nodes and failure domains. |  | Required: \{\} <br /> |
 | `storage` _[StorageSpec](#storagespec)_ | storage declares each node's disks. Every disk becomes one<br />PersistentVolumeClaim per node. |  | Required: \{\} <br /> |
-| `etcd` _[EtcdSpec](#etcdspec)_ | etcd configures the control plane the cluster registers in. |  | Required: \{\} <br /> |
+| `etcd` _[EtcdSpec](#etcdspec)_ | etcd configures the control plane the cluster registers in. Required<br />for a clustered topology; a single-node cluster runs fs's<br />non-clustered filesystem backend, which has no control plane, and<br />must leave it unset. |  | Optional: \{\} <br /> |
 | `clusterSecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#localobjectreference-v1-core)_ | clusterSecretRef references a Secret with key "secret" holding the<br />shared cluster secret (HMAC peer auth, min 16 characters). Generated<br />if omitted. Immutable: fs has no secret rotation; mixed secrets<br />partition the cluster. |  | Optional: \{\} <br /> |
 | `auth` _[AuthSpec](#authspec)_ | auth configures S3 authentication. |  | Optional: \{\} <br /> |
 | `s3` _[S3Spec](#s3spec)_ | s3 configures how the S3 endpoint is exposed. |  | Optional: \{\} <br /> |
@@ -718,7 +724,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `disks` _[DiskSpec](#diskspec) array_ | disks are this cluster's per-node storage devices: every entry becomes<br />one PersistentVolumeClaim on every node, mounted at<br />/var/lib/fs/disks/<name>.<br />Entries may be added, and removed. Removing one is a decommission, not<br />a delete: the disk is drained out of placement on every node, and its<br />volumes go only once fs reports it holds nothing (SPEC §8.5). Sizes may<br />only grow. A disk is identified by its name, so renaming one reads as<br />removing a disk and adding an empty one — which is a slow, safe, and<br />almost certainly unintended way to spend a rebalance. |  | MaxItems: 32 <br />MinItems: 1 <br />Required: \{\} <br /> |
+| `disks` _[DiskSpec](#diskspec) array_ | disks are this cluster's per-node storage devices: every entry becomes<br />one PersistentVolumeClaim on every node, mounted at<br />/var/lib/fs/disks/<name>. A single-node cluster declares exactly one:<br />fs's filesystem backend stores everything under a single root.<br />Entries may be added, and removed. Removing one is a decommission, not<br />a delete: the disk is drained out of placement on every node, and its<br />volumes go only once fs reports it holds nothing (SPEC §8.5). Sizes may<br />only grow. A disk is identified by its name, so renaming one reads as<br />removing a disk and adding an empty one — which is a slow, safe, and<br />almost certainly unintended way to spend a rebalance. |  | MaxItems: 32 <br />MinItems: 1 <br />Required: \{\} <br /> |
 | `reclaimPolicy` _[ReclaimPolicy](#reclaimpolicy)_ | reclaimPolicy controls what happens to a node's PVCs when the node is<br />removed or the cluster is deleted. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 
 
@@ -736,7 +742,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `nodes` _integer_ | nodes is the flat topology: N nodes, each its own failure domain. |  | Maximum: 16 <br />Minimum: 1 <br />Optional: \{\} <br /> |
+| `nodes` _integer_ | nodes is the flat topology: N nodes, each its own failure domain.<br />One node is a development install: that node runs fs's single-node<br />filesystem backend — one disk, no etcd, no replication, no failure<br />tolerance — instead of joining a cluster. |  | Maximum: 16 <br />Minimum: 1 <br />Optional: \{\} <br /> |
 | `racks` _[RackSpec](#rackspec) array_ | racks are explicit failure domains; placement spreads object copies<br />across racks first. Rack membership is declared here and pinned with<br />node affinity — it is never derived from where a pod happens to be<br />scheduled. |  | MaxItems: 16 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `podAntiAffinity` _[AntiAffinityMode](#antiaffinitymode)_ | podAntiAffinity spreads fs nodes over distinct Kubernetes nodes.<br />Required (the default) keeps the failure model honest; use Preferred<br />or None only for dev clusters. | Required | Enum: [Required Preferred None] <br />Optional: \{\} <br /> |
 

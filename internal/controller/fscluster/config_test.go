@@ -140,6 +140,23 @@ func TestRenderNodeConfig(t *testing.T) {
 			opts:   RenderOptions{Drained: map[string]bool{node1: true}},
 		},
 		{
+			// The single-node development shape: fs's filesystem backend
+			// rooted at the node's one disk, no cluster section, and the
+			// public-read list in the file because there is no etcd to hold
+			// it (SPEC §5.2).
+			name: "single-node",
+			mutate: func(c *fsv1alpha1.FSCluster) {
+				nodes := int32(1)
+
+				c.Spec.Topology = fsv1alpha1.TopologySpec{Nodes: &nodes}
+				c.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{
+					{Name: "d0", Size: resource.MustParse("10Gi")},
+				}
+				c.Spec.Etcd = fsv1alpha1.EtcdSpec{}
+				c.Spec.Auth.PublicReadBuckets = []string{"public"}
+			},
+		},
+		{
 			// Rebalancing off and a disk the operator was asked to drain
 			// directly through its weight.
 			name: "disabled-rebalance",
@@ -194,6 +211,16 @@ func assertUsable(t *testing.T, rc RenderedConfig, node Node) {
 
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("rendered config is not valid for fs: %v", err)
+	}
+
+	if cfg.Storage.Type == fsconfig.StorageTypeFilesystem {
+		// The single-node backend has no identity to carry: everything below
+		// is about the node's place in a cluster it is not part of.
+		if cfg.Cluster.NodeID != "" || len(cfg.Cluster.Disks) > 0 || len(cfg.Cluster.Etcd.Endpoints) > 0 {
+			t.Errorf("cluster section = %+v, want it empty on the filesystem backend", cfg.Cluster)
+		}
+
+		return
 	}
 
 	if cfg.Cluster.NodeID != node.Name {

@@ -30,12 +30,13 @@ installation and guides.
 helm install fs-operator oci://ghcr.io/go-faster/charts/fs-operator \
   --namespace fs-operator-system --create-namespace
 
-# Create a 3-node dev cluster (requires a reachable etcd).
-kubectl apply -f examples/01-minimal.yaml
+# Create a single-node dev cluster (one pod, one disk, no etcd).
+kubectl apply -f examples/00-single-node.yaml
 ```
 
-The [examples/](examples/) gallery goes from a minimal dev cluster to a
-zonal, multi-disk production shape.
+A one-node cluster runs fs's non-clustered filesystem backend: one copy of
+every object, no etcd, development only. The [examples/](examples/) gallery
+goes from there to a zonal, multi-disk production shape.
 
 ## Development
 
