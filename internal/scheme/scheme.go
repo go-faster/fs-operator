@@ -85,9 +85,15 @@ func Parse(s string) (Scheme, error) {
 	return Scheme{EC: true, Data: k, Parity: m}, nil
 }
 
-// MinDomains is how many distinct failure domains the scheme places copies on,
-// and therefore the smallest topology that can host it.
-func (s Scheme) MinDomains() int {
+// Copies is how many physical targets the scheme places: 3 for the replicated
+// schemes, k+m for erasure coding.
+//
+// It is both the number of distinct failure domains a topology needs to host
+// the scheme properly and the number of distinct disks fs needs to place it at
+// all — fs spreads copies over racks, then nodes, then disks, so a topology
+// short of domains still places, on the same node's disks, with the failure
+// tolerance that implies.
+func (s Scheme) Copies() int {
 	if s.EC {
 		return s.Data + s.Parity
 	}

@@ -210,6 +210,15 @@ func (s *FSClusterSpec) TotalNodes() int32 {
 	return total
 }
 
+// SingleNode reports whether this is a single-node cluster: one fs node
+// running the non-clustered filesystem backend, with no etcd, no peers and no
+// replication (SPEC §5.2). It is the development shape, and almost every
+// cluster-mode contract — placement, quorum, rebalance, schema migration —
+// simply does not apply to it.
+func (s *FSClusterSpec) SingleNode() bool {
+	return s.TotalNodes() == 1
+}
+
 // FailureDomains is the number of distinct failure domains the topology
 // provides: the rack count, or the node count for the flat topology (each
 // node is its own domain).

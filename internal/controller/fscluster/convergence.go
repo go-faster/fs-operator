@@ -89,6 +89,15 @@ func (c convergence) allReporting() bool {
 func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	log := logf.FromContext(ctx)
 
+	if p.cluster.Spec.SingleNode() {
+		// No placement, no repair queue, no rebalance: the cluster-status
+		// endpoints are 501 here. Reported converged rather than unknown,
+		// because unknown is what holds a rollout (SPEC §5.2).
+		p.convergence = convergence{known: true, converged: true}
+
+		return pipeline.Continue()
+	}
+
 	serving := servingNodes(p)
 	if len(serving) == 0 {
 		// Nothing is up to ask; convergence is not yet meaningful.

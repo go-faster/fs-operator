@@ -85,6 +85,29 @@ func TestClusterRejects(t *testing.T) {
 			reason: fsv1alpha1.ReasonSchemeTopologyMismatch,
 		},
 		{
+			// The single node stores everything under one root; a second disk
+			// would be a volume nothing ever reads.
+			name: "single node with more than one disk",
+			mutate: func(s *fsv1alpha1.FSClusterSpec) {
+				nodes := int32(1)
+				s.Topology.Nodes = &nodes
+				s.Storage = disks(map[string]string{"d0": diskSize, "d1": diskSize})
+				s.Etcd = fsv1alpha1.EtcdSpec{}
+			},
+			reason: fsv1alpha1.ReasonUnsupportedTopology,
+		},
+		{
+			// There is no cluster to register in, so etcd would be a control
+			// plane the node never dials.
+			name: "single node declaring etcd",
+			mutate: func(s *fsv1alpha1.FSClusterSpec) {
+				nodes := int32(1)
+				s.Topology.Nodes = &nodes
+				s.Storage = disks(map[string]string{"d0": diskSize})
+			},
+			reason: fsv1alpha1.ReasonSpecInvalid,
+		},
+		{
 			name: "more nodes than fs supports",
 			mutate: func(s *fsv1alpha1.FSClusterSpec) {
 				nodes := int32(validation.MaxNodes + 1)
@@ -106,13 +129,79 @@ func TestClusterRejects(t *testing.T) {
 	}
 }
 
+// singleNode is the development shape: one node, one disk, no control plane.
+func singleNode(s *fsv1alpha1.FSClusterSpec) {
+	nodes := int32(1)
+	s.Topology.Nodes = &nodes
+	s.Storage = disks(map[string]string{"d0": diskSize})
+	s.Etcd = fsv1alpha1.EtcdSpec{}
+}
+
+// TestClusterAcceptsSingleNode covers the development shape: fs's filesystem
+// backend, which needs neither the failure domains the scheme asks for nor the
+// etcd a cluster registers in.
+func TestClusterAcceptsSingleNode(t *testing.T) {
+	dev := spec(singleNode)
+
+	if failure := validation.Cluster(dev); failure != nil {
+		t.Fatalf("a single-node dev cluster was refused: %v", failure)
+	}
+
+	warnings := validation.ClusterWarnings(dev)
+	if len(warnings) != 1 || warnings[0] != validation.SingleNodeWarning {
+		t.Errorf("warnings = %v, want the single-node warning", warnings)
+	}
+}
+
+// TestClusterUpdateRefusesCrossingTheSingleNodeLine covers the two changes that
+// would silently strand a single node's data: growing it into a cluster, which
+// changes the storage backend, and renaming the disk its root lives on.
+func TestClusterUpdateRefusesCrossingTheSingleNodeLine(t *testing.T) {
+	dev := spec(singleNode)
+
+	for _, tc := range []struct {
+		name    string
+		updated *fsv1alpha1.FSClusterSpec
+	}{
+		{
+			// The user's natural patch: raise the node count and nothing else.
+			// The backend switch has to be what they are told about, not the
+			// etcd a clustered topology would separately need.
+			name: "grown into a cluster",
+			updated: spec(func(s *fsv1alpha1.FSClusterSpec) {
+				s.Storage = disks(map[string]string{"d0": diskSize})
+				s.Etcd = fsv1alpha1.EtcdSpec{}
+			}),
+		},
+		{
+			name: "disk renamed",
+			updated: spec(func(s *fsv1alpha1.FSClusterSpec) {
+				singleNode(s)
+				s.Storage = disks(map[string]string{"data": diskSize})
+			}),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			failure := validation.ClusterUpdate(dev, tc.updated)
+			if failure == nil {
+				t.Fatal("the update was admitted")
+			}
+
+			if failure.Reason != fsv1alpha1.ReasonUnsupportedTopology {
+				t.Errorf("reason = %q, want %q (%s)",
+					failure.Reason, fsv1alpha1.ReasonUnsupportedTopology, failure.Message)
+			}
+		})
+	}
+}
+
 // TestClusterWarnsOnDevSizedCluster covers what is allowed but worth saying:
 // a cluster too small to host a replicated scheme is a development toy, and a
 // user should hear that at apply time rather than discover it in production.
 func TestClusterWarnsOnDevSizedCluster(t *testing.T) {
 	// Below three nodes, but with a scheme that does not itself refuse it.
 	small := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		nodes := int32(1)
+		nodes := int32(2)
 		s.Topology.Nodes = &nodes
 		s.Scheme = "ec:1,1"
 	})

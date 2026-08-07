@@ -128,10 +128,10 @@ var _ = Describe("FSCluster", Ordered, func() {
 	})
 
 	It("serves S3", func() {
-		stop := forwardS3()
+		stop := forwardS3(clusterNamespace, clusterName)
 		defer stop()
 
-		client := s3Client()
+		client := s3Client(clusterNamespace, clusterName)
 
 		const bucket = "e2e"
 
@@ -180,11 +180,11 @@ var _ = Describe("FSCluster", Ordered, func() {
 		}).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
 
 		By("putting and getting an object with the minted credential")
-		stop := forwardS3()
+		stop := forwardS3(clusterNamespace, clusterName)
 		defer stop()
 
-		access := secretValue("e2e-writer-credentials", "access-key")
-		secret := secretValue("e2e-writer-credentials", "secret-key")
+		access := secretValue(clusterNamespace, "e2e-writer-credentials", "access-key")
+		secret := secretValue(clusterNamespace, "e2e-writer-credentials", "secret-key")
 
 		client, err := minio.New("localhost:"+forwardPort, &minio.Options{
 			Creds: credentials.NewStaticV4(access, secret, ""),
@@ -265,13 +265,13 @@ var _ = Describe("FSCluster", Ordered, func() {
 		// The whole point: the object written before the decommission is still
 		// readable after it.
 		By("reading back an object written before the decommission")
-		stop := forwardS3()
+		stop := forwardS3(clusterNamespace, clusterName)
 		defer stop()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
-		object, err := s3Client().GetObject(ctx, "e2e", "hello.txt", minio.GetObjectOptions{})
+		object, err := s3Client(clusterNamespace, clusterName).GetObject(ctx, "e2e", "hello.txt", minio.GetObjectOptions{})
 		Expect(err).NotTo(HaveOccurred(), "the object did not survive the decommission")
 
 		defer func() { _ = object.Close() }()
@@ -329,13 +329,13 @@ var _ = Describe("FSCluster", Ordered, func() {
 		// The point of draining rather than deleting: whatever the disk held
 		// moved off it first.
 		By("reading back an object written before the disk existed")
-		stop := forwardS3()
+		stop := forwardS3(clusterNamespace, clusterName)
 		defer stop()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
-		object, err := s3Client().GetObject(ctx, "e2e", "hello.txt", minio.GetObjectOptions{})
+		object, err := s3Client(clusterNamespace, clusterName).GetObject(ctx, "e2e", "hello.txt", minio.GetObjectOptions{})
 		Expect(err).NotTo(HaveOccurred(), "the object did not survive the disk removal")
 
 		defer func() { _ = object.Close() }()
@@ -497,13 +497,13 @@ func clusterCondition(conditionType string) string {
 	return strings.TrimSpace(out)
 }
 
-// forwardS3 forwards the cluster's S3 Service to a local port and returns how
-// to stop it.
-func forwardS3() func() {
+// forwardS3 forwards a cluster's S3 Service to a local port and returns how to
+// stop it.
+func forwardS3(namespace, cluster string) func() {
 	forwardPort = freePort()
 
-	cmd := exec.Command("kubectl", "port-forward", "-n", clusterNamespace,
-		"service/"+clusterName, forwardPort+":8080")
+	cmd := exec.Command("kubectl", "port-forward", "-n", namespace,
+		"service/"+cluster, forwardPort+":8080")
 
 	Expect(cmd.Start()).To(Succeed(), "Failed to start the port forward")
 
@@ -538,11 +538,11 @@ func freePort() string {
 	return port
 }
 
-// s3Client builds an S3 client from the cluster's generated root credentials —
+// s3Client builds an S3 client from a cluster's generated root credentials —
 // the same Secret an application would read.
-func s3Client() *minio.Client {
-	accessKey := secretValue(clusterName+"-root-credentials", "access-key")
-	secretKey := secretValue(clusterName+"-root-credentials", "secret-key")
+func s3Client(namespace, cluster string) *minio.Client {
+	accessKey := secretValue(namespace, cluster+"-root-credentials", "access-key")
+	secretKey := secretValue(namespace, cluster+"-root-credentials", "secret-key")
 
 	client, err := minio.New("localhost:"+forwardPort, &minio.Options{
 		Creds: credentials.NewStaticV4(accessKey, secretKey, ""),
@@ -552,10 +552,10 @@ func s3Client() *minio.Client {
 	return client
 }
 
-// secretValue reads one key of a Secret in the tenant namespace.
-func secretValue(name, key string) string {
+// secretValue reads one key of a Secret in a tenant namespace.
+func secretValue(namespace, name, key string) string {
 	out, err := utils.Run(exec.Command("kubectl", "get", "secret", name,
-		"-n", clusterNamespace, "-o", fmt.Sprintf("jsonpath={.data.%s}", key)))
+		"-n", namespace, "-o", fmt.Sprintf("jsonpath={.data.%s}", key)))
 	Expect(err).NotTo(HaveOccurred(), "Failed to read secret %q", name)
 
 	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(out))

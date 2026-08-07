@@ -42,6 +42,12 @@ import (
 // migrate` as a Job and surfaces the state on SchemaCurrent. Under Manual it
 // only reports the pending migration (SPEC §8.2).
 func (r *Reconciler) reconcileMigration(ctx context.Context, p *pass) (pipeline.Outcome, error) {
+	if p.cluster.Spec.SingleNode() {
+		// There is no cluster schema without a control plane holding it, so
+		// there is nothing to migrate and nothing to report.
+		return pipeline.Continue()
+	}
+
 	if !p.convergence.known {
 		// Schema versions are unknown until a node answers; say nothing.
 		return pipeline.Continue()

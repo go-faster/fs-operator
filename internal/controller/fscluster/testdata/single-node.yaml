@@ -1,0 +1,24 @@
+# Rendered by fs-operator for node prod-0 of FSCluster tenant-a/prod. Do not edit.
+server:
+  addr: :8080
+  read_timeout: 1m0s
+  write_timeout: 2m0s
+  idle_timeout: 5m0s
+  health_path: /health
+storage:
+  root: /var/lib/fs/disks/d0
+  type: filesystem
+auth:
+  source: file
+  public_read_buckets:
+    - public
+admin:
+  enabled: true
+  addr: :8090
+integrity: {}
+observability:
+  service_name: prod
+  enable_request_logging: false
+  enable_metrics: true
+  enable_tracing: false
+revision: cfg-11adbf7ef0ae
