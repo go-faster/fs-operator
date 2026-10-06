@@ -25,7 +25,6 @@ import (
 
 	"github.com/go-faster/errors"
 	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,10 +35,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller/pipeline"
-	"github.com/go-faster/fs-operator/internal/etcdstore"
 	"github.com/go-faster/fs-operator/internal/fsclient"
 	"github.com/go-faster/fs-operator/internal/metrics"
 	"github.com/go-faster/fs-operator/internal/validation"
@@ -78,11 +77,6 @@ type Reconciler struct {
 	// Empty keeps each cluster's own image.repository.
 	FSImageRegistry string
 
-	// EtcdPurge deletes a cluster's keys from etcd when it is deleted with
-	// etcd.cleanupOnDelete (SPEC §8.6). Nil talks to etcd directly; tests
-	// inject a fake to stand in for a control plane they do not run.
-	EtcdPurge func(ctx context.Context, cfg etcdstore.Config, prefix string) (int64, error)
-
 	poolOnce sync.Once
 	pool     *fsclient.Pool
 }
@@ -102,6 +96,7 @@ func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, err
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=fs.go-faster.org,resources=fsaccesskeys,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets;services,verbs=get;list;watch;create;update;patch;delete
 // The operator deletes a pod in exactly one case: to replace one an
@@ -111,7 +106,6 @@ func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, err
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
 
@@ -123,21 +117,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	if !object.DeletionTimestamp.IsZero() {
-		// Stop reporting on it now rather than when the finalizer releases: a
-		// gauge that outlives its cluster reports ready=0 forever, on a name
-		// nothing will reconcile again, which reads exactly like an outage that
-		// never resolves (SPEC §10).
-		metrics.Forget(object.Namespace, object.Name)
-
 		// Everything the operator creates carries an owner reference, so
 		// garbage collection takes it down, and each node's claim retention
-		// policy decides the fate of its data. Only etcd state outlives that,
-		// which is what the finalizer is for (SPEC §8.6).
-		return r.finalize(ctx, object)
-	}
+		// policy decides the fate of its data. Stop reporting on it now: a
+		// gauge that outlives its cluster reports ready=0 forever, on a name
+		// nothing will reconcile again, which reads exactly like an outage
+		// that never resolves (SPEC §10).
+		metrics.Forget(object.Namespace, object.Name)
 
-	if err := r.reconcileFinalizer(ctx, object); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, nil
 	}
 
 	result, err := r.pipeline().Run(ctx, newPass(object, r.FSImageRegistry))
@@ -154,23 +142,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) pipeline() pipeline.Pipeline[*pass] {
 	return pipeline.Pipeline[*pass]{
 		{Name: "validate", Run: r.validate},
-		{Name: "etcdsecurity", Run: r.resolveEtcdSecurity},
 		{Name: "decommission", Run: r.planDecommission},
 		{Name: "render", Run: r.render},
 		{Name: "observe", AlwaysRun: true, Run: r.observe},
 		{Name: "secrets", Run: r.reconcileSecrets},
 		{Name: "services", Run: r.reconcileServices},
-		{Name: "etcd", Run: r.reconcileEtcd},
 		{Name: "configs", Run: r.reconcileNodeConfigs},
 		{Name: "convergence", Run: r.gatherConvergence},
 		{Name: "storage", Run: r.reconcileStorage},
 		{Name: "nodes", Run: r.reconcileNodes},
+		{Name: "layout", Run: r.reconcileLayout},
 		{Name: "drain", Run: r.reconcileDecommission},
-		{Name: "diskremoval", Run: r.reconcileDiskRemoval},
 		{Name: "reload", Run: r.reconcileReload},
-		{Name: "publicread", Run: r.reconcilePublicRead},
-		{Name: "rootcredential", Run: r.reconcileRootCredential},
-		{Name: migrateName, Run: r.reconcileMigration},
 		{Name: "budget", Run: r.reconcileBudget},
 		{Name: "networkpolicy", Run: r.reconcileNetworkPolicy},
 		{Name: "podmonitor", Run: r.reconcilePodMonitor},
@@ -206,31 +189,14 @@ type pass struct {
 	live   map[string]*appsv1.StatefulSet
 	health health
 
-	// convergence is what the admin API reports about reconvergence; the
-	// rollout gates on it and the status reports Converged from it.
+	// convergence is what the admin API reports about the layout and the
+	// nodes; the rollout and the removal of nodes gate on it, and the status
+	// reports Converged from it.
 	convergence convergence
 
-	// decommission is the node the spec no longer declares that is being
-	// drained and removed, if any (SPEC §8.4).
+	// decommission is the nodes the spec no longer declares, kept running
+	// while the cluster moves their data off (SPEC §8.4).
 	decommission decommission
-
-	// etcd is what the cluster's referenced etcd Secrets contain, read before
-	// anything is rendered from them (SPEC §11.4).
-	etcd etcdSecurity
-
-	// retainedDisks are, per node, the disks the spec dropped that the node
-	// still carries. They stay in the rendered StatefulSet until the disk is
-	// empty and the node is rebuilt without it (SPEC §8.5).
-	retainedDisks map[string][]string
-
-	// schema is the cluster's observed schema versions, filled by the
-	// migration step for the status.
-	schema *fsv1alpha1.SchemaVersionStatus
-
-	// rootCredential is whether the cluster's key store holds the root
-	// credential the operator holds — the difference between a cluster that is
-	// usable and one that only looks it (SPEC §8.6).
-	rootCredential rootCredentialState
 
 	// update is the rolling change in flight, if any.
 	update *fsv1alpha1.UpdateStatus
@@ -275,17 +241,6 @@ func (p *pass) setCondition(conditionType string, status metav1.ConditionStatus,
 		Message:            message,
 		ObservedGeneration: p.object.Generation,
 	})
-}
-
-// desiredSet is the StatefulSet a node should be running this pass.
-func (p *pass) desiredSet(name string) (*appsv1.StatefulSet, bool) {
-	for _, set := range p.desired {
-		if set.Name == name {
-			return set, true
-		}
-	}
-
-	return nil, false
 }
 
 // hasCondition reports whether a condition of the given type is already queued,
@@ -438,17 +393,16 @@ func (r *Reconciler) reconcileServices(ctx context.Context, p *pass) (pipeline.O
 // configuration, the fingerprint of the part only a restart can apply, and its
 // StatefulSet. Nothing here touches the API server, so the steps that observe
 // and the steps that write both work from the same desired state.
-func (r *Reconciler) render(_ context.Context, p *pass) (pipeline.Outcome, error) {
-	// Credentials are cluster-wide in etcd (fs §6.8), managed through the admin
-	// API by the FSAccessKey controller and the public-read step — none are
-	// rendered into the config here (SPEC §7).
-	//
-	// A node being decommissioned renders with every disk drained, which is
-	// what makes the rebalancer move its data off (SPEC §8.4).
-	opts := RenderOptions{EtcdClientCert: p.etcd.clientCert, RetainDisks: p.retainedDisks}
-	if p.decommission.active() {
-		opts.Drained = map[string]bool{p.decommission.node.Name: true}
+func (r *Reconciler) render(ctx context.Context, p *pass) (pipeline.Outcome, error) {
+	// The cluster's FSAccessKeys are the declarative credentials rendered into
+	// every node's config (SPEC §7). A credential change bumps the config
+	// revision, which the reload step then applies and verifies.
+	keys, err := r.collectAccessKeys(ctx, p.cluster)
+	if err != nil {
+		return pipeline.Outcome{}, err
 	}
+
+	opts := RenderOptions{Keys: keys}
 
 	configs, err := RenderNodeConfigs(p.cluster, p.nodes, opts)
 	if err != nil {
@@ -466,18 +420,17 @@ func (r *Reconciler) render(_ context.Context, p *pass) (pipeline.Outcome, error
 
 		restarts[node.Name] = revision
 
-		// A decommissioning node keeps the StatefulSet it is already running,
-		// restamped onto the drained configuration: the spec no longer
-		// describes where it runs, so rebuilding it from the spec could move
-		// the pod away from its own data.
-		var set *appsv1.StatefulSet
-
-		if p.decommission.draining(node.Name) {
-			if set, err = drainedStatefulSet(p.decommission.set, revision); err != nil {
+		// A node being removed keeps the StatefulSet it is already running:
+		// the spec no longer describes where it runs, so rebuilding it from
+		// the spec could move the pod away from its own data, and it has to
+		// keep serving until the data has moved.
+		set, ok := p.decommission.sets[node.Name]
+		if ok {
+			if set, err = keptStatefulSet(set); err != nil {
 				return pipeline.Outcome{}, err
 			}
 		} else {
-			set = NewStatefulSet(p.cluster, node, revision, opts.RetainDisks[node.Name]...)
+			set = NewStatefulSet(p.cluster, node, revision)
 			if err := stampTemplateRevision(set); err != nil {
 				return pipeline.Outcome{}, err
 			}
@@ -583,7 +536,25 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.Service{}).
-		Owns(&batchv1.Job{}).
+		// An FSAccessKey change (add, remove, grant edit, credential rotate)
+		// re-renders the cluster's config so the declarative credential set
+		// stays in sync (SPEC §7). The FSAccessKey controller stamps a
+		// credential fingerprint on the key when its Secret changes, so a
+		// rotation of an imported Secret surfaces here as a key update.
+		Watches(&fsv1alpha1.FSAccessKey{}, handler.EnqueueRequestsFromMapFunc(r.accessKeyToCluster)).
 		Named("fscluster").
 		Complete(r)
+}
+
+// accessKeyToCluster maps an FSAccessKey to a reconcile request for the
+// FSCluster it belongs to (same namespace).
+func (r *Reconciler) accessKeyToCluster(_ context.Context, obj client.Object) []ctrl.Request {
+	key, ok := obj.(*fsv1alpha1.FSAccessKey)
+	if !ok || key.Spec.ClusterRef.Name == "" {
+		return nil
+	}
+
+	return []ctrl.Request{{
+		NamespacedName: types.NamespacedName{Namespace: key.Namespace, Name: key.Spec.ClusterRef.Name},
+	}}
 }

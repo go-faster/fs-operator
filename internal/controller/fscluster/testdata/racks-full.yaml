@@ -10,46 +10,34 @@ server:
     key_file: /etc/fs/tls/tls.key
 storage:
   root: /var/lib/fs
-  type: cluster
 auth:
-  source: etcd
+  keys:
+    - access_key: AKmedia
+      secret_key: media-secret-key-0123456789
+      grants:
+        - bucket: media-*
+          permission: write
+  public_read_buckets:
+    - public
 admin:
   enabled: true
   addr: :8090
 cluster:
   node_id: prod-a-0
-  rack: a
   addr: :7080
   advertise_addr: prod-a-0-0.prod-peers.tenant-a.svc:7080
-  scheme: ec:4,2
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-    - id: d1
-      path: /var/lib/fs/disks/d1
-      weight: 0.5
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/prod
-    ttl: 15s
-  rebalance:
-    settle: 2m0s
-    cooldown: 30m0s
-    full_watermark: 0.85
-integrity:
-  verify_on_read: true
-  scrub_interval: 12h0m0s
-  scrub_quarantine: true
+  peers:
+    - prod-a-1-0.prod-peers.tenant-a.svc:7080
+    - prod-b-0-0.prod-peers.tenant-a.svc:7080
+    - prod-b-1-0.prod-peers.tenant-a.svc:7080
+    - prod-c-0-0.prod-peers.tenant-a.svc:7080
+    - prod-c-1-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-4f950bd865a6
+revision: cfg-8931170aa20c
 ---
 # Rendered by fs-operator for node prod-a-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -63,46 +51,34 @@ server:
     key_file: /etc/fs/tls/tls.key
 storage:
   root: /var/lib/fs
-  type: cluster
 auth:
-  source: etcd
+  keys:
+    - access_key: AKmedia
+      secret_key: media-secret-key-0123456789
+      grants:
+        - bucket: media-*
+          permission: write
+  public_read_buckets:
+    - public
 admin:
   enabled: true
   addr: :8090
 cluster:
   node_id: prod-a-1
-  rack: a
   addr: :7080
   advertise_addr: prod-a-1-0.prod-peers.tenant-a.svc:7080
-  scheme: ec:4,2
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-    - id: d1
-      path: /var/lib/fs/disks/d1
-      weight: 0.5
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/prod
-    ttl: 15s
-  rebalance:
-    settle: 2m0s
-    cooldown: 30m0s
-    full_watermark: 0.85
-integrity:
-  verify_on_read: true
-  scrub_interval: 12h0m0s
-  scrub_quarantine: true
+  peers:
+    - prod-a-0-0.prod-peers.tenant-a.svc:7080
+    - prod-b-0-0.prod-peers.tenant-a.svc:7080
+    - prod-b-1-0.prod-peers.tenant-a.svc:7080
+    - prod-c-0-0.prod-peers.tenant-a.svc:7080
+    - prod-c-1-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-b081d751639a
+revision: cfg-39e8197ef064
 ---
 # Rendered by fs-operator for node prod-b-0 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -116,46 +92,34 @@ server:
     key_file: /etc/fs/tls/tls.key
 storage:
   root: /var/lib/fs
-  type: cluster
 auth:
-  source: etcd
+  keys:
+    - access_key: AKmedia
+      secret_key: media-secret-key-0123456789
+      grants:
+        - bucket: media-*
+          permission: write
+  public_read_buckets:
+    - public
 admin:
   enabled: true
   addr: :8090
 cluster:
   node_id: prod-b-0
-  rack: b
   addr: :7080
   advertise_addr: prod-b-0-0.prod-peers.tenant-a.svc:7080
-  scheme: ec:4,2
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-    - id: d1
-      path: /var/lib/fs/disks/d1
-      weight: 0.5
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/prod
-    ttl: 15s
-  rebalance:
-    settle: 2m0s
-    cooldown: 30m0s
-    full_watermark: 0.85
-integrity:
-  verify_on_read: true
-  scrub_interval: 12h0m0s
-  scrub_quarantine: true
+  peers:
+    - prod-a-0-0.prod-peers.tenant-a.svc:7080
+    - prod-a-1-0.prod-peers.tenant-a.svc:7080
+    - prod-b-1-0.prod-peers.tenant-a.svc:7080
+    - prod-c-0-0.prod-peers.tenant-a.svc:7080
+    - prod-c-1-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-5818ef2af72b
+revision: cfg-4b0606423a44
 ---
 # Rendered by fs-operator for node prod-b-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -169,46 +133,34 @@ server:
     key_file: /etc/fs/tls/tls.key
 storage:
   root: /var/lib/fs
-  type: cluster
 auth:
-  source: etcd
+  keys:
+    - access_key: AKmedia
+      secret_key: media-secret-key-0123456789
+      grants:
+        - bucket: media-*
+          permission: write
+  public_read_buckets:
+    - public
 admin:
   enabled: true
   addr: :8090
 cluster:
   node_id: prod-b-1
-  rack: b
   addr: :7080
   advertise_addr: prod-b-1-0.prod-peers.tenant-a.svc:7080
-  scheme: ec:4,2
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-    - id: d1
-      path: /var/lib/fs/disks/d1
-      weight: 0.5
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/prod
-    ttl: 15s
-  rebalance:
-    settle: 2m0s
-    cooldown: 30m0s
-    full_watermark: 0.85
-integrity:
-  verify_on_read: true
-  scrub_interval: 12h0m0s
-  scrub_quarantine: true
+  peers:
+    - prod-a-0-0.prod-peers.tenant-a.svc:7080
+    - prod-a-1-0.prod-peers.tenant-a.svc:7080
+    - prod-b-0-0.prod-peers.tenant-a.svc:7080
+    - prod-c-0-0.prod-peers.tenant-a.svc:7080
+    - prod-c-1-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-a42483a0f81c
+revision: cfg-c04af6dfe262
 ---
 # Rendered by fs-operator for node prod-c-0 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -222,46 +174,34 @@ server:
     key_file: /etc/fs/tls/tls.key
 storage:
   root: /var/lib/fs
-  type: cluster
 auth:
-  source: etcd
+  keys:
+    - access_key: AKmedia
+      secret_key: media-secret-key-0123456789
+      grants:
+        - bucket: media-*
+          permission: write
+  public_read_buckets:
+    - public
 admin:
   enabled: true
   addr: :8090
 cluster:
   node_id: prod-c-0
-  rack: c
   addr: :7080
   advertise_addr: prod-c-0-0.prod-peers.tenant-a.svc:7080
-  scheme: ec:4,2
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-    - id: d1
-      path: /var/lib/fs/disks/d1
-      weight: 0.5
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/prod
-    ttl: 15s
-  rebalance:
-    settle: 2m0s
-    cooldown: 30m0s
-    full_watermark: 0.85
-integrity:
-  verify_on_read: true
-  scrub_interval: 12h0m0s
-  scrub_quarantine: true
+  peers:
+    - prod-a-0-0.prod-peers.tenant-a.svc:7080
+    - prod-a-1-0.prod-peers.tenant-a.svc:7080
+    - prod-b-0-0.prod-peers.tenant-a.svc:7080
+    - prod-b-1-0.prod-peers.tenant-a.svc:7080
+    - prod-c-1-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-25c25e895333
+revision: cfg-69aacb05e1b9
 ---
 # Rendered by fs-operator for node prod-c-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -275,43 +215,31 @@ server:
     key_file: /etc/fs/tls/tls.key
 storage:
   root: /var/lib/fs
-  type: cluster
 auth:
-  source: etcd
+  keys:
+    - access_key: AKmedia
+      secret_key: media-secret-key-0123456789
+      grants:
+        - bucket: media-*
+          permission: write
+  public_read_buckets:
+    - public
 admin:
   enabled: true
   addr: :8090
 cluster:
   node_id: prod-c-1
-  rack: c
   addr: :7080
   advertise_addr: prod-c-1-0.prod-peers.tenant-a.svc:7080
-  scheme: ec:4,2
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-    - id: d1
-      path: /var/lib/fs/disks/d1
-      weight: 0.5
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/prod
-    ttl: 15s
-  rebalance:
-    settle: 2m0s
-    cooldown: 30m0s
-    full_watermark: 0.85
-integrity:
-  verify_on_read: true
-  scrub_interval: 12h0m0s
-  scrub_quarantine: true
+  peers:
+    - prod-a-0-0.prod-peers.tenant-a.svc:7080
+    - prod-a-1-0.prod-peers.tenant-a.svc:7080
+    - prod-b-0-0.prod-peers.tenant-a.svc:7080
+    - prod-b-1-0.prod-peers.tenant-a.svc:7080
+    - prod-c-0-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: true
   enable_metrics: true
   enable_tracing: true
-revision: cfg-75c0de5e703f
+revision: cfg-5f91639fcb87

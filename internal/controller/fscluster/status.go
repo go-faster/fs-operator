@@ -29,7 +29,6 @@ import (
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 	"github.com/go-faster/fs-operator/internal/metrics"
-	"github.com/go-faster/fs-operator/internal/scheme"
 )
 
 // health is what one pass observed of the running cluster: pod state from
@@ -39,10 +38,11 @@ type health struct {
 	// ready is the number of nodes whose pod is up and current.
 	ready int32
 
-	// readyDomains is how many distinct failure domains have a ready node.
-	// It, not the node count, is what decides whether writes can be
-	// acknowledged.
-	readyDomains int
+	// domains is how many failure domains the cluster's nodes span, and
+	// downDomains how many of them have a node that is not serving. Domains,
+	// not nodes, decide whether writes can be acknowledged: the layout puts
+	// a partition's replicas in distinct ones.
+	domains, downDomains int
 
 	// current is the number of ready nodes already running the desired
 	// StatefulSet (pod template).
@@ -80,24 +80,28 @@ func (r *Reconciler) observe(ctx context.Context, p *pass) (pipeline.Outcome, er
 	}
 
 	domains := make(map[string]bool)
+	down := make(map[string]bool)
 
 	for _, node := range p.nodes {
+		domain := domainOf(&p.cluster.Spec, node)
+		domains[domain] = true
+
 		set, running := p.live[node.Name]
 		if !running || !nodeServing(set) {
 			p.health.notReady = append(p.health.notReady, node.Name)
+			down[domain] = true
 
 			continue
 		}
 
 		p.health.ready++
-		domains[domainOf(node)] = true
 
 		if revision, ok := desired[node.Name]; ok && set.Annotations[AnnotationTemplateRevision] == revision {
 			p.health.current++
 		}
 	}
 
-	p.health.readyDomains = len(domains)
+	p.health.domains, p.health.downDomains = len(domains), len(down)
 
 	return pipeline.Continue()
 }
@@ -116,14 +120,18 @@ func nodeServing(set *appsv1.StatefulSet) bool {
 		set.Status.UpdatedReplicas == 1
 }
 
-// domainOf is the failure domain a node belongs to. In the flat topology every
-// node is its own domain, which is what fs does with an empty rack.
-func domainOf(node Node) string {
-	if node.Rack == "" {
+// domainOf is the failure domain a node belongs to at the widest level the
+// layout spreads over: its zone when the racks span several zones, else its
+// rack, else — in the flat topology — the node itself.
+func domainOf(spec *fsv1alpha1.FSClusterSpec, node Node) string {
+	switch {
+	case node.Rack == "":
 		return node.Name
+	case node.Zone != "" && spec.FailureDomains() < int32(len(spec.Topology.Racks)): //nolint:gosec // bounded at 16
+		return "zone/" + node.Zone
+	default:
+		return node.Rack
 	}
-
-	return node.Rack
 }
 
 // reconcileStatus writes what the pass observed and decided.
@@ -138,7 +146,28 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (pipeline.Out
 	status.Nodes = int32(len(p.nodes)) //nolint:gosec // the topology is bounded at 16 nodes
 	status.ReadyNodes = p.health.ready
 	status.Update = p.update
-	status.SchemaVersion = p.schema
+	status.UpNodes = 0
+
+	for _, node := range p.nodes {
+		if p.convergence.up(node.Name) {
+			status.UpNodes++
+		}
+	}
+
+	if layout := p.convergence.layout; layout != nil {
+		status.Layout = &fsv1alpha1.LayoutStatus{
+			Version: int64(layout.Version),      //nolint:gosec // a layout version is a small counter
+			Members: int32(len(layout.Members)), //nolint:gosec // bounded at 16
+		}
+
+		for _, w := range layout.Widths {
+			status.Layout.Widths = append(status.Layout.Widths, int32(w)) //nolint:gosec // bounded
+		}
+
+		for _, v := range layout.Retained {
+			status.Layout.RetainedVersions = append(status.Layout.RetainedVersions, int64(v)) //nolint:gosec // small
+		}
+	}
 	status.Endpoints = &fsv1alpha1.EndpointsStatus{
 		S3: S3Endpoint(p.cluster.Name, p.cluster.Namespace,
 			p.cluster.Spec.S3.Service.Port, p.cluster.Spec.S3.TLS.SecretName != ""),
@@ -219,56 +248,53 @@ func (r *Reconciler) summarizeConvergence(p *pass) {
 	switch {
 	case p.convergence.converged:
 		p.setCondition(fsv1alpha1.ConditionConverged, metav1.ConditionTrue,
-			fsv1alpha1.ReasonConverged, "Repair queue empty and placement settled")
-	case p.convergence.repairQueue > 0:
+			fsv1alpha1.ReasonConverged, "Every node is up on the current layout and no data is moving")
+	case p.convergence.layout != nil && p.convergence.layout.Transitioning():
 		p.setCondition(fsv1alpha1.ConditionConverged, metav1.ConditionFalse,
-			fsv1alpha1.ReasonRepairQueueBacklog,
-			fmt.Sprintf("%d repair tasks pending across the cluster", p.convergence.repairQueue))
+			fsv1alpha1.ReasonLayoutTransition, p.convergence.waiting)
 	default:
 		p.setCondition(fsv1alpha1.ConditionConverged, metav1.ConditionFalse,
-			fsv1alpha1.ReasonRebalancing, "A rebalance is moving data")
+			fsv1alpha1.ReasonLayoutPending, p.convergence.waiting)
 	}
 }
 
 // summarizeReadiness reports whether the cluster can acknowledge a write.
 //
-// fs acknowledges a write once its synchronous quorum is durable on distinct
-// failure domains — two full replicas for the replicated schemes, all k+m
-// shards for erasure coding — so the question is how many domains are serving,
-// not how many pods are up.
+// fs writes metadata to the three replicas of a partition and acknowledges
+// at a quorum of two, and the layout puts those replicas in distinct failure
+// domains. So every write succeeds while the nodes that are down all sit in
+// one domain — given three domains to spread over; with fewer, a domain holds
+// two replicas of some partition, and none may be down. Nothing is served at
+// all before the first layout.
 func (r *Reconciler) summarizeReadiness(p *pass) {
-	parsed, err := scheme.Parse(p.cluster.Spec.Scheme)
-	if err != nil {
-		// An unparseable scheme was already refused by validation.
+	if p.cluster.Spec.SingleNode() {
+		if p.health.ready == 1 {
+			p.setCondition(fsv1alpha1.ConditionReady, metav1.ConditionTrue,
+				fsv1alpha1.ReasonQuorumAvailable, "the cluster's only node is serving")
+		} else {
+			p.setCondition(fsv1alpha1.ConditionReady, metav1.ConditionFalse,
+				fsv1alpha1.ReasonQuorumUnavailable, "the cluster's only node is not serving")
+		}
+
 		return
 	}
 
-	// A single node writes to its own disk: there is no quorum to reach, so
-	// the one node serving is the whole answer. Left to the domain rule it
-	// would need two of them and never be Ready.
-	quorum := parsed.WriteQuorumDomains()
-	message := fmt.Sprintf("%d failure domains are serving, %d needed to acknowledge a write",
-		p.health.readyDomains, quorum)
+	if p.convergence.layout == nil {
+		p.setCondition(fsv1alpha1.ConditionReady, metav1.ConditionFalse,
+			fsv1alpha1.ReasonLayoutPending, "no layout has been applied yet, so no node serves S3")
 
-	if p.cluster.Spec.SingleNode() {
-		quorum = 1
-		message = "the cluster's only node is serving"
-
-		if p.health.readyDomains < quorum {
-			message = "the cluster's only node is not serving"
-		}
+		return
 	}
 
-	if p.health.readyDomains >= quorum {
-		// Quorum is only half of usable. A cluster whose key store does not
-		// hold the root credential serves nothing to anyone, and reporting it
-		// Ready is what turns that into a hunt through node logs (SPEC §8.6).
-		if condition, unusable := summarizeRootCredential(p); unusable {
-			p.conditions = append(p.conditions, condition)
+	tolerated := 0
+	if p.health.domains >= int(fsv1alpha1.DefaultLayoutWidth) {
+		tolerated = 1
+	}
 
-			return
-		}
+	message := fmt.Sprintf("%d of %d failure domains have a node down; writes need all but %d serving",
+		p.health.downDomains, p.health.domains, tolerated)
 
+	if p.health.downDomains <= tolerated {
 		p.setCondition(fsv1alpha1.ConditionReady, metav1.ConditionTrue,
 			fsv1alpha1.ReasonQuorumAvailable, message)
 

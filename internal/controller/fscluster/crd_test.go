@@ -50,21 +50,16 @@ func TestCRDRejectsInvalidSpecs(t *testing.T) {
 			},
 		},
 		{
-			name: "unknown scheme",
+			// Two nodes cannot hold three copies; one or at least three.
+			name: "two nodes",
 			mutate: func(c *fsv1alpha1.FSCluster) {
-				c.Spec.Scheme = "rf4"
+				c.Spec.Topology.Nodes = new(int32(2))
 			},
 		},
 		{
-			name: "no disks",
+			name: "a zero width",
 			mutate: func(c *fsv1alpha1.FSCluster) {
-				c.Spec.Storage.Disks = nil
-			},
-		},
-		{
-			name: "no etcd endpoints",
-			mutate: func(c *fsv1alpha1.FSCluster) {
-				c.Spec.Etcd.External.Endpoints = nil
+				c.Spec.Layout.Widths = []int32{0}
 			},
 		},
 		{
@@ -102,16 +97,9 @@ func TestCRDEnforcesImmutability(t *testing.T) {
 		allowed bool
 	}{
 		{
-			// The regression that broke every update, including status
-			// writes: a transition rule reading an unset field fails to
-			// evaluate, and a failed evaluation rejects the request.
-			name:    "a cluster without an etcd prefix can be updated",
+			name:    "a cluster can be updated",
 			mutate:  func(c *fsv1alpha1.FSCluster) { c.Spec.Observability.LogLevel = "debug" },
 			allowed: true,
-		},
-		{
-			name:   "the etcd prefix cannot be set later",
-			mutate: func(c *fsv1alpha1.FSCluster) { c.Spec.Etcd.Prefix = "/fs/elsewhere" },
 		},
 		{
 			name: "the cluster secret cannot be adopted later",
@@ -120,35 +108,18 @@ func TestCRDEnforcesImmutability(t *testing.T) {
 			},
 		},
 		{
-			// Removing a disk is a decommission the controller performs, not
-			// something the API refuses (SPEC §8.5): it drains the disk out of
-			// placement on every node and takes its volumes only once fs
-			// reports it holds nothing.
-			name: "a disk can be removed",
+			// Growing is the controller's to perform; shrinking is refused
+			// by the webhook and the controller, which the API server alone
+			// cannot see.
+			name: "the storage can grow",
 			mutate: func(c *fsv1alpha1.FSCluster) {
-				c.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{
-					{Name: "d1", Size: resource.MustParse("1Gi")},
-				}
+				c.Spec.Storage.Size = resource.MustParse("400Gi")
 			},
 			allowed: true,
 		},
 		{
-			name: "the last disk cannot be removed",
-			mutate: func(c *fsv1alpha1.FSCluster) {
-				c.Spec.Storage.Disks = nil
-			},
-		},
-		{
-			name: "a disk can be added",
-			mutate: func(c *fsv1alpha1.FSCluster) {
-				c.Spec.Storage.Disks = append(c.Spec.Storage.Disks,
-					fsv1alpha1.DiskSpec{Name: "d1", Size: resource.MustParse("1Gi")})
-			},
-			allowed: true,
-		},
-		{
-			name:    "the scheme can change",
-			mutate:  func(c *fsv1alpha1.FSCluster) { c.Spec.Scheme = fsv1alpha1.DefaultScheme },
+			name:    "the widths can change",
+			mutate:  func(c *fsv1alpha1.FSCluster) { c.Spec.Layout.Widths = []int32{3} },
 			allowed: true,
 		},
 	} {

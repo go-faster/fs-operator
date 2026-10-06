@@ -38,24 +38,33 @@ var _ = Describe("FSAccessKey Controller", func() {
 
 	grants := []fsv1alpha1.GrantSpec{{Bucket: "media-*", Permission: "write"}}
 
-	It("mints a generated credential and pushes it to the cluster's key store", func() {
+	reconcileKey := func(r *FSAccessKeyReconciler, name string) {
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	readyOf := func(name string) *metav1.Condition {
+		ak := &fsv1alpha1.FSAccessKey{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, ak)).To(Succeed())
+
+		return meta.FindStatusCondition(ak.Status.Conditions, fsv1alpha1.ConditionReady)
+	}
+
+	It("mints a credential and is Ready once every node accepts it", func() {
 		makeCluster(ctx, "ak-cluster")
 
 		admin := newFakeAdmin()
 		r := &FSAccessKeyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Admin: admin.client}
 
-		ak := &fsv1alpha1.FSAccessKey{
+		Expect(k8sClient.Create(ctx, &fsv1alpha1.FSAccessKey{
 			ObjectMeta: metav1.ObjectMeta{Name: "app-writer", Namespace: namespace},
 			Spec: fsv1alpha1.FSAccessKeySpec{
 				ClusterRef: fsv1alpha1.ClusterReference{Name: "ak-cluster"},
 				Grants:     grants,
 			},
-		}
-		Expect(k8sClient.Create(ctx, ak)).To(Succeed())
+		})).To(Succeed())
 
-		key := types.NamespacedName{Name: "app-writer", Namespace: namespace}
-		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
+		reconcileKey(r, "app-writer")
 
 		// The owned credential Secret exists with minted material.
 		secret := &corev1.Secret{}
@@ -65,17 +74,26 @@ var _ = Describe("FSAccessKey Controller", func() {
 		Expect(len(secret.Data[fscluster.SecretKeyKey])).To(BeNumerically(">=", fscluster.MinSecretKeyLength))
 		Expect(secret.Data[fscluster.EndpointKey]).NotTo(BeEmpty())
 
-		// The credential is in the cluster's key store, and the key is Ready.
-		Expect(admin.hasKey(access)).To(BeTrue(), "the credential was not pushed to the cluster")
+		// The FSCluster controller renders it into every node; until the
+		// nodes have reloaded, the key is not Ready.
+		Expect(readyOf("app-writer").Reason).To(Equal(fsv1alpha1.ReasonConfigReloadPending))
 
-		Expect(k8sClient.Get(ctx, key, ak)).To(Succeed())
-		Expect(ak.Status.AccessKey).To(Equal(access))
-		ready := meta.FindStatusCondition(ak.Status.Conditions, fsv1alpha1.ConditionReady)
+		// One node of three is not enough: a client hitting the other two
+		// would be refused.
+		admin.accept(access, fscluster.AdminURL("ak-cluster", namespace, "ak-cluster-0"))
+		reconcileKey(r, "app-writer")
+		ready := readyOf("app-writer")
+		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		Expect(ready.Message).To(ContainSubstring("ak-cluster-1"))
+
+		admin.accept(access)
+		reconcileKey(r, "app-writer")
+		ready = readyOf("app-writer")
 		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 		Expect(ready.Reason).To(Equal(fsv1alpha1.ReasonKeyAccepted))
 	})
 
-	It("revokes the credential from the cluster on delete", func() {
+	It("holds the deletion until no node accepts the credential", func() {
 		makeCluster(ctx, "revoke-cluster")
 
 		admin := newFakeAdmin()
@@ -91,55 +109,58 @@ var _ = Describe("FSAccessKey Controller", func() {
 		Expect(k8sClient.Create(ctx, ak)).To(Succeed())
 
 		key := types.NamespacedName{Name: "temp-key", Namespace: namespace}
-		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
+		reconcileKey(r, "temp-key")
 
 		Expect(k8sClient.Get(ctx, key, ak)).To(Succeed())
 		access := ak.Status.AccessKey
-		Expect(admin.hasKey(access)).To(BeTrue())
+		admin.accept(access)
 
 		Expect(k8sClient.Delete(ctx, ak)).To(Succeed())
-		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
+		reconcileKey(r, "temp-key")
+		Expect(k8sClient.Get(ctx, key, ak)).To(Succeed(), "deleted while every node still accepts the key")
 
-		Expect(admin.hasKey(access)).To(BeFalse(), "the credential was not revoked")
+		// The FSCluster re-renders without it and reloads.
+		admin.revoke(access)
+		reconcileKey(r, "temp-key")
 		Expect(k8sClient.Get(ctx, key, ak)).To(MatchError(ContainSubstring("not found")))
 	})
 
-	It("re-creates the credential when its grants change", func() {
-		makeCluster(ctx, "drift-cluster")
+	It("moves the credential fingerprint when an imported Secret rotates", func() {
+		makeCluster(ctx, "rotate-cluster")
+		makeSecret(ctx, "rotating-creds", map[string]string{
+			fscluster.AccessKeyKey: "AKROTATE",
+			fscluster.SecretKeyKey: "the-first-secret-key-value",
+		})
 
 		admin := newFakeAdmin()
 		r := &FSAccessKeyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Admin: admin.client}
 
 		ak := &fsv1alpha1.FSAccessKey{
-			ObjectMeta: metav1.ObjectMeta{Name: "grant-key", Namespace: namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: "rotating", Namespace: namespace},
 			Spec: fsv1alpha1.FSAccessKeySpec{
-				ClusterRef: fsv1alpha1.ClusterReference{Name: "drift-cluster"},
-				Grants:     []fsv1alpha1.GrantSpec{{Bucket: "a", Permission: "read"}},
+				ClusterRef:        fsv1alpha1.ClusterReference{Name: "rotate-cluster"},
+				ExistingSecretRef: &corev1.LocalObjectReference{Name: "rotating-creds"},
+				Grants:            grants,
 			},
 		}
 		Expect(k8sClient.Create(ctx, ak)).To(Succeed())
 
-		key := types.NamespacedName{Name: "grant-key", Namespace: namespace}
-		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
-
+		key := types.NamespacedName{Name: "rotating", Namespace: namespace}
+		reconcileKey(r, "rotating")
 		Expect(k8sClient.Get(ctx, key, ak)).To(Succeed())
-		access := ak.Status.AccessKey
-		Expect(admin.grantsOf(access)).To(HaveLen(1))
+		before := ak.Annotations[credentialHashAnnotation]
+		Expect(before).NotTo(BeEmpty())
 
-		// Widen the grant; the controller re-creates the key with the new set.
-		ak.Spec.Grants = []fsv1alpha1.GrantSpec{
-			{Bucket: "a", Permission: "read"},
-			{Bucket: "b", Permission: "write"},
-		}
-		Expect(k8sClient.Update(ctx, ak)).To(Succeed())
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "rotating-creds", Namespace: namespace}, secret)).To(Succeed())
+		secret.Data[fscluster.SecretKeyKey] = []byte("the-second-secret-key-value")
+		Expect(k8sClient.Update(ctx, secret)).To(Succeed())
 
-		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
-
-		Expect(admin.grantsOf(access)).To(HaveLen(2), "grants were not updated in the cluster")
+		// The FSCluster watches FSAccessKeys, not their Secrets: the new
+		// fingerprint is what makes it re-render and reload.
+		reconcileKey(r, "rotating")
+		Expect(k8sClient.Get(ctx, key, ak)).To(Succeed())
+		Expect(ak.Annotations[credentialHashAnnotation]).NotTo(Equal(before))
 	})
 
 	It("refuses an imported credential with a too-short secret key", func() {
@@ -152,25 +173,20 @@ var _ = Describe("FSAccessKey Controller", func() {
 		admin := newFakeAdmin()
 		r := &FSAccessKeyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Admin: admin.client}
 
-		ak := &fsv1alpha1.FSAccessKey{
+		Expect(k8sClient.Create(ctx, &fsv1alpha1.FSAccessKey{
 			ObjectMeta: metav1.ObjectMeta{Name: "imported-weak", Namespace: namespace},
 			Spec: fsv1alpha1.FSAccessKeySpec{
 				ClusterRef:        fsv1alpha1.ClusterReference{Name: "weak-cluster"},
 				ExistingSecretRef: &corev1.LocalObjectReference{Name: "weak-creds"},
 				Grants:            grants,
 			},
-		}
-		Expect(k8sClient.Create(ctx, ak)).To(Succeed())
+		})).To(Succeed())
 
-		key := types.NamespacedName{Name: "imported-weak", Namespace: namespace}
-		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
+		reconcileKey(r, "imported-weak")
 
-		Expect(k8sClient.Get(ctx, key, ak)).To(Succeed())
-		ready := meta.FindStatusCondition(ak.Status.Conditions, fsv1alpha1.ConditionReady)
+		ready := readyOf("imported-weak")
 		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		Expect(ready.Reason).To(Equal(fsv1alpha1.ReasonWeakSecretKey))
-		Expect(admin.hasKey("AKUSER")).To(BeFalse(), "a weak credential must not reach the cluster")
 	})
 
 	It("imports a valid user-managed credential", func() {
@@ -181,27 +197,23 @@ var _ = Describe("FSAccessKey Controller", func() {
 		})
 
 		admin := newFakeAdmin()
+		admin.accept("AKIMPORTED")
 		r := &FSAccessKeyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Admin: admin.client}
 
-		ak := &fsv1alpha1.FSAccessKey{
+		Expect(k8sClient.Create(ctx, &fsv1alpha1.FSAccessKey{
 			ObjectMeta: metav1.ObjectMeta{Name: "imported-ok", Namespace: namespace},
 			Spec: fsv1alpha1.FSAccessKeySpec{
 				ClusterRef:        fsv1alpha1.ClusterReference{Name: "imp-cluster"},
 				ExistingSecretRef: &corev1.LocalObjectReference{Name: "vault-creds"},
 				Grants:            grants,
 			},
-		}
-		Expect(k8sClient.Create(ctx, ak)).To(Succeed())
+		})).To(Succeed())
 
-		key := types.NamespacedName{Name: "imported-ok", Namespace: namespace}
-		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
+		reconcileKey(r, "imported-ok")
 
-		Expect(admin.hasKey("AKIMPORTED")).To(BeTrue())
-
-		Expect(k8sClient.Get(ctx, key, ak)).To(Succeed())
+		ak := &fsv1alpha1.FSAccessKey{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "imported-ok", Namespace: namespace}, ak)).To(Succeed())
 		Expect(ak.Status.AccessKey).To(Equal("AKIMPORTED"))
-		ready := meta.FindStatusCondition(ak.Status.Conditions, fsv1alpha1.ConditionReady)
-		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+		Expect(readyOf("imported-ok").Status).To(Equal(metav1.ConditionTrue))
 	})
 })

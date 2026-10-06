@@ -50,32 +50,30 @@ const (
 
 // FSCluster condition types.
 const (
-	// ConditionNodesHealthy indicates every node pod is Ready and
-	// registered in the etcd topology.
+	// ConditionNodesHealthy indicates every node pod is Ready and up in the
+	// cluster's own view.
 	ConditionNodesHealthy ConditionType = "NodesHealthy"
 
-	// ConditionClusterSizeAligned indicates the actual node set matches the
-	// declared topology (False while scaling or decommissioning).
+	// ConditionClusterSizeAligned indicates the actual node set and the
+	// layout's membership match the declared topology (False while scaling
+	// or removing nodes).
 	ConditionClusterSizeAligned ConditionType = "ClusterSizeAligned"
 
 	// ConditionConfigurationInSync indicates every node runs the desired
 	// configuration revision (restart or verified hot reload).
 	ConditionConfigurationInSync ConditionType = "ConfigurationInSync"
 
-	// ConditionConverged indicates the repair queue is empty and placement
-	// has converged; rolling changes gate on it between nodes.
+	// ConditionConverged indicates every node is up on the current layout
+	// and no layout change is in transition; rolling changes gate on it
+	// between nodes.
 	ConditionConverged ConditionType = "Converged"
-
-	// ConditionSchemaCurrent indicates the cluster's recorded schema
-	// version matches the deployed binary's (False = migration pending).
-	ConditionSchemaCurrent ConditionType = "SchemaCurrent"
 )
 
 // FSCluster condition reasons.
 const (
-	ReasonSchemeTopologyMismatch ConditionReason = "SchemeTopologyMismatch"
+	ReasonLayoutTopologyMismatch ConditionReason = "LayoutTopologyMismatch"
 	ReasonUnsupportedTopology    ConditionReason = "UnsupportedTopology"
-	ReasonDiskShrinkForbidden    ConditionReason = "DiskShrinkForbidden"
+	ReasonStorageShrinkForbidden ConditionReason = "StorageShrinkForbidden"
 	ReasonStorageExpanding       ConditionReason = "StorageExpanding"
 	ReasonAllNodesReady          ConditionReason = "AllNodesReady"
 	ReasonNodesNotReady          ConditionReason = "NodesNotReady"
@@ -87,20 +85,20 @@ const (
 	ReasonRollingNodes           ConditionReason = "RollingNodes"
 	ReasonConfigReloadPending    ConditionReason = "ConfigReloadPending"
 	ReasonConverged              ConditionReason = "Converged"
-	ReasonRebalancing            ConditionReason = "Rebalancing"
-	ReasonRepairQueueBacklog     ConditionReason = "RepairQueueBacklog"
 	ReasonConvergenceTimeout     ConditionReason = "ConvergenceTimeout"
-	ReasonMigrationPending       ConditionReason = "MigrationPending"
-	ReasonMigrationRunning       ConditionReason = "MigrationRunning"
-	ReasonEtcdUnreachable        ConditionReason = "EtcdUnreachable"
 
-	// ReasonRootCredentialUnregistered means the cluster's key store does not
-	// hold the operator's root credential, so nothing can authenticate with it.
-	// It is how an etcd prefix left behind by a previous incarnation of the
-	// cluster shows itself: fs seeds credentials into an empty key namespace
-	// only, so a cluster starting on stale keys adopts credentials it cannot
-	// unseal (SPEC §8.6).
-	ReasonRootCredentialUnregistered ConditionReason = "RootCredentialUnregistered"
+	// ReasonLayoutPending means the layout does not yet describe the
+	// declared nodes: the operator is waiting for them to be reachable
+	// before it applies one that does.
+	ReasonLayoutPending ConditionReason = "LayoutPending"
+
+	// ReasonLayoutRejected means fs refused the layout the spec asks for,
+	// e.g. a width wider than the nodes that can hold it.
+	ReasonLayoutRejected ConditionReason = "LayoutRejected"
+
+	// ReasonLayoutTransition means a layout change is moving data: older
+	// versions are retained until every node has synced the new one.
+	ReasonLayoutTransition ConditionReason = "LayoutTransition"
 )
 
 // FSBucket condition reasons.

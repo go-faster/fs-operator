@@ -28,7 +28,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -46,12 +45,10 @@ const (
 	// Secrets.
 	configVolumeName = "config"
 	tlsVolumeName    = "tls"
-	etcdTLSVolume    = "etcd-tls"
 
-	// stateVolumeName is the claim holding the writable storage root: what fs
-	// keeps beside the disks that mount below it. The API package owns the
-	// name because a disk may not take it.
-	stateVolumeName = fsv1alpha1.StateVolumeName
+	// DataVolumeName is every node's one claim: the storage root, holding
+	// everything the node stores.
+	DataVolumeName = "data"
 )
 
 // The unprivileged identity fs runs as. It matches the uid the upstream image
@@ -103,8 +100,6 @@ const (
 	envAdminToken     = "FS_ADMIN_TOKEN"
 	envRootAccessKey  = "FS_ROOT_ACCESS_KEY"
 	envRootSecretKey  = "FS_ROOT_SECRET_KEY"
-	envEtcdUsername   = "FS_ETCD_USERNAME"
-	envEtcdPassword   = "FS_ETCD_PASSWORD"
 	envMetricsAddr    = "METRICS_ADDR"
 	envPprofAddr      = "PPROF_ADDR"
 	envLogLevel       = "OTEL_LOG_LEVEL"
@@ -136,7 +131,7 @@ const (
 // §4.1): it is what makes per-node configuration, per-node storage and exact
 // rollout control possible. The StatefulSet controller replaces the pod; this
 // operator only decides when.
-func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string, retain ...string) *appsv1.StatefulSet {
+func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string) *appsv1.StatefulSet {
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: KindStatefulSet},
 		ObjectMeta: metav1.ObjectMeta{
@@ -150,8 +145,8 @@ func NewStatefulSet(cluster *fsv1alpha1.FSCluster, node Node, restartRevision st
 			Selector: &metav1.LabelSelector{
 				MatchLabels: NodeSelectorLabels(cluster.Name, node.Name),
 			},
-			Template:                             podTemplate(cluster, node, restartRevision, retain),
-			VolumeClaimTemplates:                 volumeClaimTemplates(cluster, node, retain),
+			Template:                             podTemplate(cluster, node, restartRevision),
+			VolumeClaimTemplates:                 volumeClaimTemplates(cluster, node),
 			PersistentVolumeClaimRetentionPolicy: claimRetentionPolicy(cluster),
 		},
 	}
@@ -190,7 +185,7 @@ func PodTemplateRevision(sets []*appsv1.StatefulSet) (string, error) {
 }
 
 // podTemplate builds the pod that runs one node.
-func podTemplate(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string, retain []string) corev1.PodTemplateSpec {
+func podTemplate(cluster *fsv1alpha1.FSCluster, node Node, restartRevision string) corev1.PodTemplateSpec {
 	spec := &cluster.Spec
 
 	labels := NodeObjectLabels(cluster.Name, node)
@@ -212,7 +207,7 @@ func podTemplate(cluster *fsv1alpha1.FSCluster, node Node, restartRevision strin
 			Annotations: annotations,
 		},
 		Spec: corev1.PodSpec{
-			Containers:                    []corev1.Container{fsContainer(cluster, node, retain)},
+			Containers:                    []corev1.Container{fsContainer(cluster, node)},
 			Volumes:                       volumes(cluster, node),
 			ImagePullSecrets:              spec.Image.PullSecrets,
 			NodeSelector:                  nodeSelector(cluster, node),
@@ -229,7 +224,7 @@ func podTemplate(cluster *fsv1alpha1.FSCluster, node Node, restartRevision strin
 }
 
 // fsContainer builds the fs container itself.
-func fsContainer(cluster *fsv1alpha1.FSCluster, node Node, retain []string) corev1.Container {
+func fsContainer(cluster *fsv1alpha1.FSCluster, node Node) corev1.Container {
 	spec := &cluster.Spec
 
 	return corev1.Container{
@@ -239,7 +234,7 @@ func fsContainer(cluster *fsv1alpha1.FSCluster, node Node, retain []string) core
 		Args:            []string{"s3", flagConfig, ConfigPath},
 		Ports:           containerPorts(cluster),
 		Env:             env(cluster, node),
-		VolumeMounts:    volumeMounts(cluster, retain),
+		VolumeMounts:    volumeMounts(cluster),
 		Resources:       spec.PodTemplate.Resources,
 		StartupProbe:    probe(cluster, healthPath, startupPeriodSeconds, startupFailureThreshold),
 		LivenessProbe:   probe(cluster, healthPath, livenessPeriodSeconds, livenessFailureThreshold),
@@ -353,17 +348,6 @@ func env(cluster *fsv1alpha1.FSCluster, node Node) []corev1.EnvVar {
 	}
 
 	vars = append(vars, telemetryEnv(&spec.Observability)...)
-
-	// etcd credentials go through the environment, never the rendered config:
-	// a config Secret is readable by anything that can read Secrets in the
-	// namespace, and a password in it would also be written into every
-	// config-revision fingerprint (SPEC §9, fs §11.4).
-	if external := spec.Etcd.External; external != nil && external.AuthSecretRef != nil {
-		vars = append(vars,
-			secretEnv(envEtcdUsername, external.AuthSecretRef.Name, EtcdUsernameKey),
-			secretEnv(envEtcdPassword, external.AuthSecretRef.Name, EtcdPasswordKey),
-		)
-	}
 
 	// The SDK serves pprof only when given an address, and the port and the
 	// NetworkPolicy rule follow this same switch.
@@ -501,8 +485,8 @@ func pprofEnabled(cluster *fsv1alpha1.FSCluster) bool {
 }
 
 // volumes mounts the node's configuration and, when fs terminates TLS, the
-// certificate. Everything the node writes — its disks and its storage root —
-// comes from claim templates, not from here.
+// certificate. What the node writes comes from its claim template, not from
+// here.
 func volumes(cluster *fsv1alpha1.FSCluster, node Node) []corev1.Volume {
 	vols := []corev1.Volume{{
 		Name: configVolumeName,
@@ -515,18 +499,6 @@ func volumes(cluster *fsv1alpha1.FSCluster, node Node) []corev1.Volume {
 			},
 		},
 	}}
-
-	if external := cluster.Spec.Etcd.External; external != nil && external.TLS.SecretName != "" {
-		vols = append(vols, corev1.Volume{
-			Name: etcdTLSVolume,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName:  external.TLS.SecretName,
-					DefaultMode: ptr.To(secretFileMode),
-				},
-			},
-		})
-	}
 
 	if name := cluster.Spec.S3.TLS.SecretName; name != "" {
 		vols = append(vols, corev1.Volume{
@@ -543,46 +515,12 @@ func volumes(cluster *fsv1alpha1.FSCluster, node Node) []corev1.Volume {
 	return vols
 }
 
-// diskNames are the disks the spec declares.
-func diskNames(cluster *fsv1alpha1.FSCluster) []string {
-	names := make([]string, 0, len(cluster.Spec.Storage.Disks))
-	for _, disk := range cluster.Spec.Storage.Disks {
-		names = append(names, disk.Name)
-	}
-
-	return names
-}
-
-// volumeMounts mounts the configuration, the certificate and every disk.
-func volumeMounts(cluster *fsv1alpha1.FSCluster, retain []string) []corev1.VolumeMount {
-	mounts := make([]corev1.VolumeMount, 0, len(cluster.Spec.Storage.Disks)+4)
-
-	// The storage root comes first, before the disks that mount below it: the
-	// kubelet mounts a nested path after its parent, and a disk hidden under a
-	// later root mount would be an empty directory to fs.
-	//
-	// A single node has no such root to mount: its storage root *is* its disk
-	// (SPEC §5.2), so the index it would keep beside the disks lives on the
-	// one volume it has.
-	if !cluster.Spec.SingleNode() {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      stateVolumeName,
-			MountPath: StorageRoot,
-		})
-	}
-
-	mounts = append(mounts, corev1.VolumeMount{
-		Name:      configVolumeName,
-		MountPath: ConfigDir,
-		ReadOnly:  true,
-	})
-
-	if external := cluster.Spec.Etcd.External; external != nil && external.TLS.SecretName != "" {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      etcdTLSVolume,
-			MountPath: EtcdTLSDir,
-			ReadOnly:  true,
-		})
+// volumeMounts mounts the data volume at the storage root, the configuration
+// and the certificate.
+func volumeMounts(cluster *fsv1alpha1.FSCluster) []corev1.VolumeMount {
+	mounts := []corev1.VolumeMount{
+		{Name: DataVolumeName, MountPath: StorageRoot},
+		{Name: configVolumeName, MountPath: ConfigDir, ReadOnly: true},
 	}
 
 	if cluster.Spec.S3.TLS.SecretName != "" {
@@ -593,95 +531,31 @@ func volumeMounts(cluster *fsv1alpha1.FSCluster, retain []string) []corev1.Volum
 		})
 	}
 
-	// A disk being removed keeps its mount for as long as it keeps its claim
-	// template and its config entry. All three go together or the node will
-	// not start: fs creates each configured disk's root at boot, and on a
-	// read-only root filesystem a disk it was told about but not given fails
-	// with "mkdir: read-only file system" — a crash loop, not a degraded node.
-	for _, disk := range append(diskNames(cluster), retain...) {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      disk,
-			MountPath: DiskPath(disk),
-		})
-	}
-
 	return mounts
 }
 
-// volumeClaimTemplates turns each declared disk into one claim per node.
-func volumeClaimTemplates(cluster *fsv1alpha1.FSCluster, node Node, retain []string) []corev1.PersistentVolumeClaim {
-	claims := make([]corev1.PersistentVolumeClaim, 0, len(cluster.Spec.Storage.Disks)+1)
-
-	// The storage root. Not a disk — no data is placed on it and fs is never
-	// told about it — but a claim for the same reason a disk is one: fs writes
-	// its object index there at startup, the container filesystem is read-only,
-	// and an index that does not survive the pod is rebuilt by walking every
-	// sidecar on every disk of the node.
-	//
-	// Except on a single node, whose storage root is its disk: there the index
-	// already lives on a claim, and a second one would be an empty volume.
-	if !cluster.Spec.SingleNode() {
-		claims = append(claims, claimTemplate(cluster, node, stateVolumeName,
-			*cluster.Spec.Storage.State.Size, cluster.Spec.Storage.State.StorageClass))
-	}
-
-	for _, disk := range cluster.Spec.Storage.Disks {
-		claims = append(claims, claimTemplate(cluster, node, disk.Name, disk.Size, disk.StorageClass))
-	}
-
-	// A disk the spec dropped stays until its data has moved off. Its size is
-	// the live claim's, which is immutable anyway; the claim template only has
-	// to keep naming it so the pod keeps mounting it.
-	for _, name := range retain {
-		claims = append(claims, claimTemplate(cluster, node, name, retainedDiskSize(cluster), ""))
-	}
-
-	return claims
-}
-
-// claimTemplate is one of a node's claims: a disk, a retained disk, or the
-// storage root.
-func claimTemplate(
-	cluster *fsv1alpha1.FSCluster,
-	node Node,
-	name string,
-	size resource.Quantity,
-	storageClass string,
-) corev1.PersistentVolumeClaim {
+// volumeClaimTemplates is the node's one claim: the data volume. The
+// container filesystem is read-only, and everything fs keeps — metadata,
+// blocks, the adopted layout — lives below the storage root.
+func volumeClaimTemplates(cluster *fsv1alpha1.FSCluster, node Node) []corev1.PersistentVolumeClaim {
 	claim := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
+			Name:   DataVolumeName,
 			Labels: NodeObjectLabels(cluster.Name, node),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: size},
+				Requests: corev1.ResourceList{corev1.ResourceStorage: cluster.Spec.Storage.Size},
 			},
 		},
 	}
 
-	if storageClass != "" {
-		claim.Spec.StorageClassName = ptr.To(storageClass)
+	if class := cluster.Spec.Storage.StorageClass; class != "" {
+		claim.Spec.StorageClassName = ptr.To(class)
 	}
 
-	return claim
-}
-
-// retainedDiskSize is the size a retained claim template declares. The live
-// PVC's size is what actually applies — a claim template cannot resize one —
-// so this only has to be a value the API accepts, and the largest declared
-// disk is the one least likely to read as a shrink.
-func retainedDiskSize(cluster *fsv1alpha1.FSCluster) resource.Quantity {
-	var largest resource.Quantity
-
-	for _, disk := range cluster.Spec.Storage.Disks {
-		if disk.Size.Cmp(largest) > 0 {
-			largest = disk.Size
-		}
-	}
-
-	return largest
+	return []corev1.PersistentVolumeClaim{claim}
 }
 
 // claimRetentionPolicy applies the spec's reclaim policy to the claims a

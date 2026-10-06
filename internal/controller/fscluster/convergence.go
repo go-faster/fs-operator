@@ -18,89 +18,64 @@ package fscluster
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/go-faster/errors"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/go-faster/fs-operator/internal/controller/pipeline"
 	"github.com/go-faster/fs-operator/internal/fsclient"
 )
 
-// convergence is what the admin API reports about whether the cluster has
-// settled after a membership or configuration change. The rollout will not
-// replace a second node until the cluster has reconverged, and the Converged
-// condition reports it (SPEC §8.2).
+// convergence is what the admin API reports about the cluster: the layout it
+// runs, and which nodes are up on it. The rollout will not replace a second
+// node, and no node is removed, until the cluster has reconverged; the
+// Converged condition reports it (SPEC §8.2).
 type convergence struct {
-	// known is false when no node could be queried — a fresh cluster with no
-	// serving nodes, or one whose admin API is unreachable. The rollout treats
-	// unknown as not-yet-converged and holds rather than guessing.
+	// known is false when no node could be queried — a fresh cluster whose
+	// pods are not up yet, or one whose admin API is unreachable. Every gate
+	// treats unknown as not-yet-converged and holds rather than guessing.
 	known bool
 
-	// converged is true when the repair queue is empty and no rebalance is
-	// running, so placement has settled.
+	// layout is the layout the queried node has adopted; nil before the
+	// first one is applied.
+	layout *fsclient.Layout
+
+	// nodes is the queried node's gossip view, keyed by fs node ID: whether
+	// each node answered the last exchange, and which layout it last
+	// reported.
+	nodes map[string]fsclient.Node
+
+	// converged is true when a layout exists, no older version is still in
+	// transition, and every node of the cluster is up on the current
+	// version.
 	converged bool
 
-	// repairQueue is the pending async remainder work summed across nodes;
-	// rebalanceRunning reports whether a rebalance runner holds the election.
-	repairQueue      int
-	rebalanceRunning bool
-
-	// nodesReporting and nodesNotReporting split the registered topology by
-	// whether the node answered the live-state fetch. repairQueue only counts
-	// the reporting ones, so a zero with nodes silent means "nobody said
-	// otherwise", not "nothing left to do".
-	//
-	// The rollout gate tolerates silence — a cluster being upgraded from a
-	// pre-v0.9.0 image has no node serving live state, and gating on a
-	// complete view would stall it for good. The drain gate (SPEC §8.4) will
-	// not: deleting a node on the strength of a partial view is the one
-	// mistake a decommission cannot take back.
-	nodesReporting, nodesNotReporting int
-
-	// nodes is the per-node view, keyed by fs node ID: disks with their
-	// capacity and placement weight. The drain gate reads occupancy from here
-	// (SPEC §8.4).
-	nodes map[string]fsclient.ClusterNode
-
-	// skew is the placement skew (max minus min disk fullness) — informational,
-	// surfaced in events, not a hard gate.
-	skew float64
-
-	// schemaVersion is what the cluster has agreed on in etcd; binarySchema is
-	// what the deployed image implements. binarySchema > schemaVersion means a
-	// migration is pending (SPEC §8.2 Migrating).
-	schemaVersion, binarySchema int
+	// waiting says what converged is waiting for, in the terms a reader can
+	// act on; empty when converged.
+	waiting string
 }
 
-// allReporting is true when every registered node answered the live-state
-// fetch, so repairQueue is a complete count and each node's occupancy is
-// current.
-//
-// The decommission gate requires it: deleting a node on the strength of a
-// partial view is the one mistake it cannot take back. The rollout gate
-// deliberately does not, or a cluster being upgraded from a pre-v0.9.0 image —
-// where no node serves live state — could never proceed.
-func (c convergence) allReporting() bool {
-	return c.nodesNotReporting == 0 && c.nodesReporting > 0
+// up reports whether the cluster's own view has a node up.
+func (c convergence) up(name string) bool {
+	node, ok := c.nodes[name]
+
+	return ok && node.Up
 }
 
-// gatherConvergence reads the cluster's reconvergence state from the admin
-// API. It runs before the rollout, which gates on the result, and leaves the
-// convergence unknown (so the rollout holds) when no node can be reached.
+// gatherConvergence reads the cluster's layout and node view from the admin
+// API. It runs before the rollout and the layout step, which gate on the
+// result, and leaves the convergence unknown (so they hold) when no node can
+// be reached.
 func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (pipeline.Outcome, error) {
 	log := logf.FromContext(ctx)
 
 	if p.cluster.Spec.SingleNode() {
-		// No placement, no repair queue, no rebalance: the cluster-status
-		// endpoints are 501 here. Reported converged rather than unknown,
-		// because unknown is what holds a rollout (SPEC §5.2).
+		// No layout, no peers, no transitions: the cluster endpoints are 501
+		// here. Reported converged rather than unknown, because unknown is
+		// what holds a rollout (SPEC §5.2).
 		p.convergence = convergence{known: true, converged: true}
 
-		return pipeline.Continue()
-	}
-
-	serving := servingNodes(p)
-	if len(serving) == 0 {
-		// Nothing is up to ask; convergence is not yet meaningful.
 		return pipeline.Continue()
 	}
 
@@ -112,105 +87,87 @@ func (r *Reconciler) gatherConvergence(ctx context.Context, p *pass) (pipeline.O
 		return pipeline.Continue()
 	}
 
-	status, ok := r.clusterStatus(ctx, p, serving, token)
-	if !ok {
-		// No node answered; leave convergence unknown so the rollout holds.
+	// Serving nodes first: they are the likeliest to answer. The rest are
+	// asked too, because until the first layout is applied no node is Ready
+	// — readiness is a storage probe, and storage needs a layout.
+	for _, node := range append(servingNodes(p), notServingNodes(p)...) {
+		view, err := r.clusterView(ctx, p, node, token)
+		if err != nil {
+			log.V(1).Info("Node cluster view unreachable", "node", node.Name, "error", err)
+
+			continue
+		}
+
+		p.convergence = view
+		p.convergence.converged, p.convergence.waiting = converged(p, view)
+
 		return pipeline.Continue()
-	}
-
-	repairQueue := r.repairQueueDepth(ctx, p, status, serving, token)
-
-	nodes := make(map[string]fsclient.ClusterNode, len(status.Nodes))
-	for _, node := range status.Nodes {
-		nodes[node.ID] = node
-	}
-
-	p.convergence = convergence{
-		known:             true,
-		repairQueue:       repairQueue,
-		rebalanceRunning:  status.RebalanceRunning,
-		nodesReporting:    status.NodesReporting,
-		nodesNotReporting: status.NodesNotReporting,
-		nodes:             nodes,
-		skew:              status.PlacementSkew,
-		schemaVersion:     status.SchemaVersion,
-		binarySchema:      status.BinarySchema,
-		// Converged when the repair queue has drained and no rebalance is
-		// moving data — placement has settled (SPEC §8.2, §11.2).
-		converged: repairQueue == 0 && !status.RebalanceRunning,
 	}
 
 	return pipeline.Continue()
 }
 
-// clusterStatus reads the cluster-wide status from the first serving node that
-// answers.
-func (r *Reconciler) clusterStatus(ctx context.Context, p *pass, serving []Node, token string) (fsclient.ClusterStatus, bool) {
-	log := logf.FromContext(ctx)
-
-	for _, node := range serving {
-		client, err := r.adminClient(AdminURL(p.cluster.Name, p.cluster.Namespace, node.Name), token)
-		if err != nil {
-			continue
-		}
-
-		status, err := client.ClusterStatus(ctx)
-		if err != nil {
-			log.V(1).Info("Node cluster status unreachable", "node", node.Name, "error", err)
-
-			continue
-		}
-
-		if status.Disabled {
-			continue
-		}
-
-		return status, true
+// clusterView reads one node's layout and gossip view.
+func (r *Reconciler) clusterView(ctx context.Context, p *pass, node Node, token string) (convergence, error) {
+	client, err := r.adminClient(AdminURL(p.cluster.Name, p.cluster.Namespace, node.Name), token)
+	if err != nil {
+		return convergence{}, err
 	}
 
-	return fsclient.ClusterStatus{}, false
+	view := convergence{known: true, nodes: map[string]fsclient.Node{}}
+
+	layout, err := client.Layout(ctx)
+
+	switch {
+	case errors.Is(err, fsclient.ErrNoLayout):
+	case err != nil:
+		return convergence{}, err
+	default:
+		view.layout = &layout
+	}
+
+	nodes, err := client.Nodes(ctx)
+	if err != nil {
+		return convergence{}, err
+	}
+
+	for _, n := range nodes {
+		if n.ID != "" {
+			view.nodes[n.ID] = n
+		}
+	}
+
+	return view, nil
 }
 
-// repairQueueDepth reports the cluster's pending async remainder work.
-//
-// Since fs v0.9.0 the cluster status carries the sum itself, over the nodes
-// that answered the live-state fetch, and that is what the operator reads.
-// Nodes running an older binary do not serve live state at all, so a cluster
-// still on a pre-v0.9.0 image reports no depth there — and a zero meaning
-// "nobody answered" must not be read as "the queue is empty". When not one
-// node reports, fall back to fanning out over the per-node rebalance endpoint,
-// which every supported fs release serves (SPEC §11.2).
-func (r *Reconciler) repairQueueDepth(
-	ctx context.Context, p *pass, status fsclient.ClusterStatus, serving []Node, token string,
-) int {
-	log := logf.FromContext(ctx)
-
-	if status.NodesReporting > 0 {
-		return status.RepairQueueDepth
+// converged decides whether the cluster has settled, and if not, what it is
+// waiting for.
+func converged(p *pass, view convergence) (bool, string) {
+	if view.layout == nil {
+		return false, "no layout has been applied yet"
 	}
 
-	var total int
-
-	for _, node := range serving {
-		client, err := r.adminClient(AdminURL(p.cluster.Name, p.cluster.Namespace, node.Name), token)
-		if err != nil {
-			continue
-		}
-
-		rb, err := client.Rebalance(ctx)
-		if err != nil {
-			log.V(1).Info("Node rebalance status unreachable", "node", node.Name, "error", err)
-
-			continue
-		}
-
-		total += rb.RepairQueueDepth
+	if view.layout.Transitioning() {
+		return false, fmt.Sprintf("layout version %d is moving data; versions %v are still retained",
+			view.layout.Version, view.layout.Retained)
 	}
 
-	return total
+	for _, node := range p.nodes {
+		n, ok := view.nodes[node.Name]
+
+		switch {
+		case !ok || !n.Up:
+			return false, fmt.Sprintf("node %q is not up in the cluster's view", node.Name)
+		case n.LayoutVersion < view.layout.Version:
+			return false, fmt.Sprintf("node %q is on layout version %d, not %d",
+				node.Name, n.LayoutVersion, view.layout.Version)
+		}
+	}
+
+	return true, ""
 }
 
-// servingNodes is the declared nodes whose pod is up and current.
+// servingNodes is the cluster's nodes whose pod is up and current.
 func servingNodes(p *pass) []Node {
 	serving := make([]Node, 0, len(p.nodes))
 
@@ -221,4 +178,18 @@ func servingNodes(p *pass) []Node {
 	}
 
 	return serving
+}
+
+// notServingNodes is the cluster's nodes whose pod exists but is not serving:
+// starting, not Ready, or on an older revision.
+func notServingNodes(p *pass) []Node {
+	var rest []Node
+
+	for _, node := range p.nodes {
+		if set, ok := p.live[node.Name]; ok && !nodeServing(set) {
+			rest = append(rest, node)
+		}
+	}
+
+	return rest
 }

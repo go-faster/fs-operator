@@ -36,11 +36,11 @@ import (
 // eventStorageExpanding marks a node's storage being grown.
 const eventStorageExpanding = "StorageExpanding"
 
-// reconcileStorage brings a node's disks to the declared sizes and set (SPEC
-// §8.5). A StatefulSet's volumeClaimTemplates are immutable, so growing a disk
-// or adding one cannot be a plain apply: the operator expands the live PVCs and
-// then orphan-deletes the StatefulSet, leaving the pod and its data running, so
-// the next pass recreates it with the new templates and re-adopts the pod.
+// reconcileStorage brings a node's data volume to the declared size (SPEC
+// §8.5). A StatefulSet's volumeClaimTemplates are immutable, so growing the
+// volume cannot be a plain apply: the operator expands the live PVC and then
+// orphan-deletes the StatefulSet, leaving the pod and its data running, so the
+// next pass recreates it with the new template and re-adopts the pod.
 //
 // A shrink is refused outright — fs has no way to reclaim data off a smaller
 // volume, and Kubernetes cannot shrink a PVC.
@@ -57,14 +57,14 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, p *pass) (pipeline.Ou
 	for i, node := range p.nodes {
 		live, ok := p.live[node.Name]
 		if !ok {
-			// Not created yet; the nodes step creates it with the right disks.
+			// Not created yet; the nodes step creates it with the right size.
 			continue
 		}
 
 		shrunk, changed := diskDiff(live.Spec.VolumeClaimTemplates, p.desired[i].Spec.VolumeClaimTemplates)
 		if len(shrunk) > 0 {
-			return r.refuse(p, fsv1alpha1.ReasonDiskShrinkForbidden, fmt.Sprintf(
-				"node %q disk(s) %v would shrink; disks may only grow", node.Name, shrunk))
+			return r.refuse(p, fsv1alpha1.ReasonStorageShrinkForbidden, fmt.Sprintf(
+				"node %q volume(s) %v would shrink; storage may only grow", node.Name, shrunk))
 		}
 
 		if changed {
@@ -102,10 +102,8 @@ func (r *Reconciler) reconcileStorage(ctx context.Context, p *pass) (pipeline.Ou
 // as healthy again and every later storage change and rollout blocks behind
 // it — permanently, because nothing else ever replaces that pod.
 //
-// It also has to go for a plainer reason: a running pod cannot gain or lose a
-// volume mount, so a disk added or removed only takes effect when the pod is
-// replaced. SPEC §8.5 says "orphan-recreate the StatefulSet and roll the
-// node"; this is the roll.
+// SPEC §8.5 says "orphan-recreate the StatefulSet and roll the node"; this is
+// the roll.
 func (r *Reconciler) finishAdoption(ctx context.Context, p *pass) (pipeline.Outcome, bool, error) {
 	for _, node := range p.nodes {
 		live, running := p.live[node.Name]
@@ -199,8 +197,8 @@ func (r *Reconciler) growClaims(ctx context.Context, p *pass, node Node, desired
 		var pvc corev1.PersistentVolumeClaim
 		if err := r.Get(ctx, types.NamespacedName{Namespace: p.cluster.Namespace, Name: name}, &pvc); err != nil {
 			if apierrors.IsNotFound(err) {
-				// A disk being added has no PVC yet; the recreated StatefulSet
-				// provisions it when the pod is next created.
+				// No PVC yet; the recreated StatefulSet provisions it when
+				// the pod is next created.
 				continue
 			}
 
@@ -221,14 +219,14 @@ func (r *Reconciler) growClaims(ctx context.Context, p *pass, node Node, desired
 	return nil
 }
 
-// PVCName is the name of a disk's PersistentVolumeClaim on a node: the disk
-// (claim template) name, the node's pod, ordinal 0.
-func PVCName(disk, node string) string {
-	return fmt.Sprintf("%s-%s", disk, PodName(node))
+// PVCName is the name of a claim's PersistentVolumeClaim on a node: the claim
+// template name, the node's pod, ordinal 0.
+func PVCName(claim, node string) string {
+	return fmt.Sprintf("%s-%s", claim, PodName(node))
 }
 
 // diskDiff compares live and desired claim templates. It returns the names of
-// disks that would shrink, and whether any disk grew or was added (a claim
+// claims that would shrink, and whether any grew or was added (a claim
 // template change that a plain apply cannot make).
 func diskDiff(live, desired []corev1.PersistentVolumeClaim) (shrunk []string, changed bool) {
 	sizes := make(map[string]resource.Quantity, len(live))
@@ -241,7 +239,7 @@ func diskDiff(live, desired []corev1.PersistentVolumeClaim) (shrunk []string, ch
 
 		have, ok := sizes[claim.Name]
 		if !ok {
-			// A disk not on the live set is an addition.
+			// A claim not on the live set is an addition.
 			changed = true
 
 			continue

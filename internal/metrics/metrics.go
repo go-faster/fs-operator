@@ -52,10 +52,10 @@ const (
 	NodeStateDeclared = "declared"
 	// NodeStateReady is how many node pods are Ready.
 	NodeStateReady = "ready"
-	// NodeStateRegistered is how many nodes the cluster's own control plane
-	// (etcd) has in its topology — a node whose pod is up but which has not
-	// registered is the interesting gap between this and ready.
-	NodeStateRegistered = "registered"
+	// NodeStateUp is how many nodes the cluster's own gossip view reports up
+	// — a node whose pod is Ready but which its peers cannot reach is the
+	// interesting gap between this and ready.
+	NodeStateUp = "up"
 )
 
 var (
@@ -69,7 +69,7 @@ var (
 	// clusterNodes counts the cluster's nodes by state.
 	clusterNodes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "fsoperator_cluster_nodes",
-		Help: "Number of fs cluster nodes by state (declared, ready, registered).",
+		Help: "Number of fs cluster nodes by state (declared, ready, up).",
 	}, []string{labelNamespace, labelCluster, labelState})
 
 	// updatePhase is 1 for the phase a rolling change is in and 0 for the
@@ -91,6 +91,15 @@ var (
 		Buckets: prometheus.ExponentialBuckets(30, 2, 10),
 	}, []string{labelNamespace, labelCluster})
 
+	// layoutRetained is how many older layout versions the cluster still
+	// retains: non-zero while a layout change moves data, and the series that
+	// shows one stuck — a removed node's data that never finishes moving
+	// keeps it above zero, and the node running.
+	layoutRetained = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "fsoperator_cluster_layout_retained_versions",
+		Help: "Older fs layout versions still in transition (0 when no data is moving).",
+	}, []string{labelNamespace, labelCluster})
+
 	// reconcileErrors counts passes that failed, per controller. Distinct from
 	// controller-runtime's own error counter, which also counts requeues.
 	reconcileErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -106,12 +115,11 @@ var allPhases = []fsv1alpha1.UpdatePhase{
 	fsv1alpha1.UpdatePhasePreflight,
 	fsv1alpha1.UpdatePhaseRollingNodes,
 	fsv1alpha1.UpdatePhaseDraining,
-	fsv1alpha1.UpdatePhaseMigrating,
 }
 
 func init() {
 	metrics.Registry.MustRegister(
-		clusterReady, clusterNodes, updatePhase, updateDuration, reconcileErrors,
+		clusterReady, clusterNodes, layoutRetained, updatePhase, updateDuration, reconcileErrors,
 	)
 }
 
@@ -125,7 +133,14 @@ func RecordCluster(cluster *fsv1alpha1.FSCluster) {
 
 	clusterNodes.WithLabelValues(namespace, name, NodeStateDeclared).Set(float64(status.Nodes))
 	clusterNodes.WithLabelValues(namespace, name, NodeStateReady).Set(float64(status.ReadyNodes))
-	clusterNodes.WithLabelValues(namespace, name, NodeStateRegistered).Set(float64(status.RegisteredNodes))
+	clusterNodes.WithLabelValues(namespace, name, NodeStateUp).Set(float64(status.UpNodes))
+
+	var retained int
+	if status.Layout != nil {
+		retained = len(status.Layout.RetainedVersions)
+	}
+
+	layoutRetained.WithLabelValues(namespace, name).Set(float64(retained))
 
 	current := fsv1alpha1.UpdatePhase("")
 	if status.Update != nil {
@@ -158,6 +173,7 @@ func Forget(namespace, name string) {
 
 	clusterReady.DeletePartialMatch(labels)
 	clusterNodes.DeletePartialMatch(labels)
+	layoutRetained.DeletePartialMatch(labels)
 	updatePhase.DeletePartialMatch(labels)
 	updateDuration.DeletePartialMatch(labels)
 }

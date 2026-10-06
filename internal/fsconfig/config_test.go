@@ -35,7 +35,7 @@ func valid() Config {
 			HealthPath:   "/health",
 			TLS:          TLS{CertFile: "/etc/fs/tls/tls.crt", KeyFile: "/etc/fs/tls/tls.key"},
 		},
-		Storage: Storage{Root: "/var/lib/fs", Type: StorageTypeCluster},
+		Storage: Storage{Root: "/var/lib/fs"},
 		Auth: Auth{
 			Keys: []Key{{
 				AccessKey: "AKmedia",
@@ -47,18 +47,10 @@ func valid() Config {
 		Admin: Admin{Enabled: true, Addr: ":8090"},
 		Cluster: Cluster{
 			NodeID:        "prod-a-0",
-			Rack:          "a",
 			Addr:          ":7080",
 			AdvertiseAddr: "prod-a-0-0.prod-peers.tenant-a.svc:7080",
-			Scheme:        "ec:4,2",
-			Disks: []Disk{
-				{ID: "d0", Path: "/var/lib/fs/disks/d0", Weight: 1},
-				{ID: "d1", Path: "/var/lib/fs/disks/d1", Weight: 0.5},
-			},
-			Etcd:      Etcd{Endpoints: []string{"http://etcd:2379"}, Prefix: "/fs/prod", TTL: 15 * time.Second},
-			Rebalance: Rebalance{Settle: time.Minute, Cooldown: 15 * time.Minute, FullWatermark: 0.9},
+			Peers:         []string{"prod-a-0-0.prod-peers.tenant-a.svc:7080", "prod-b-0-0.prod-peers.tenant-a.svc:7080"},
 		},
-		Integrity:     Integrity{VerifyOnRead: true, ScrubInterval: 24 * time.Hour},
 		Observability: Observability{ServiceName: "prod", EnableMetrics: true},
 	}
 }
@@ -82,8 +74,17 @@ func TestRoundTrip(t *testing.T) {
 		t.Errorf("round trip (-want +got):\n%s", diff)
 	}
 
-	if !strings.Contains(string(data), "ttl: 15s") {
+	if !strings.Contains(string(data), "write_timeout: 2m0s") {
 		t.Errorf("durations are not rendered as fs writes them:\n%s", data)
+	}
+}
+
+// TestUnmarshalRefusesUnknownKeys pins the decoder to fs's own strictness: a
+// key fs does not know stops the node, so the mirror must not accept one
+// either.
+func TestUnmarshalRefusesUnknownKeys(t *testing.T) {
+	if _, err := Unmarshal([]byte("storage:\n  root: /data\n  type: cluster\n")); err == nil {
+		t.Error("a removed key (storage.type) was accepted")
 	}
 }
 
@@ -100,27 +101,9 @@ func TestValidate(t *testing.T) {
 		{name: "no listener", mutate: func(c *Config) { c.Server.Addr = "" }},
 		{name: "no timeouts", mutate: func(c *Config) { c.Server.WriteTimeout = 0 }},
 		{name: "no storage root", mutate: func(c *Config) { c.Storage.Root = "" }},
-		{name: "unknown storage type", mutate: func(c *Config) { c.Storage.Type = "s3" }},
-		{
-			// fs refuses the cluster-wide credential store without cluster
-			// storage behind it.
-			name: "etcd credentials on the filesystem backend",
-			mutate: func(c *Config) {
-				c.Storage.Type = StorageTypeFilesystem
-				c.Auth.Source = AuthSourceEtcd
-			},
-		},
 		{name: "no service name", mutate: func(c *Config) { c.Observability.ServiceName = "" }},
-		{name: "no node id", mutate: func(c *Config) { c.Cluster.NodeID = "" }},
 		{name: "no advertise address", mutate: func(c *Config) { c.Cluster.AdvertiseAddr = "" }},
-		{name: "no etcd", mutate: func(c *Config) { c.Cluster.Etcd.Endpoints = nil }},
-		{name: "sub-second etcd ttl", mutate: func(c *Config) { c.Cluster.Etcd.TTL = time.Millisecond }},
-		{name: "negative settle", mutate: func(c *Config) { c.Cluster.Rebalance.Settle = -time.Minute }},
-		{name: "watermark above one", mutate: func(c *Config) { c.Cluster.Rebalance.FullWatermark = 1.5 }},
-		{name: "negative scrub interval", mutate: func(c *Config) { c.Integrity.ScrubInterval = -time.Hour }},
-		{name: "unidentified disk", mutate: func(c *Config) { c.Cluster.Disks[1].ID = "" }},
-		{name: "rootless disk", mutate: func(c *Config) { c.Cluster.Disks[1].Path = "" }},
-		{name: "duplicate disk", mutate: func(c *Config) { c.Cluster.Disks[1].ID = "d0" }},
+		{name: "peers without a node id", mutate: func(c *Config) { c.Cluster.NodeID = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := valid()
@@ -133,30 +116,13 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// TestValidateAcceptsFilesystemBackend covers the single-node development
-// config: no cluster section at all, and none of the cluster checks applied to
-// it.
-func TestValidateAcceptsFilesystemBackend(t *testing.T) {
+// TestValidateAcceptsSingleNode covers the single-node development config: no
+// cluster section at all, and none of the cluster checks applied to it.
+func TestValidateAcceptsSingleNode(t *testing.T) {
 	cfg := valid()
-	cfg.Storage.Type = StorageTypeFilesystem
-	cfg.Auth.Source = AuthSourceFile
 	cfg.Cluster = Cluster{}
 
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("a single-node config was refused: %v", err)
-	}
-}
-
-// TestValidateAcceptsDrainedDisk pins that a drained disk — expressed with a
-// negative weight, see fscluster.DrainWeight — is a valid configuration and
-// not mistaken for a misconfigured one.
-func TestValidateAcceptsDrainedDisk(t *testing.T) {
-	cfg := valid()
-	for i := range cfg.Cluster.Disks {
-		cfg.Cluster.Disks[i].Weight = -1
-	}
-
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("a drained node must validate: %v", err)
 	}
 }

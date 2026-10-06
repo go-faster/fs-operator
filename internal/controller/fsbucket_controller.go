@@ -173,9 +173,11 @@ func (r *FSBucketReconciler) reconcile(ctx context.Context, req ctrl.Request) (c
 	return r.report(ctx, bucket, effective, trueCondition(fsv1alpha1.ReasonBucketReady, "bucket ready"), false)
 }
 
-// reconcileScheme sets the bucket's scheme override (empty clears it) and
-// returns the effective scheme. A rejected scheme is a terminal Ready=False
-// (the user must fix the spec); an unreachable cluster requeues.
+// reconcileScheme sets the bucket's scheme and returns the one in effect. An
+// empty scheme leaves the bucket's alone — rf3 for a new one, or whatever it
+// was set to by other means — and only reads it. A rejected scheme is a
+// terminal Ready=False (the user must fix the spec); an unreachable cluster
+// requeues.
 func (r *FSBucketReconciler) reconcileScheme(ctx context.Context, cluster *fsv1alpha1.FSCluster, bucket, scheme string) (string, *readyCondition, bool) {
 	// A single-node cluster replicates nothing, and fs answers the scheme
 	// endpoints with 501 there. Asking anyway would retry forever against a
@@ -184,7 +186,7 @@ func (r *FSBucketReconciler) reconcileScheme(ctx context.Context, cluster *fsv1a
 	if cluster.Spec.SingleNode() {
 		if scheme != "" {
 			return "", falseCondition(fsv1alpha1.ReasonSchemeRejected,
-				"spec.scheme is not available on a single-node cluster: it stores one copy on one disk"), false
+				"spec.scheme is not available on a single-node cluster: it has no layout to spread over"), false
 		}
 
 		return "", nil, false
@@ -195,7 +197,13 @@ func (r *FSBucketReconciler) reconcileScheme(ctx context.Context, cluster *fsv1a
 		return "", falseCondition(fsv1alpha1.ReasonClusterNotReady, err.Error()), true
 	}
 
-	res, err := admin.SetBucketScheme(ctx, bucket, scheme)
+	var effective string
+	if scheme == "" {
+		effective, err = admin.GetBucketScheme(ctx, bucket)
+	} else {
+		effective, err = admin.SetBucketScheme(ctx, bucket, scheme)
+	}
+
 	if err != nil {
 		if errors.Is(err, fsclient.ErrSchemeRejected) {
 			return "", falseCondition(fsv1alpha1.ReasonSchemeRejected, err.Error()), false
@@ -205,7 +213,7 @@ func (r *FSBucketReconciler) reconcileScheme(ctx context.Context, cluster *fsv1a
 			"cluster admin not reachable yet"), true
 	}
 
-	return res.Scheme, nil, false
+	return effective, nil, false
 }
 
 // finalize honours the reclaim policy: Retain drops the finalizer; Delete

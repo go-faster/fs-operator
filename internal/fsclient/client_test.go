@@ -23,7 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-faster/errors"
 	"github.com/go-faster/fs/adminapi"
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/go-faster/fs-operator/internal/fsclient"
 )
@@ -36,8 +38,9 @@ const (
 	testToken   = "admin-token-abc"
 	testVersion = "v0.6.0"
 
-	// firstNode is the node ID the per-node fixtures key off.
-	firstNode = "fs-0"
+	// firstNode and secondNode are the node IDs the fixtures key off.
+	firstNode  = "fs-0"
+	secondNode = "fs-1"
 )
 
 // stubHandler serves canned admin responses. It embeds UnimplementedHandler so
@@ -45,11 +48,15 @@ const (
 type stubHandler struct {
 	adminapi.UnimplementedHandler
 
-	info      *adminapi.InstanceInfo
-	reload    *adminapi.ReloadResult
-	cluster   *adminapi.ClusterStatus
-	rebalance *adminapi.RebalanceStatus
+	info   *adminapi.InstanceInfo
+	reload *adminapi.ReloadResult
+	layout *adminapi.Layout
+	nodes  *adminapi.ClusterNodeList
 
+	// fail, when set, is returned by every layout call instead of a result.
+	fail *adminapi.ErrorStatusCode
+
+	applied     *adminapi.ApplyLayoutRequest
 	reloadCalls int
 }
 
@@ -63,12 +70,39 @@ func (h *stubHandler) ReloadConfig(context.Context) (*adminapi.ReloadResult, err
 	return h.reload, nil
 }
 
-func (h *stubHandler) GetClusterStatus(context.Context) (*adminapi.ClusterStatus, error) {
-	return h.cluster, nil
+func (h *stubHandler) GetLayout(context.Context) (*adminapi.Layout, error) {
+	if h.fail != nil {
+		return nil, h.fail
+	}
+
+	return h.layout, nil
 }
 
-func (h *stubHandler) GetRebalanceStatus(context.Context) (*adminapi.RebalanceStatus, error) {
-	return h.rebalance, nil
+func (h *stubHandler) ApplyLayout(
+	_ context.Context, req *adminapi.ApplyLayoutRequest, _ adminapi.ApplyLayoutParams,
+) (*adminapi.LayoutChange, error) {
+	if h.fail != nil {
+		return nil, h.fail
+	}
+
+	h.applied = req
+
+	return &adminapi.LayoutChange{Layout: *h.layout, Applied: true}, nil
+}
+
+func (h *stubHandler) ListClusterNodes(context.Context) (*adminapi.ClusterNodeList, error) {
+	return h.nodes, nil
+}
+
+// NewError passes a status error through as the response, which is how fs's
+// own handler reports a 404 or a 400.
+func (h *stubHandler) NewError(_ context.Context, err error) *adminapi.ErrorStatusCode {
+	var status *adminapi.ErrorStatusCode
+	if errors.As(err, &status) {
+		return status
+	}
+
+	return &adminapi.ErrorStatusCode{StatusCode: http.StatusInternalServerError}
 }
 
 // newServer serves handler behind a bearer guard, returning the base URL and
@@ -179,95 +213,15 @@ func TestClientReload(t *testing.T) {
 	}
 }
 
-func TestClientClusterStatus(t *testing.T) {
-	handler := &stubHandler{cluster: &adminapi.ClusterStatus{
-		State:               adminapi.ClusterStateOk,
-		SchemaVersion:       4,
-		BinarySchemaVersion: 5,
-		NodeCount:           6,
-		DiskCount:           6,
-		PlacementSkew:       0.02,
-		RebalanceRunning:    true,
-	}}
-	url, _ := newServer(t, handler)
-
-	client, err := fsclient.New(url, testToken)
-	if err != nil {
-		t.Fatalf("new client: %v", err)
-	}
-
-	status, err := client.ClusterStatus(context.Background())
-	if err != nil {
-		t.Fatalf("cluster status: %v", err)
-	}
-
-	if status.Disabled {
-		t.Error("status reports disabled for a cluster-mode node")
-	}
-
-	// A binary schema ahead of the cluster's is the migration-pending signal.
-	if status.SchemaVersion != 4 || status.BinarySchema != 5 {
-		t.Errorf("schema = cluster %d/binary %d, want 4/5", status.SchemaVersion, status.BinarySchema)
-	}
-
-	if status.NodeCount != 6 || !status.RebalanceRunning {
-		t.Errorf("status = %+v, want 6 nodes with a rebalance running", status)
-	}
-}
-
-// TestClientClusterStatusNodes covers the per-node view fs v0.9.0 added: the
-// aggregate repair queue, the reporting split, per-disk capacity and the live
-// state of a node that answered — plus a node that did not, which must stay
-// distinguishable from an idle one.
-func TestClientClusterStatusNodes(t *testing.T) {
-	handler := &stubHandler{cluster: &adminapi.ClusterStatus{
-		State:             adminapi.ClusterStateOk,
-		NodeCount:         2,
-		DiskCount:         3,
-		TotalBytes:        300,
-		FreeBytes:         180,
-		RepairQueueDepth:  7,
-		NodesReporting:    1,
-		NodesNotReporting: 1,
-		Nodes: []adminapi.ClusterNode{
-			{
-				ID:   firstNode,
-				Rack: adminapi.NewOptString("a"),
-				Disks: []adminapi.ClusterDisk{
-					{
-						ID:         "d0",
-						Weight:     1,
-						TotalBytes: adminapi.NewOptInt64(100),
-						FreeBytes:  adminapi.NewOptInt64(40),
-						Fullness:   adminapi.NewOptFloat64(0.6),
-						HasData:    adminapi.NewOptBool(true),
-					},
-					{
-						// Drained, and still holding data: the state a
-						// decommission passes through (SPEC §8.4).
-						ID:         "d1",
-						Weight:     -1,
-						TotalBytes: adminapi.NewOptInt64(100),
-						FreeBytes:  adminapi.NewOptInt64(90),
-						Fullness:   adminapi.NewOptFloat64(0.1),
-						HasData:    adminapi.NewOptBool(true),
-					},
-				},
-				Live: adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{
-					Version:          adminapi.NewOptString(testVersion),
-					SchemaVersion:    adminapi.NewOptInt(5),
-					RepairQueueDepth: 7,
-					RebalanceState:   adminapi.RebalanceStateRunning,
-				}),
-			},
-			{
-				// Silent: unreachable, or a binary predating the peer status
-				// endpoint. It reports no capacity either.
-				ID:        "fs-1",
-				Disks:     []adminapi.ClusterDisk{{ID: "d0", Weight: 1}},
-				LiveError: adminapi.NewOptString("peer does not serve live state"),
-			},
+func TestClientLayout(t *testing.T) {
+	handler := &stubHandler{layout: &adminapi.Layout{
+		Version: 7,
+		Widths:  []int{3, 6},
+		Members: []adminapi.LayoutMember{
+			{ID: firstNode, Zone: adminapi.NewOptString("z1"), Rack: adminapi.NewOptString("a"), Capacity: 100},
+			{ID: secondNode, Capacity: 50},
 		},
+		RetainedVersions: []uint64{6},
 	}}
 	url, _ := newServer(t, handler)
 
@@ -276,223 +230,124 @@ func TestClientClusterStatusNodes(t *testing.T) {
 		t.Fatalf("new client: %v", err)
 	}
 
-	status, err := client.ClusterStatus(context.Background())
+	layout, err := client.Layout(context.Background())
 	if err != nil {
-		t.Fatalf("cluster status: %v", err)
+		t.Fatalf("layout: %v", err)
 	}
 
-	if status.RepairQueueDepth != 7 {
-		t.Errorf("aggregate repair queue = %d, want 7", status.RepairQueueDepth)
+	want := fsclient.Layout{
+		Version:  7,
+		Widths:   []int{3, 6},
+		Members:  []fsclient.Role{{ID: firstNode, Zone: "z1", Rack: "a", Capacity: 100}, {ID: secondNode, Capacity: 50}},
+		Retained: []uint64{6},
+	}
+	if diff := cmp.Diff(want, layout); diff != "" {
+		t.Errorf("layout (-want +got):\n%s", diff)
 	}
 
-	// One node silent means the aggregate is a partial count, and every gate
-	// that must not mistake silence for quiescence has to see that.
-	if status.AllNodesReporting() {
-		t.Error("AllNodesReporting is true with a node not reporting")
+	if !layout.Transitioning() {
+		t.Error("a layout with a retained version is in transition")
 	}
 
-	reporting, ok := status.Node(firstNode)
-	if !ok {
-		t.Fatal("fs-0 missing from the per-node view")
-	}
-
-	if reporting.Rack != "a" {
-		t.Errorf("fs-0 rack = %q, want %q", reporting.Rack, "a")
-	}
-
-	// 60 used on d0 plus 10 on d1: the only occupancy signal fs exposes.
-	used, known := reporting.UsedBytes()
-	if !known || used != 70 {
-		t.Errorf("fs-0 used = %d (known %v), want 70 (known)", used, known)
-	}
-
-	if reporting.Live == nil {
-		t.Fatal("fs-0 answered, so it should carry live state")
-	}
-
-	if reporting.Live.RebalanceState != string(adminapi.RebalanceStateRunning) {
-		t.Errorf("fs-0 rebalance state = %q, want running", reporting.Live.RebalanceState)
-	}
-
-	if reporting.Disks[0].Drained() || !reporting.Disks[1].Drained() {
-		t.Errorf("fs-0 disks = %+v, want only d1 drained", reporting.Disks)
-	}
-
-	silent, ok := status.Node("fs-1")
-	if !ok {
-		t.Fatal("fs-1 missing from the per-node view")
-	}
-
-	if silent.Live != nil {
-		t.Error("fs-1 did not answer, so it must carry no live state")
-	}
-
-	if silent.LiveError == "" {
-		t.Error("a node that did not answer must say why")
-	}
-
-	// A disk reporting no capacity must not read as an empty disk: that is
-	// exactly the reading that would delete a node still holding data.
-	if used, known := silent.UsedBytes(); known {
-		t.Errorf("fs-1 reports no capacity, got used = %d known", used)
+	if role, ok := layout.Member(secondNode); !ok || role.Capacity != 50 {
+		t.Errorf("member fs-1 = %+v, %v", role, ok)
 	}
 }
 
-// TestClientClusterStatusOccupancy covers the drain signal fs v0.10.0 added.
-// Only one state means the volume can be deleted; every other one is unknown,
-// and reading unknown as empty is how a decommission destroys data.
-func TestClientClusterStatusOccupancy(t *testing.T) {
-	handler := &stubHandler{cluster: &adminapi.ClusterStatus{
-		State:          adminapi.ClusterStateOk,
-		NodesReporting: 3,
-		Nodes: []adminapi.ClusterNode{
-			{
-				// Emptied: every disk answered, and none holds anything.
-				ID: firstNode,
-				Disks: []adminapi.ClusterDisk{
-					{ID: "d0", Weight: -1, HasData: adminapi.NewOptBool(false)},
-					{ID: "d1", Weight: -1, HasData: adminapi.NewOptBool(false)},
-				},
-				Live: adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{RebalanceState: adminapi.RebalanceStateIdle}),
-			},
-			{
-				// One disk emptied, one still holding: not done.
-				ID: "fs-1",
-				Disks: []adminapi.ClusterDisk{
-					{ID: "d0", Weight: -1, HasData: adminapi.NewOptBool(false)},
-					{ID: "d1", Weight: -1, HasData: adminapi.NewOptBool(true)},
-				},
-				Live: adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{RebalanceState: adminapi.RebalanceStateIdle}),
-			},
-			{
-				// One disk emptied, one that could not be probed. The unknown
-				// disk is what stops this node being deleted.
-				ID: "fs-2",
-				Disks: []adminapi.ClusterDisk{
-					{ID: "d0", Weight: -1, HasData: adminapi.NewOptBool(false)},
-					{ID: "d1", Weight: -1, DataError: adminapi.NewOptString("input/output error")},
-				},
-				Live: adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{RebalanceState: adminapi.RebalanceStateIdle}),
-			},
+// TestClientLayoutNone pins that a cluster with no layout yet — every cluster
+// before the operator's first apply — reads as ErrNoLayout, not as a failure.
+func TestClientLayoutNone(t *testing.T) {
+	url, _ := newServer(t, &stubHandler{fail: &adminapi.ErrorStatusCode{
+		StatusCode: http.StatusNotFound,
+		Response:   adminapi.Error{ErrorMessage: "no layout"},
+	}})
+
+	client, err := fsclient.New(url, testToken)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	if _, err := client.Layout(context.Background()); !errors.Is(err, fsclient.ErrNoLayout) {
+		t.Errorf("layout error = %v, want ErrNoLayout", err)
+	}
+}
+
+func TestClientApplyLayout(t *testing.T) {
+	handler := &stubHandler{layout: &adminapi.Layout{Version: 2, Widths: []int{3}}}
+	url, _ := newServer(t, handler)
+
+	client, err := fsclient.New(url, testToken)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	layout, err := client.ApplyLayout(context.Background(),
+		[]fsclient.Role{{ID: firstNode, Zone: "z1", Rack: "a", Capacity: 100}, {ID: secondNode, Capacity: 50}},
+		[]int{3})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	if layout.Version != 2 {
+		t.Errorf("version = %d, want the layout fs returned", layout.Version)
+	}
+
+	want := &adminapi.ApplyLayoutRequest{
+		Members: []adminapi.LayoutRole{
+			{ID: firstNode, Zone: adminapi.NewOptString("z1"), Rack: adminapi.NewOptString("a"), Capacity: 100},
+			// No zone or rack is sent as absent, not as "".
+			{ID: secondNode, Capacity: 50},
 		},
-	}}
-	url, _ := newServer(t, handler)
+		Widths: []int{3},
+	}
+	if diff := cmp.Diff(want, handler.applied); diff != "" {
+		t.Errorf("request (-want +got):\n%s", diff)
+	}
+}
+
+func TestClientApplyLayoutRejected(t *testing.T) {
+	url, _ := newServer(t, &stubHandler{fail: &adminapi.ErrorStatusCode{
+		StatusCode: http.StatusBadRequest,
+		Response:   adminapi.Error{ErrorMessage: "2 members with capacity, width 3"},
+	}})
 
 	client, err := fsclient.New(url, testToken)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
 
-	status, err := client.ClusterStatus(context.Background())
-	if err != nil {
-		t.Fatalf("cluster status: %v", err)
-	}
-
-	drained, _ := status.Node(firstNode)
-	if !drained.Empty() {
-		t.Errorf("fs-0 reported every disk empty, got Empty() = false: %+v", drained.Disks)
-	}
-
-	holding, _ := status.Node("fs-1")
-	if holding.Empty() {
-		t.Error("fs-1 still holds data on d1, so it is not empty")
-	}
-
-	unknown, _ := status.Node("fs-2")
-	if unknown.Empty() {
-		t.Error("fs-2 has a disk that could not be probed; unknown must not read as empty")
-	}
-
-	if got := unknown.Disks[1]; got.OccupancyKnown || got.DataError == "" {
-		t.Errorf("an unprobeable disk = %+v, want occupancy unknown with a reason", got)
+	_, err = client.ApplyLayout(context.Background(), []fsclient.Role{{ID: firstNode, Capacity: 1}}, []int{3})
+	if !errors.Is(err, fsclient.ErrLayoutRejected) {
+		t.Errorf("apply error = %v, want ErrLayoutRejected", err)
 	}
 }
 
-// TestClientClusterStatusOccupancyUnsupported covers a cluster on a binary
-// older than has_data: every disk is unknown, so nothing reads as empty and a
-// decommission holds instead of deleting on a signal that is not there.
-func TestClientClusterStatusOccupancyUnsupported(t *testing.T) {
-	handler := &stubHandler{cluster: &adminapi.ClusterStatus{
-		State:          adminapi.ClusterStateOk,
-		NodesReporting: 1,
-		Nodes: []adminapi.ClusterNode{{
-			ID: firstNode,
-			// Weight says drained, but the binary reports no occupancy at all.
-			Disks: []adminapi.ClusterDisk{{ID: "d0", Weight: -1}},
-			Live:  adminapi.NewOptClusterNodeLive(adminapi.ClusterNodeLive{RebalanceState: adminapi.RebalanceStateIdle}),
-		}},
-	}}
-	url, _ := newServer(t, handler)
+func TestClientNodes(t *testing.T) {
+	url, _ := newServer(t, &stubHandler{nodes: &adminapi.ClusterNodeList{Nodes: []adminapi.ClusterNode{
+		{ID: adminapi.NewOptString(firstNode), Addr: "a:7080", Self: true, Up: true,
+			LayoutVersion: adminapi.NewOptUint64(3), SyncedVersion: adminapi.NewOptUint64(3)},
+		{Addr: "b:7080", Error: adminapi.NewOptString("connection refused")},
+	}}})
 
 	client, err := fsclient.New(url, testToken)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
 
-	status, err := client.ClusterStatus(context.Background())
+	nodes, err := client.Nodes(context.Background())
 	if err != nil {
-		t.Fatalf("cluster status: %v", err)
+		t.Fatalf("nodes: %v", err)
 	}
 
-	node, _ := status.Node(firstNode)
-	if node.Empty() {
-		t.Error("a cluster that reports no occupancy must never read as empty")
+	want := []fsclient.Node{
+		{ID: firstNode, Addr: "a:7080", Self: true, Up: true, LayoutVersion: 3, SyncedVersion: 3},
+		{Addr: "b:7080", Error: "connection refused"},
 	}
-
-	// Out of placement is not the same as emptied, and must not be mistaken
-	// for it: the disk takes no new data, but its data may still be there.
-	if !node.Disks[0].Drained() {
-		t.Error("a negative weight is still drained from placement")
+	if diff := cmp.Diff(want, nodes); diff != "" {
+		t.Errorf("nodes (-want +got):\n%s", diff)
 	}
 }
 
-// TestClientClusterStatusDisabled covers a node not in cluster mode.
-func TestClientClusterStatusDisabled(t *testing.T) {
-	url, _ := newServer(t, &stubHandler{cluster: &adminapi.ClusterStatus{State: adminapi.ClusterStateDisabled}})
-
-	client, err := fsclient.New(url, testToken)
-	if err != nil {
-		t.Fatalf("new client: %v", err)
-	}
-
-	status, err := client.ClusterStatus(context.Background())
-	if err != nil {
-		t.Fatalf("cluster status: %v", err)
-	}
-
-	if !status.Disabled {
-		t.Error("a node not in cluster mode should report disabled")
-	}
-}
-
-func TestClientRebalance(t *testing.T) {
-	handler := &stubHandler{rebalance: &adminapi.RebalanceStatus{
-		State:            adminapi.RebalanceStateRunning,
-		RepairQueueDepth: 42,
-	}}
-	url, _ := newServer(t, handler)
-
-	client, err := fsclient.New(url, testToken)
-	if err != nil {
-		t.Fatalf("new client: %v", err)
-	}
-
-	rb, err := client.Rebalance(context.Background())
-	if err != nil {
-		t.Fatalf("rebalance: %v", err)
-	}
-
-	if rb.RepairQueueDepth != 42 {
-		t.Errorf("repair queue depth = %d, want 42", rb.RepairQueueDepth)
-	}
-
-	if rb.State != "running" {
-		t.Errorf("state = %q, want running", rb.State)
-	}
-}
-
-// TestClientRejectsWrongToken confirms the bearer token is actually sent: a
-// client with the wrong token is refused by the guard.
 func TestClientRejectsWrongToken(t *testing.T) {
 	url, unauthorized := newServer(t, &stubHandler{info: &adminapi.InstanceInfo{}})
 

@@ -18,56 +18,70 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"github.com/go-faster/errors"
 	"github.com/minio/minio-go/v7"
 
 	"github.com/go-faster/fs-operator/internal/fsclient"
-	"github.com/go-faster/fs-operator/internal/scheme"
 )
 
 // fakeAdmin is a shared in-memory admin API for the controller tests. It models
-// the cluster's etcd-backed key store (access key -> grants), the per-bucket
-// scheme overrides and the public-read list.
+// what each node accepts — keyed by the node's admin URL, since every node keeps
+// its own key set and the FSCluster controller is what renders the same keys
+// into all of them — and the per-bucket schemes.
 type fakeAdmin struct {
-	mu         sync.Mutex
-	keys       map[string][]fsclient.Grant
-	schemes    map[string]string
-	publicRead []string
+	mu sync.Mutex
+
+	// accepted maps an access key to the admin URLs of the nodes that accept
+	// it; allNodes stands for every node.
+	accepted map[string][]string
+	// down holds admin URLs that do not answer.
+	down []string
+
+	schemes map[string]string
 	// rejectScheme, when set, makes SetBucketScheme reject that scheme value.
 	rejectScheme string
 }
 
+// allNodes is the accepted entry for a key every node accepts.
+const allNodes = "*"
+
 func newFakeAdmin() *fakeAdmin {
-	return &fakeAdmin{keys: map[string][]fsclient.Grant{}, schemes: map[string]string{}}
+	return &fakeAdmin{accepted: map[string][]string{}, schemes: map[string]string{}}
 }
 
-// client returns an fsclient.Interface backed by this admin, ignoring the
-// endpoint and token (the tests drive one logical cluster).
-func (f *fakeAdmin) client(_, _ string) (fsclient.Interface, error) {
-	return &fakeAdminClient{admin: f}, nil
+// client returns an fsclient.Interface for one node of the fake cluster.
+func (f *fakeAdmin) client(baseURL, _ string) (fsclient.Interface, error) {
+	return &fakeAdminClient{admin: f, url: baseURL}, nil
 }
 
-// hasKey reports whether the store holds the access key.
-func (f *fakeAdmin) hasKey(access string) bool {
+// accept makes the nodes at urls accept a key — every node when none is
+// given — the way a rendered config and a reload do.
+func (f *fakeAdmin) accept(access string, urls ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	_, ok := f.keys[access]
+	if len(urls) == 0 {
+		urls = []string{allNodes}
+	}
 
-	return ok
+	f.accepted[access] = urls
 }
 
-// grantsOf returns the grants recorded for an access key.
-func (f *fakeAdmin) grantsOf(access string) []fsclient.Grant {
+// revoke makes every node drop a key.
+func (f *fakeAdmin) revoke(access string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	return f.keys[access]
+	delete(f.accepted, access)
 }
 
-type fakeAdminClient struct{ admin *fakeAdmin }
+type fakeAdminClient struct {
+	admin *fakeAdmin
+	url   string
+}
 
 func (c *fakeAdminClient) Info(context.Context) (fsclient.Info, error) {
 	return fsclient.Info{}, nil
@@ -77,104 +91,65 @@ func (c *fakeAdminClient) Reload(context.Context) (fsclient.ReloadResult, error)
 	return fsclient.ReloadResult{}, nil
 }
 
-func (c *fakeAdminClient) ClusterStatus(context.Context) (fsclient.ClusterStatus, error) {
-	return fsclient.ClusterStatus{}, nil
+func (c *fakeAdminClient) Layout(context.Context) (fsclient.Layout, error) {
+	return fsclient.Layout{}, fsclient.ErrNoLayout
 }
 
-func (c *fakeAdminClient) Rebalance(context.Context) (fsclient.Rebalance, error) {
-	return fsclient.Rebalance{}, nil
+func (c *fakeAdminClient) ApplyLayout(context.Context, []fsclient.Role, []int) (fsclient.Layout, error) {
+	return fsclient.Layout{}, errors.New("the tenancy controllers never apply a layout")
 }
 
-func (c *fakeAdminClient) ListAccessKeys(context.Context) ([]fsclient.AccessKey, error) {
+func (c *fakeAdminClient) Nodes(context.Context) ([]fsclient.Node, error) {
+	return nil, nil
+}
+
+func (c *fakeAdminClient) AccessKeys(context.Context) ([]string, error) {
 	f := c.admin
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	keys := make([]fsclient.AccessKey, 0, len(f.keys))
-	for k, grants := range f.keys {
-		keys = append(keys, fsclient.AccessKey{AccessKey: k, Grants: grants})
+	if slices.Contains(f.down, c.url) {
+		return nil, errors.New("connection refused")
+	}
+
+	var keys []string
+
+	for access, urls := range f.accepted {
+		if slices.Contains(urls, allNodes) || slices.Contains(urls, c.url) {
+			keys = append(keys, access)
+		}
 	}
 
 	return keys, nil
 }
 
-func (c *fakeAdminClient) CreateAccessKey(_ context.Context, access, _ string, grants []fsclient.Grant) error {
+func (c *fakeAdminClient) GetBucketScheme(_ context.Context, bucket string) (string, error) {
 	f := c.admin
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if _, ok := f.keys[access]; ok {
-		return errors.Wrap(fsclient.ErrKeyExists, access)
+	if scheme, ok := f.schemes[bucket]; ok {
+		return scheme, nil
 	}
 
-	f.keys[access] = grants
-
-	return nil
+	return "rf3", nil
 }
 
-func (c *fakeAdminClient) DeleteAccessKey(_ context.Context, access string) error {
+func (c *fakeAdminClient) SetBucketScheme(_ context.Context, bucket, scheme string) (string, error) {
 	f := c.admin
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	delete(f.keys, access)
-
-	return nil
-}
-
-func (c *fakeAdminClient) GetPublicReadBuckets(context.Context) ([]string, error) {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return append([]string(nil), f.publicRead...), nil
-}
-
-func (c *fakeAdminClient) SetPublicReadBuckets(_ context.Context, buckets []string) error {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.publicRead = append([]string(nil), buckets...)
-
-	return nil
-}
-
-func (c *fakeAdminClient) GetBucketScheme(_ context.Context, bucket string) (fsclient.BucketScheme, error) {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return schemeResult(f.schemes[bucket]), nil
-}
-
-func (c *fakeAdminClient) SetBucketScheme(_ context.Context, bucket, override string) (fsclient.BucketScheme, error) {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if override != "" && override == f.rejectScheme {
-		return fsclient.BucketScheme{}, errors.Wrap(fsclient.ErrSchemeRejected, "topology cannot host scheme "+override)
+	if scheme == f.rejectScheme {
+		return "", errors.Wrap(fsclient.ErrSchemeRejected, "the layout has no width for "+scheme)
 	}
 
-	f.schemes[bucket] = override
+	f.schemes[bucket] = scheme
 
-	return schemeResult(override), nil
-}
-
-func schemeResult(override string) fsclient.BucketScheme {
-	if override == "" {
-		return fsclient.BucketScheme{Scheme: scheme.RF25, ClusterDefault: scheme.RF25, IsDefault: true}
-	}
-
-	return fsclient.BucketScheme{Scheme: override, Override: override, ClusterDefault: scheme.RF25}
+	return scheme, nil
 }
 
 // fakeS3 is an in-memory S3 backend for the bucket controller tests.
@@ -228,15 +203,4 @@ func (s *fakeS3) RemoveBucket(_ context.Context, bucket string) error {
 	delete(s.buckets, bucket)
 
 	return nil
-}
-
-// Disk weight overrides are cluster state the tenancy controllers never touch.
-func (c *fakeAdminClient) SetDiskWeight(context.Context, string, string, float64, string) error {
-	return nil
-}
-
-func (c *fakeAdminClient) ClearDiskWeight(context.Context, string, string) error { return nil }
-
-func (c *fakeAdminClient) ListDiskWeights(context.Context) ([]fsclient.DiskWeightOverride, error) {
-	return nil, nil
 }

@@ -18,17 +18,18 @@ package fscluster
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"github.com/go-faster/errors"
 
 	"github.com/go-faster/fs-operator/internal/fsclient"
-	"github.com/go-faster/fs-operator/internal/scheme"
 )
 
 // fakeAdmin is an in-memory fs admin API for the controller tests, keyed by a
 // node's admin base URL. It stands in for pods envtest does not run: a test
-// sets what each node reports, and asserts on the reloads the operator drives.
+// sets what each node reports, and asserts on the reloads and layouts the
+// operator drives.
 type fakeAdmin struct {
 	mu sync.Mutex
 
@@ -46,34 +47,21 @@ type fakeAdmin struct {
 	reloads     map[string]int
 	unreachable map[string]bool
 
-	// rebalanceRunning and repairQueue drive the cluster's convergence: the
-	// cluster is converged only with no rebalance running and an empty queue.
-	// repairQueue is the pre-v0.9.0 shape — per node, over the rebalance
-	// endpoint the operator falls back to when nothing serves live state.
-	rebalanceRunning bool
-	repairQueue      map[string]int
+	// layout is the cluster's layout, nil before the first apply; applies
+	// records every layout the operator applied, in order.
+	layout  *fsclient.Layout
+	applies []fsclient.Layout
 
-	// diskWeights are the placement-weight overrides set through the admin
-	// API, keyed "node/disk" (fs §11.6).
-	diskWeights map[string]fsclient.DiskWeightOverride
+	// transition makes every apply start a transition: the previous version
+	// stays retained until a test calls finishTransition. rejectLayout makes
+	// every apply fail as fs refusing the roles.
+	transition   bool
+	rejectLayout bool
 
-	// live is the per-node view a v0.9.0 cluster folds into its status, and
-	// notReporting how many registered nodes did not answer. Leaving live
-	// empty models a cluster whose binaries predate the peer status endpoint:
-	// the status carries no aggregate, and the operator fans out instead.
-	live         []fsclient.ClusterNode
-	notReporting int
-
-	// schemaVersion is what the cluster reports as agreed in etcd; binarySchema
-	// is what the deployed binary implements. binarySchema > schemaVersion is a
-	// pending migration.
-	schemaVersion, binarySchema int
-
-	// accessKeys are the access-key IDs every node's ListAccessKeys reports.
-	accessKeys []string
-
-	// publicRead is the cluster-wide public-read bucket list the admin serves.
-	publicRead []string
+	// up is the gossip view, by fs node ID: whether each node answered its
+	// last exchange. behind holds nodes still on an older layout version.
+	up     map[string]bool
+	behind map[string]bool
 }
 
 func newFakeAdmin() *fakeAdmin {
@@ -82,7 +70,8 @@ func newFakeAdmin() *fakeAdmin {
 		mounted:     map[string]string{},
 		reloads:     map[string]int{},
 		unreachable: map[string]bool{},
-		repairQueue: map[string]int{},
+		up:          map[string]bool{},
+		behind:      map[string]bool{},
 	}
 }
 
@@ -107,64 +96,55 @@ func (f *fakeAdmin) setUnreachable(url string, down bool) {
 	f.unreachable[url] = down
 }
 
-// setRebalanceRunning toggles whether a rebalance is moving data cluster-wide.
-func (f *fakeAdmin) setRebalanceRunning(running bool) {
+// setUp marks nodes up (or down) in the gossip view.
+func (f *fakeAdmin) setUp(up bool, ids ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.rebalanceRunning = running
-}
-
-// setRepairQueue sets a node's pending repair-queue depth.
-func (f *fakeAdmin) setRepairQueue(url string, depth int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.repairQueue[url] = depth
-}
-
-// setLive makes the cluster report the v0.9.0 per-node view: these nodes
-// answered the live-state fetch, and notReporting more did not.
-func (f *fakeAdmin) setLive(notReporting int, nodes ...fsclient.ClusterNode) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.live, f.notReporting = nodes, notReporting
-}
-
-// liveNode builds one reporting node holding used bytes of data on a single
-// disk, at the given placement weight.
-func liveNode(id string, weight float64, used, total int64, repairQueue int) fsclient.ClusterNode {
-	return fsclient.ClusterNode{
-		ID: id,
-		Disks: []fsclient.ClusterDisk{{
-			ID:            "disk-0",
-			Weight:        weight,
-			CapacityKnown: true,
-			TotalBytes:    total,
-			FreeBytes:     total - used,
-		}},
-		Live: &fsclient.NodeLive{RepairQueueDepth: repairQueue},
+	for _, id := range ids {
+		f.up[id] = up
 	}
 }
 
-// setAccessKeys replaces what every node's ListAccessKeys reports — the
-// cluster-wide key store as it stands in etcd.
-func (f *fakeAdmin) setAccessKeys(keys ...string) {
+// setLayout installs a layout as though applied earlier, giving each node the
+// capacity of the test clusters' volumes.
+func (f *fakeAdmin) setLayout(version uint64, ids ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.accessKeys = keys
+	layout := fsclient.Layout{Version: version, Widths: []int{3}}
+	for _, id := range ids {
+		layout.Members = append(layout.Members, fsclient.Role{ID: id, Capacity: testCapacity})
+	}
+
+	f.layout = &layout
 }
 
-// setSchema sets the cluster-recorded and binary schema versions.
-//
-//nolint:unparam // binary is a meaningful axis even if the current tests all use 5.
-func (f *fakeAdmin) setSchema(cluster, binary int) {
+// startTransition retains the current layout's previous version, as a layout
+// change that is still moving data does.
+func (f *fakeAdmin) startTransition() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.schemaVersion, f.binarySchema = cluster, binary
+	f.layout.Retained = []uint64{f.layout.Version - 1}
+}
+
+// finishTransition retires every retained version.
+func (f *fakeAdmin) finishTransition() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.layout != nil {
+		f.layout.Retained = nil
+	}
+}
+
+// appliedLayouts returns the layouts the operator applied, in order.
+func (f *fakeAdmin) appliedLayouts() []fsclient.Layout {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	return slices.Clone(f.applies)
 }
 
 // fakeClient is one node's view of the fake admin.
@@ -173,14 +153,23 @@ type fakeClient struct {
 	url   string
 }
 
+// down reports whether this node's admin API errors; f.mu must be held.
+func (c *fakeClient) down() error {
+	if c.admin.unreachable[c.url] {
+		return errors.New("node admin unreachable")
+	}
+
+	return nil
+}
+
 func (c *fakeClient) Info(context.Context) (fsclient.Info, error) {
 	f := c.admin
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.unreachable[c.url] {
-		return fsclient.Info{}, errors.New("node admin unreachable")
+	if err := c.down(); err != nil {
+		return fsclient.Info{}, err
 	}
 
 	return fsclient.Info{ConfigRevision: f.applied[c.url]}, nil
@@ -192,8 +181,8 @@ func (c *fakeClient) Reload(context.Context) (fsclient.ReloadResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.unreachable[c.url] {
-		return fsclient.ReloadResult{}, errors.New("node admin unreachable")
+	if err := c.down(); err != nil {
+		return fsclient.ReloadResult{}, err
 	}
 
 	f.reloads[c.url]++
@@ -210,205 +199,105 @@ func (c *fakeClient) Reload(context.Context) (fsclient.ReloadResult, error) {
 	}, nil
 }
 
-func (c *fakeClient) ClusterStatus(context.Context) (fsclient.ClusterStatus, error) {
+func (c *fakeClient) Layout(context.Context) (fsclient.Layout, error) {
 	f := c.admin
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.unreachable[c.url] {
-		return fsclient.ClusterStatus{}, errors.New("node admin unreachable")
+	if err := c.down(); err != nil {
+		return fsclient.Layout{}, err
 	}
 
-	status := fsclient.ClusterStatus{
-		RebalanceRunning: f.rebalanceRunning,
-		SchemaVersion:    f.schemaVersion,
-		BinarySchema:     f.binarySchema,
+	if f.layout == nil {
+		return fsclient.Layout{}, fsclient.ErrNoLayout
 	}
 
-	// A pre-v0.9.0 cluster reports no live state at all, and the aggregate
-	// stays zero — the operator must not read that as an empty queue.
-	if len(f.live) > 0 {
-		status.Nodes = f.live
-		status.NodesReporting = len(f.live)
-		status.NodesNotReporting = f.notReporting
+	return cloneLayout(*f.layout), nil
+}
 
-		for _, node := range f.live {
-			if node.Live != nil {
-				status.RepairQueueDepth += node.Live.RepairQueueDepth
-			}
+func (c *fakeClient) ApplyLayout(_ context.Context, roles []fsclient.Role, widths []int) (fsclient.Layout, error) {
+	f := c.admin
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := c.down(); err != nil {
+		return fsclient.Layout{}, err
+	}
+
+	if f.rejectLayout {
+		return fsclient.Layout{}, errors.Wrap(fsclient.ErrLayoutRejected, "fewer members with capacity than width")
+	}
+
+	next := fsclient.Layout{Version: 1, Members: slices.Clone(roles), Widths: slices.Clone(widths)}
+	if f.layout != nil {
+		next.Version = f.layout.Version + 1
+
+		if f.transition {
+			next.Retained = []uint64{f.layout.Version}
 		}
 	}
 
-	return status, nil
+	f.layout = &next
+	f.applies = append(f.applies, cloneLayout(next))
+
+	return cloneLayout(next), nil
 }
 
-func (c *fakeClient) Rebalance(context.Context) (fsclient.Rebalance, error) {
+func (c *fakeClient) Nodes(context.Context) ([]fsclient.Node, error) {
 	f := c.admin
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.unreachable[c.url] {
-		return fsclient.Rebalance{}, errors.New("node admin unreachable")
+	if err := c.down(); err != nil {
+		return nil, err
 	}
 
-	return fsclient.Rebalance{RepairQueueDepth: f.repairQueue[c.url]}, nil
-}
-
-func (c *fakeClient) ListAccessKeys(context.Context) ([]fsclient.AccessKey, error) {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.unreachable[c.url] {
-		return nil, errors.New("node admin unreachable")
+	var version uint64
+	if f.layout != nil {
+		version = f.layout.Version
 	}
 
-	keys := make([]fsclient.AccessKey, 0, len(f.accessKeys))
-	for _, k := range f.accessKeys {
-		keys = append(keys, fsclient.AccessKey{AccessKey: k})
-	}
-
-	return keys, nil
-}
-
-func (c *fakeClient) CreateAccessKey(_ context.Context, access, _ string, _ []fsclient.Grant) error {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.accessKeys = append(f.accessKeys, access)
-
-	return nil
-}
-
-func (c *fakeClient) DeleteAccessKey(_ context.Context, access string) error {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	kept := f.accessKeys[:0]
-	for _, k := range f.accessKeys {
-		if k != access {
-			kept = append(kept, k)
-		}
-	}
-
-	f.accessKeys = kept
-
-	return nil
-}
-
-func (c *fakeClient) GetPublicReadBuckets(context.Context) ([]string, error) {
-	return c.admin.publicReadOf(), nil
-}
-
-// publicReadOf returns the public-read list the admin currently serves.
-func (f *fakeAdmin) publicReadOf() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return append([]string(nil), f.publicRead...)
-}
-
-func (c *fakeClient) SetPublicReadBuckets(_ context.Context, buckets []string) error {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.publicRead = append([]string(nil), buckets...)
-
-	return nil
-}
-
-func (c *fakeClient) GetBucketScheme(_ context.Context, _ string) (fsclient.BucketScheme, error) {
-	return fsclient.BucketScheme{Scheme: scheme.RF25, ClusterDefault: scheme.RF25, IsDefault: true}, nil
-}
-
-func (c *fakeClient) SetBucketScheme(_ context.Context, _, override string) (fsclient.BucketScheme, error) {
-	if override == "" {
-		return fsclient.BucketScheme{Scheme: scheme.RF25, ClusterDefault: scheme.RF25, IsDefault: true}, nil
-	}
-
-	return fsclient.BucketScheme{Scheme: override, Override: override, ClusterDefault: scheme.RF25}, nil
-}
-
-// setDiskWeight records an override the way the cluster does: it survives the
-// node re-registering, which is what makes it usable as a decommission step.
-func (c *fakeClient) SetDiskWeight(_ context.Context, node, disk string, weight float64, reason string) error {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.unreachable[c.url] {
-		return errors.New("node admin unreachable")
-	}
-
-	if f.diskWeights == nil {
-		f.diskWeights = map[string]fsclient.DiskWeightOverride{}
-	}
-
-	f.diskWeights[node+"/"+disk] = fsclient.DiskWeightOverride{
-		Node: node, Disk: disk, Weight: weight, Reason: reason,
-	}
-
-	// The override is what placement uses, so reflect it in the live view the
-	// gates read — otherwise a drain would never appear to take effect.
-	for i := range f.live {
-		if f.live[i].ID != node {
-			continue
+	nodes := make([]fsclient.Node, 0, len(f.up))
+	for id, up := range f.up {
+		node := fsclient.Node{ID: id, Up: up, LayoutVersion: version, SyncedVersion: version}
+		if f.behind[id] && version > 0 {
+			node.LayoutVersion, node.SyncedVersion = version-1, version-1
 		}
 
-		for j := range f.live[i].Disks {
-			if f.live[i].Disks[j].ID == disk {
-				f.live[i].Disks[j].Weight = weight
-			}
-		}
+		nodes = append(nodes, node)
 	}
 
-	return nil
+	return nodes, nil
 }
 
-func (c *fakeClient) ClearDiskWeight(_ context.Context, node, disk string) error {
+func (c *fakeClient) AccessKeys(context.Context) ([]string, error) {
 	f := c.admin
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	delete(f.diskWeights, node+"/"+disk)
-
-	return nil
-}
-
-func (c *fakeClient) ListDiskWeights(context.Context) ([]fsclient.DiskWeightOverride, error) {
-	f := c.admin
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	out := make([]fsclient.DiskWeightOverride, 0, len(f.diskWeights))
-	for _, o := range f.diskWeights {
-		out = append(out, o)
+	if err := c.down(); err != nil {
+		return nil, err
 	}
 
-	return out, nil
+	return nil, nil
 }
 
-// overrides is every disk weight override the fake currently holds.
-func (f *fakeAdmin) overrides() []fsclient.DiskWeightOverride {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+func (c *fakeClient) GetBucketScheme(context.Context, string) (string, error) {
+	return "rf3", nil
+}
 
-	out := make([]fsclient.DiskWeightOverride, 0, len(f.diskWeights))
-	for _, o := range f.diskWeights {
-		out = append(out, o)
-	}
+func (c *fakeClient) SetBucketScheme(_ context.Context, _, scheme string) (string, error) {
+	return scheme, nil
+}
 
-	return out
+func cloneLayout(l fsclient.Layout) fsclient.Layout {
+	l.Members = slices.Clone(l.Members)
+	l.Widths = slices.Clone(l.Widths)
+	l.Retained = slices.Clone(l.Retained)
+
+	return l
 }

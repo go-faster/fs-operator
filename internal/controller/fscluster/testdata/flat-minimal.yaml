@@ -7,9 +7,7 @@ server:
   health_path: /health
 storage:
   root: /var/lib/fs
-  type: cluster
-auth:
-  source: etcd
+auth: {}
 admin:
   enabled: true
   addr: :8090
@@ -17,24 +15,15 @@ cluster:
   node_id: prod-0
   addr: :7080
   advertise_addr: prod-0-0.prod-peers.tenant-a.svc:7080
-  scheme: rf2.5
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/tenant-a/prod
-integrity: {}
+  peers:
+    - prod-1-0.prod-peers.tenant-a.svc:7080
+    - prod-2-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
-revision: cfg-46dfc23fb1aa
+revision: cfg-5b9e8b082961
 ---
 # Rendered by fs-operator for node prod-1 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -45,9 +34,7 @@ server:
   health_path: /health
 storage:
   root: /var/lib/fs
-  type: cluster
-auth:
-  source: etcd
+auth: {}
 admin:
   enabled: true
   addr: :8090
@@ -55,24 +42,15 @@ cluster:
   node_id: prod-1
   addr: :7080
   advertise_addr: prod-1-0.prod-peers.tenant-a.svc:7080
-  scheme: rf2.5
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/tenant-a/prod
-integrity: {}
+  peers:
+    - prod-0-0.prod-peers.tenant-a.svc:7080
+    - prod-2-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
-revision: cfg-ee0dfda5a5a4
+revision: cfg-c68c7466e4a5
 ---
 # Rendered by fs-operator for node prod-2 of FSCluster tenant-a/prod. Do not edit.
 server:
@@ -83,9 +61,7 @@ server:
   health_path: /health
 storage:
   root: /var/lib/fs
-  type: cluster
-auth:
-  source: etcd
+auth: {}
 admin:
   enabled: true
   addr: :8090
@@ -93,21 +69,12 @@ cluster:
   node_id: prod-2
   addr: :7080
   advertise_addr: prod-2-0.prod-peers.tenant-a.svc:7080
-  scheme: rf2.5
-  disks:
-    - id: d0
-      path: /var/lib/fs/disks/d0
-      weight: 1
-  etcd:
-    endpoints:
-      - http://etcd-0.etcd.fs-system:2379
-      - http://etcd-1.etcd.fs-system:2379
-      - http://etcd-2.etcd.fs-system:2379
-    prefix: /fs/tenant-a/prod
-integrity: {}
+  peers:
+    - prod-0-0.prod-peers.tenant-a.svc:7080
+    - prod-1-0.prod-peers.tenant-a.svc:7080
 observability:
   service_name: prod
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
-revision: cfg-e5f3c6bf2efa
+revision: cfg-295a9cd58345

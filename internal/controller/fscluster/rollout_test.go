@@ -43,7 +43,7 @@ func TestRollOrderInterleavesRacks(t *testing.T) {
 		stale = append(stale, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: node.Name}})
 	}
 
-	ordered := rollOrder(stale, nodes)
+	ordered := rollOrder(&fsv1alpha1.FSClusterSpec{}, stale, nodes)
 
 	order := make([]string, 0, len(ordered))
 	for _, set := range ordered {
@@ -66,7 +66,7 @@ func TestRollOrderKeepsFlatOrder(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: node2}},
 	}
 
-	ordered := rollOrder(stale, nodes)
+	ordered := rollOrder(&fsv1alpha1.FSClusterSpec{}, stale, nodes)
 	if len(ordered) != 2 || ordered[0].Name != node0 || ordered[1].Name != node2 {
 		t.Errorf("roll order = %v, want the declared order", ordered)
 	}
@@ -76,18 +76,13 @@ func TestRollOrderKeepsFlatOrder(t *testing.T) {
 // changed pod template reaches one node, and the next node waits until that
 // one is serving again.
 func TestRolloutReplacesOneNodeAtATime(t *testing.T) {
-	r, _ := reconciler(t)
-	key := createCluster(t, r, "rollout", nil)
-
-	reconcile(t, r, key)
+	r, _, fake := reconcilerWithAdmin(t)
+	key := laidOut(t, r, fake, "rollout", 3)
 
 	var cluster fsv1alpha1.FSCluster
 	get(t, r, key.Namespace, key.Name, &cluster)
 
 	nodes := Nodes(&cluster)
-	for _, node := range nodes {
-		serving(t, r, key, node)
-	}
 
 	before := templateRevisions(t, r, key, nodes)
 

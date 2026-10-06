@@ -89,7 +89,7 @@ func (r *Reconciler) classify(ctx context.Context, p *pass) (int, []*appsv1.Stat
 		}
 	}
 
-	return created, rollOrder(stale, p.nodes), nil
+	return created, rollOrder(&p.cluster.Spec, stale, p.nodes), nil
 }
 
 // roll replaces at most one node per pass, and only while the rest of the
@@ -165,7 +165,6 @@ func (r *Reconciler) hold(
 	p.update = &fsv1alpha1.UpdateStatus{
 		Phase:     phase,
 		Node:      subject.node,
-		Disk:      subject.disk,
 		StartedAt: ptrTime(started),
 	}
 
@@ -188,14 +187,14 @@ func (r *Reconciler) hold(
 // rollOrder interleaves the racks of the nodes to roll, so that two nodes of
 // one failure domain are never replaced back to back. Within a rack the
 // declared order is kept, which makes a rollout reproducible.
-func rollOrder(stale []*appsv1.StatefulSet, nodes []Node) []*appsv1.StatefulSet {
+func rollOrder(spec *fsv1alpha1.FSClusterSpec, stale []*appsv1.StatefulSet, nodes []Node) []*appsv1.StatefulSet {
 	if len(stale) < 2 {
 		return stale
 	}
 
 	rackOf := make(map[string]string, len(nodes))
 	for _, node := range nodes {
-		rackOf[node.Name] = domainOf(node)
+		rackOf[node.Name] = domainOf(spec, node)
 	}
 
 	var (
@@ -253,28 +252,17 @@ func ptrTime(t metav1.Time) *metav1.Time {
 	return &t
 }
 
-// updateSubject is what a held change is waiting on.
-//
-// A rolling change works through one node at a time, so it is attributable to
-// that node. A disk removal drains one disk out of *every* node at once, so it
-// is not attributable to any of them — reporting the disk's name in the node
-// field, which is what shipped first, tells a reader the cluster is rolling a
-// node called "d1".
+// updateSubject is what a held change is waiting on: the node being replaced,
+// or the nodes being removed.
 type updateSubject struct {
 	node string
-	disk string
 }
 
-// nodeSubject is a rolling change or a node decommission.
+// nodeSubject is a rolling change or a node removal.
 func nodeSubject(name string) updateSubject { return updateSubject{node: name} }
 
-// diskSubject is a disk being drained out of the whole cluster.
-func diskSubject(name string) updateSubject { return updateSubject{disk: name} }
-
 // matches reports whether a published status is about this same subject, which
-// is what decides if the wait is a continuation or a new one. Both fields have
-// to agree: comparing only the node would make every disk removal look like a
-// continuation of the last one.
+// is what decides if the wait is a continuation or a new one.
 func (s updateSubject) matches(update *fsv1alpha1.UpdateStatus) bool {
-	return update.Node == s.node && update.Disk == s.disk
+	return update.Node == s.node
 }

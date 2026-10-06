@@ -24,30 +24,29 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/yaml"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
-	"github.com/go-faster/fs-operator/internal/fsclient"
 )
 
-// shrink drops a flat cluster to n nodes.
-func shrink(t *testing.T, r *Reconciler, key types.NamespacedName, n int32) {
+// shrinkToThree drops a flat cluster to three nodes, the smallest it may have.
+func shrinkToThree(t *testing.T, r *Reconciler, key types.NamespacedName) {
 	t.Helper()
 
 	var cluster fsv1alpha1.FSCluster
 	get(t, r, key.Namespace, key.Name, &cluster)
 
-	cluster.Spec.Topology.Nodes = &n
+	cluster.Spec.Topology.Nodes = new(int32(3))
 
 	if err := r.Update(t.Context(), &cluster); err != nil {
-		t.Fatalf("shrink the topology to %d: %v", n, err)
+		t.Fatalf("shrink the topology to three: %v", err)
 	}
 }
 
-// settleAll stands in for the StatefulSet controller and the nodes' admin APIs:
-// every live node reports its pod up and current, and its config revision
-// applied. It walks the live StatefulSets rather than the declared topology,
-// because a decommissioning node is exactly the one the spec no longer names.
+// settleAll stands in for the StatefulSet controller and the nodes themselves:
+// every live node reports its pod up and current, its config revision
+// applied, and itself up in the gossip view. It walks the live StatefulSets
+// rather than the declared topology, because a node being removed is exactly
+// the one the spec no longer names.
 func settleAll(t *testing.T, r *Reconciler, key types.NamespacedName, fake *fakeAdmin) []string {
 	t.Helper()
 
@@ -62,40 +61,9 @@ func settleAll(t *testing.T, r *Reconciler, key types.NamespacedName, fake *fake
 		names = append(names, sets[i].Name)
 	}
 
+	fake.setUp(true, names...)
+
 	return names
-}
-
-// drainedConfig reports whether a node's rendered config takes it out of
-// placement — every disk at a weight that is not positive.
-func drainedConfig(t *testing.T, r *Reconciler, key types.NamespacedName, node string) bool {
-	t.Helper()
-
-	var secret corev1.Secret
-	get(t, r, key.Namespace, ConfigSecretName(node), &secret)
-
-	var config struct {
-		Cluster struct {
-			Disks []struct {
-				Weight float64 `yaml:"weight"`
-			} `yaml:"disks"`
-		} `yaml:"cluster"`
-	}
-
-	if err := yaml.Unmarshal(secret.Data[ConfigFileName], &config); err != nil {
-		t.Fatalf("parse node %q config: %v", node, err)
-	}
-
-	if len(config.Cluster.Disks) == 0 {
-		t.Fatalf("node %q config declares no disks", node)
-	}
-
-	for _, disk := range config.Cluster.Disks {
-		if disk.Weight > 0 {
-			return false
-		}
-	}
-
-	return true
 }
 
 // updatePhase is the rolling-change phase the status reports.
@@ -112,61 +80,62 @@ func updatePhase(t *testing.T, r *Reconciler, key types.NamespacedName) fsv1alph
 	return cluster.Status.Update.Phase
 }
 
-// liveCluster reports every node as holding data, except those named empty.
-func liveCluster(names []string, empty map[string]bool) []fsclient.ClusterNode {
-	nodes := make([]fsclient.ClusterNode, 0, len(names))
+// exists reports whether a node's StatefulSet is still there.
+func exists(t *testing.T, r *Reconciler, key types.NamespacedName, name string) bool {
+	t.Helper()
 
-	for _, name := range names {
-		nodes = append(nodes, fsclient.ClusterNode{
-			ID: name,
-			Disks: []fsclient.ClusterDisk{{
-				ID:             "disk-0",
-				Weight:         1,
-				CapacityKnown:  true,
-				TotalBytes:     100,
-				FreeBytes:      60,
-				OccupancyKnown: true,
-				HasData:        !empty[name],
-			}},
-			Live: &fsclient.NodeLive{},
-		})
+	var set appsv1.StatefulSet
+
+	err := r.Get(t.Context(), types.NamespacedName{Namespace: key.Namespace, Name: name}, &set)
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("get statefulset %q: %v", name, err)
 	}
 
-	return nodes
+	return err == nil
 }
 
-// TestDecommissionDrainsBeforeRemoving is SPEC §8.4 end to end: a node the spec
-// stops declaring is taken out of placement, kept running while the cluster
-// moves its data off, and only then deleted.
-func TestDecommissionDrainsBeforeRemoving(t *testing.T) {
-	r, _, fake := reconcilerWithAdmin(t)
-	key := createCluster(t, r, "decomm", func(c *fsv1alpha1.FSCluster) {
-		nodes := int32(4)
-		c.Spec.Topology.Nodes = &nodes
-	})
+// laidOut creates a cluster of n flat nodes, settles them and lets the
+// operator apply the first layout.
+func laidOut(t *testing.T, r *Reconciler, fake *fakeAdmin, name string, n int32) types.NamespacedName {
+	t.Helper()
+
+	key := createCluster(t, r, name, func(c *fsv1alpha1.FSCluster) { c.Spec.Topology.Nodes = &n })
 
 	reconcile(t, r, key)
+	settleAll(t, r, key, fake)
+	reconcile(t, r, key)
 
-	names := settleAll(t, r, key, fake)
-	if len(names) != 4 {
-		t.Fatalf("%d nodes, want 4 before the decommission", len(names))
+	if applied := fake.appliedLayouts(); len(applied) != 1 || len(applied[0].Members) != int(n) {
+		t.Fatalf("first layout = %+v, want one with %d members", applied, n)
 	}
 
-	// The highest-index node is the one that leaves first.
-	victim := "decomm-3"
+	return key
+}
 
-	shrink(t, r, key, 3)
+func TestRemovalKeepsTheNodeUntilItsDataHasMoved(t *testing.T) {
+	r, _, fake := reconcilerWithAdmin(t)
+	key := laidOut(t, r, fake, "decomm", 4)
+
+	victim := "decomm-3"
+	fake.transition = true
+
+	shrinkToThree(t, r, key)
 	reconcile(t, r, key)
 
-	// It must still exist: the spec no longer names it, but it still holds
-	// data, and dropping it here is the mistake the whole flow exists to avoid.
-	var set appsv1.StatefulSet
-	get(t, r, key.Namespace, victim, &set)
+	// The layout leaves the node out, which is what moves its data.
+	applied := fake.appliedLayouts()
+	if len(applied) != 2 {
+		t.Fatalf("%d layouts applied, want a second one without %s", len(applied), victim)
+	}
 
-	// And it must have been taken out of placement.
-	config := drainedConfig(t, r, key, victim)
-	if !config {
-		t.Error("the decommissioning node's config still places data on its disks")
+	if _, ok := applied[1].Member(victim); ok {
+		t.Errorf("the second layout still gives %s a share", victim)
+	}
+
+	// It must still run: the spec no longer names it, but until the
+	// transition completes fs still reads from it.
+	if !exists(t, r, key, victim) {
+		t.Fatal("the node was removed while its data was still moving")
 	}
 
 	if phase := updatePhase(t, r, key); phase != fsv1alpha1.UpdatePhaseDraining {
@@ -178,32 +147,26 @@ func TestDecommissionDrainsBeforeRemoving(t *testing.T) {
 		t.Errorf("ClusterSizeAligned = %v, want False/%s", c, fsv1alpha1.ReasonDraining)
 	}
 
-	// It restarts onto the drained config and the cluster still reports it as
-	// holding data: not removable yet.
 	settleAll(t, r, key, fake)
-	fake.setLive(0, liveCluster(names, nil)...)
-
 	reconcile(t, r, key)
 
-	if err := r.Get(t.Context(), types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set); err != nil {
-		t.Fatalf("node %q was removed while it still held data: %v", victim, err)
+	if !exists(t, r, key, victim) {
+		t.Fatal("the node was removed while the transition was still running")
 	}
 
-	// The rebalancer finishes: its disks report empty, and only now may it go.
-	fake.setLive(0, liveCluster(names, map[string]bool{victim: true})...)
-
+	// Every node has synced the new layout: only now may it go.
+	fake.finishTransition()
 	reconcile(t, r, key)
 
-	err := r.Get(t.Context(), types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set)
-	if !apierrors.IsNotFound(err) {
-		t.Fatalf("node %q still exists after it drained: %v", victim, err)
+	if exists(t, r, key, victim) {
+		t.Fatal("the node survived the end of the transition")
 	}
 
 	// Its configuration goes with it; leaving it behind would re-seed the node
 	// if the topology grew again.
 	var secret corev1.Secret
 
-	err = r.Get(t.Context(),
+	err := r.Get(t.Context(),
 		types.NamespacedName{Namespace: key.Namespace, Name: ConfigSecretName(victim)}, &secret)
 	if !apierrors.IsNotFound(err) {
 		t.Errorf("the removed node's config secret survived: %v", err)
@@ -212,243 +175,94 @@ func TestDecommissionDrainsBeforeRemoving(t *testing.T) {
 	if got := len(statefulSets(t, r, key)); got != 3 {
 		t.Errorf("%d nodes left, want 3", got)
 	}
-}
 
-// TestDecommissionWaitsForTheDrainedConfigToLand covers the first gate, which
-// a live e2e caught being waved through: the node must actually be *running*
-// the drained config before its occupancy means anything. Until it restarts its
-// disks are still in placement and still taking writes, so an "empty" read from
-// the pass that only just rendered the drain is not evidence of anything.
-func TestDecommissionWaitsForTheDrainedConfigToLand(t *testing.T) {
-	r, _, fake := reconcilerWithAdmin(t)
-	key := createCluster(t, r, "decomm-gate", func(c *fsv1alpha1.FSCluster) {
-		nodes := int32(4)
-		c.Spec.Topology.Nodes = &nodes
-	})
-
-	reconcile(t, r, key)
-	names := settleAll(t, r, key, fake)
-
-	victim := "decomm-gate-3"
-
-	// Empty from the very first pass — a node that just joined and holds
-	// nothing, which is exactly the case that hid the bug.
-	fake.setLive(0, liveCluster(names, map[string]bool{victim: true})...)
-
-	shrink(t, r, key, 3)
-	reconcile(t, r, key)
-
-	// The drain was rendered this pass; the node has not restarted onto it yet,
-	// so it must still be here.
-	var set appsv1.StatefulSet
-	if err := r.Get(t.Context(),
-		types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set); err != nil {
-		t.Fatalf("node removed in the same pass that rendered its drain: %v", err)
-	}
-
-	if phase := updatePhase(t, r, key); phase != fsv1alpha1.UpdatePhaseDraining {
-		t.Errorf("update phase = %q, want %q while the drain lands", phase,
-			fsv1alpha1.UpdatePhaseDraining)
-	}
-
-	// The pod comes back on the drained config, and only now may it go.
-	settleAll(t, r, key, fake)
-	reconcile(t, r, key)
-
-	err := r.Get(t.Context(), types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set)
-	if !apierrors.IsNotFound(err) {
-		t.Errorf("node still present once drained and empty: %v", err)
+	if got := len(fake.appliedLayouts()); got != 2 {
+		t.Errorf("%d layouts applied, want no third one once the node is gone", got)
 	}
 }
 
-// TestDecommissionHoldsWhileUnconverged covers the gate that matters most: a
-// node reporting empty is not enough while the cluster is still moving data,
-// because the rebalancer is what moves it.
-func TestDecommissionHoldsWhileUnconverged(t *testing.T) {
+// TestRemovalWaitsForTheLayoutChange covers a removal whose layout cannot be
+// applied yet — a declared node is down, so the operator will not hand out
+// slots — and the removed node, still in the layout, must keep running.
+func TestRemovalWaitsForTheLayoutChange(t *testing.T) {
 	r, _, fake := reconcilerWithAdmin(t)
-	key := createCluster(t, r, "decomm-unconverged", func(c *fsv1alpha1.FSCluster) {
-		nodes := int32(4)
-		c.Spec.Topology.Nodes = &nodes
-	})
+	key := laidOut(t, r, fake, "decomm-wait", 4)
 
-	reconcile(t, r, key)
-	names := settleAll(t, r, key, fake)
+	fake.setUp(false, "decomm-wait-1")
 
-	victim := "decomm-unconverged-3"
-
-	shrink(t, r, key, 3)
-	reconcile(t, r, key)
-	settleAll(t, r, key, fake)
-
-	// Empty, but a rebalance is still moving data cluster-wide.
-	fake.setRebalanceRunning(true)
-	fake.setLive(0, liveCluster(names, map[string]bool{victim: true})...)
-
+	shrinkToThree(t, r, key)
 	reconcile(t, r, key)
 
-	var set appsv1.StatefulSet
-	if err := r.Get(t.Context(),
-		types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set); err != nil {
-		t.Fatalf("node removed while the cluster was still rebalancing: %v", err)
+	if got := len(fake.appliedLayouts()); got != 1 {
+		t.Fatalf("%d layouts applied, want none while a declared node is down", got-1)
 	}
 
-	fake.setRebalanceRunning(false)
-	reconcile(t, r, key)
-
-	err := r.Get(t.Context(), types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set)
-	if !apierrors.IsNotFound(err) {
-		t.Errorf("node still present once converged and empty: %v", err)
+	if !exists(t, r, key, "decomm-wait-3") {
+		t.Fatal("a node still in the layout was removed")
 	}
 }
 
-// TestDecommissionHoldsOnPartialView covers the unknown cases, which must all
-// resolve to waiting: a node that did not report leaves the cluster's view
-// incomplete, and an incomplete view is not evidence that a disk is empty.
-func TestDecommissionHoldsOnPartialView(t *testing.T) {
+// TestRemovalHoldsWhenNoNodeAnswers: with no view of the layout, whether the
+// data has moved is unknown, and unknown means wait.
+func TestRemovalHoldsWhenNoNodeAnswers(t *testing.T) {
 	r, _, fake := reconcilerWithAdmin(t)
-	key := createCluster(t, r, "decomm-partial", func(c *fsv1alpha1.FSCluster) {
-		nodes := int32(4)
-		c.Spec.Topology.Nodes = &nodes
-	})
+	key := laidOut(t, r, fake, "decomm-dark", 4)
 
-	reconcile(t, r, key)
-	names := settleAll(t, r, key, fake)
-
-	victim := "decomm-partial-3"
-
-	shrink(t, r, key, 3)
-	reconcile(t, r, key)
-	settleAll(t, r, key, fake)
-
-	// The victim says it is empty, but another node is silent.
-	fake.setLive(1, liveCluster(names, map[string]bool{victim: true})...)
-
-	reconcile(t, r, key)
-
-	var set appsv1.StatefulSet
-	if err := r.Get(t.Context(),
-		types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set); err != nil {
-		t.Fatalf("node removed while a node was not reporting: %v", err)
+	for _, name := range settleAll(t, r, key, fake) {
+		fake.setUnreachable(nodeAdminURL(key, Node{Name: name}), true)
 	}
 
-	// A disk that could not be probed is the same kind of unknown.
-	partial := liveCluster(names, map[string]bool{victim: true})
-	for i := range partial {
-		if partial[i].ID == victim {
-			partial[i].Disks[0].OccupancyKnown = false
-			partial[i].Disks[0].DataError = "input/output error"
+	shrinkToThree(t, r, key)
+	reconcile(t, r, key)
+
+	if !exists(t, r, key, "decomm-dark-3") {
+		t.Fatal("a node was removed with no view of the layout")
+	}
+}
+
+// TestRemovalTakesSeveralNodesInOneChange: a layout transition already keeps
+// every acknowledged write, so the nodes leave together rather than one data
+// move per node.
+func TestRemovalTakesSeveralNodesInOneChange(t *testing.T) {
+	r, _, fake := reconcilerWithAdmin(t)
+	key := laidOut(t, r, fake, "decomm-many", 5)
+
+	shrinkToThree(t, r, key)
+	reconcile(t, r, key)
+
+	applied := fake.appliedLayouts()
+	if len(applied) != 2 || len(applied[1].Members) != 3 {
+		t.Fatalf("layouts = %+v, want one change to three members", applied)
+	}
+
+	for _, name := range []string{"decomm-many-3", "decomm-many-4"} {
+		if exists(t, r, key, name) {
+			t.Errorf("node %q survived a completed layout change", name)
 		}
 	}
-
-	fake.setLive(0, partial...)
-	reconcile(t, r, key)
-
-	if err := r.Get(t.Context(),
-		types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set); err != nil {
-		t.Fatalf("node removed on a disk that could not be probed: %v", err)
-	}
 }
 
-// TestDecommissionNeverActsOnPreV0100Cluster covers a cluster whose binaries do
-// not report occupancy at all: nothing reads as empty, so the decommission
-// waits forever rather than deleting on a signal that is not there.
-func TestDecommissionNeverActsOnPreV0100Cluster(t *testing.T) {
+func TestRemovalRefusesBelowTheMinimum(t *testing.T) {
 	r, _, fake := reconcilerWithAdmin(t)
-	key := createCluster(t, r, "decomm-old", func(c *fsv1alpha1.FSCluster) {
-		nodes := int32(4)
-		c.Spec.Topology.Nodes = &nodes
-	})
+	key := laidOut(t, r, fake, "decomm-min", 3)
 
-	reconcile(t, r, key)
-	names := settleAll(t, r, key, fake)
+	// The API server refuses it outright; the controller would too.
+	var cluster fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &cluster)
 
-	victim := "decomm-old-3"
+	cluster.Spec.Topology.Nodes = new(int32(2))
 
-	shrink(t, r, key, 3)
-	reconcile(t, r, key)
-	settleAll(t, r, key, fake)
-
-	// Reporting, converged — but every disk's occupancy is absent.
-	old := liveCluster(names, nil)
-	for i := range old {
-		old[i].Disks[0].OccupancyKnown = false
-		old[i].Disks[0].HasData = false
+	if err := r.Update(t.Context(), &cluster); err == nil {
+		t.Fatal("the API server accepted a two-node cluster")
 	}
 
-	fake.setLive(0, old...)
-
 	reconcile(t, r, key)
-
-	var set appsv1.StatefulSet
-	if err := r.Get(t.Context(),
-		types.NamespacedName{Namespace: key.Namespace, Name: victim}, &set); err != nil {
-		t.Fatalf("node removed by a cluster that reports no occupancy: %v", err)
-	}
-}
-
-// TestDecommissionRemovesOneAtATime covers the serialization: two nodes dropped
-// at once are removed one after the other, highest index first, never together.
-func TestDecommissionRemovesOneAtATime(t *testing.T) {
-	r, _, fake := reconcilerWithAdmin(t)
-	key := createCluster(t, r, "decomm-serial", func(c *fsv1alpha1.FSCluster) {
-		nodes := int32(5)
-		c.Spec.Topology.Nodes = &nodes
-	})
-
-	reconcile(t, r, key)
-	names := settleAll(t, r, key, fake)
-
-	shrink(t, r, key, 3)
-
-	// Everything is empty and converged: only the one-at-a-time rule stands
-	// between the spec and both nodes disappearing.
-	for range 2 {
-		reconcile(t, r, key)
-		settleAll(t, r, key, fake)
-		fake.setLive(0, liveCluster(names, map[string]bool{
-			"decomm-serial-4": true,
-			"decomm-serial-3": true,
-		})...)
-		reconcile(t, r, key)
-
-		remaining := statefulSets(t, r, key)
-		if len(remaining) < 3 {
-			t.Fatalf("%d nodes left; the removals were not serialized", len(remaining))
-		}
-
-		names = nil
-		for i := range remaining {
-			names = append(names, remaining[i].Name)
-		}
-	}
 
 	if got := len(statefulSets(t, r, key)); got != 3 {
-		t.Errorf("%d nodes after both decommissions, want 3", got)
-	}
-}
-
-// TestDecommissionRefusesBelowSchemeMinimum covers what is still refused
-// outright: a topology too small for its scheme is rejected, and no node is
-// drained on the way to an invalid cluster.
-func TestDecommissionRefusesBelowSchemeMinimum(t *testing.T) {
-	r, _, _ := reconcilerWithAdmin(t)
-	key := createCluster(t, r, "decomm-floor", func(c *fsv1alpha1.FSCluster) {
-		nodes := int32(4)
-		c.Spec.Topology.Nodes = &nodes
-	})
-
-	reconcile(t, r, key)
-
-	shrink(t, r, key, 2)
-	reconcile(t, r, key)
-
-	c := condition(t, r, key, fsv1alpha1.ConditionSpecValid)
-	if c == nil || c.Status != metav1.ConditionFalse ||
-		c.Reason != fsv1alpha1.ReasonSchemeTopologyMismatch {
-		t.Fatalf("SpecValid = %v, want False/%s", c, fsv1alpha1.ReasonSchemeTopologyMismatch)
+		t.Errorf("%d nodes, want all 3 kept while the spec is refused", got)
 	}
 
-	if got := len(statefulSets(t, r, key)); got != 4 {
-		t.Errorf("%d nodes, want the original 4 left untouched", got)
+	if got := len(fake.appliedLayouts()); got != 1 {
+		t.Errorf("%d layouts applied, want none past the first", got-1)
 	}
 }
