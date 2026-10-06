@@ -28,18 +28,12 @@ import (
 type Interface interface {
 	Info(ctx context.Context) (Info, error)
 	Reload(ctx context.Context) (ReloadResult, error)
-	ClusterStatus(ctx context.Context) (ClusterStatus, error)
-	Rebalance(ctx context.Context) (Rebalance, error)
-	ListAccessKeys(ctx context.Context) ([]AccessKey, error)
-	CreateAccessKey(ctx context.Context, access, secret string, grants []Grant) error
-	DeleteAccessKey(ctx context.Context, access string) error
-	GetPublicReadBuckets(ctx context.Context) ([]string, error)
-	SetPublicReadBuckets(ctx context.Context, buckets []string) error
-	ListDiskWeights(ctx context.Context) ([]DiskWeightOverride, error)
-	SetDiskWeight(ctx context.Context, node, disk string, weight float64, reason string) error
-	ClearDiskWeight(ctx context.Context, node, disk string) error
-	GetBucketScheme(ctx context.Context, bucket string) (BucketScheme, error)
-	SetBucketScheme(ctx context.Context, bucket, scheme string) (BucketScheme, error)
+	Layout(ctx context.Context) (Layout, error)
+	ApplyLayout(ctx context.Context, roles []Role, widths []int) (Layout, error)
+	Nodes(ctx context.Context) ([]Node, error)
+	AccessKeys(ctx context.Context) ([]string, error)
+	GetBucketScheme(ctx context.Context, bucket string) (string, error)
+	SetBucketScheme(ctx context.Context, bucket, scheme string) (string, error)
 }
 
 var _ Interface = (*Client)(nil)

@@ -1,10 +1,9 @@
-# Erasure-coded cluster: RS(4,2) as the cluster default scheme.
+# Erasure coding: an ec:4,2 bucket on a six-node cluster.
 #
-# ec:4,2 splits each object into 4 data + 2 parity shards across 6 failure
-# domains, so it tolerates any 2 lost while storing 1.5x (versus 2.5x for the
-# default rf2.5). It needs at least 6 nodes — one shard per failure domain.
-# Per-bucket overrides (FSBucket.spec.scheme) can still opt individual buckets
-# into a different scheme.
+# ec:4,2 splits each block into 4 data + 2 parity shards on 6 distinct nodes,
+# so it survives any 2 lost while storing 1.5x (versus 3x for rf3). The scheme
+# is per bucket; the cluster has to be laid out for its width (k+m = 6), next
+# to the width 3 every cluster keeps for replicated data and metadata.
 apiVersion: fs.go-faster.org/v1alpha1
 kind: FSCluster
 metadata:
@@ -12,17 +11,23 @@ metadata:
 spec:
   # image is omitted: it defaults to the pinned fs release this operator
   # version is validated against (bump it in one place with `make fs-version`).
-  scheme: "ec:4,2"
   topology:
+    # At least as many nodes as the widest width.
     nodes: 6
+  layout:
+    widths: [3, 6]
   storage:
-    disks:
-      - name: d0
-        size: 200Gi
-        storageClass: fast-nvme
-  etcd:
-    external:
-      endpoints:
-        - http://etcd-0.etcd.fs-system:2379
-        - http://etcd-1.etcd.fs-system:2379
-        - http://etcd-2.etcd.fs-system:2379
+    size: 200Gi
+    storageClass: fast-nvme
+---
+# Blocks of 256 KiB and up written to this bucket are erasure coded; smaller
+# ones and inline objects stay replicated. A scheme change applies to new
+# writes only.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSBucket
+metadata:
+  name: archive
+spec:
+  clusterRef:
+    name: fs-ec
+  scheme: "ec:4,2"

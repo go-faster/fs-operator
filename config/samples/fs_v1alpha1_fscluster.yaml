@@ -10,10 +10,4 @@ spec:
     nodes: 3
     podAntiAffinity: Preferred
   storage:
-    disks:
-      - name: d0
-        size: 10Gi
-  etcd:
-    external:
-      endpoints:
-        - http://etcd.default.svc:2379
+    size: 10Gi

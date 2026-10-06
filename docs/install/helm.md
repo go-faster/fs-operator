@@ -23,7 +23,7 @@ helm install fs-operator ./dist/chart \
 
 Then create an [`FSCluster`](../guides/configuration.md) — see
 [`examples/00-single-node.yaml`](../../examples/00-single-node.yaml) for a
-one-pod development install that needs no etcd, or
+one-pod development install, or
 [`examples/01-minimal.yaml`](../../examples/01-minimal.yaml) for a three-node
 one.
 

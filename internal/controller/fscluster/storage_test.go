@@ -17,7 +17,6 @@ limitations under the License.
 package fscluster
 
 import (
-	"slices"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,27 +35,26 @@ import (
 // server refuses to resize a PVC whose class does not.
 const expandableClass = "expandable"
 
-// TestReconcileDiskGrow covers SPEC §8.5: growing a disk expands the node's PVC
-// and orphan-recreates its StatefulSet (which has immutable claim templates),
-// one node at a time, keeping the pod.
-func TestReconcileDiskGrow(t *testing.T) {
-	r, _, admin := reconcilerWithAdmin(t)
+// TestReconcileStorageGrow covers SPEC §8.5: growing the storage expands each
+// node's PVC and orphan-recreates its StatefulSet (which has immutable claim
+// templates), one node at a time, keeping the pod — and raises the node's
+// capacity in the layout, so it takes a share of the data in proportion.
+func TestReconcileStorageGrow(t *testing.T) {
+	r, _, fake := reconcilerWithAdmin(t)
 	ensureExpandableClass(t, r)
 
-	key := createCluster(t, r, "disk-grow", func(c *fsv1alpha1.FSCluster) {
-		c.Spec.Storage.Disks[0].StorageClass = expandableClass
-	})
+	key := laidOut(t, r, fake, "storage-grow", 3)
 
-	nodes := steady(t, r, admin, key)
-	provisionPVCs(t, r, key, nodes, "200Gi")
-
-	// Grow the disk.
 	var cluster fsv1alpha1.FSCluster
 	get(t, r, key.Namespace, key.Name, &cluster)
-	cluster.Spec.Storage.Disks[0].Size = resource.MustParse("500Gi")
+
+	nodes := Nodes(&cluster)
+	provisionPVCs(t, r, key, nodes, "200Gi")
+
+	cluster.Spec.Storage.Size = resource.MustParse("500Gi")
 
 	if err := r.Update(t.Context(), &cluster); err != nil {
-		t.Fatalf("grow the disk: %v", err)
+		t.Fatalf("grow the storage: %v", err)
 	}
 
 	reconcile(t, r, key)
@@ -65,7 +63,7 @@ func TestReconcileDiskGrow(t *testing.T) {
 	first := nodes[0]
 
 	var pvc corev1.PersistentVolumeClaim
-	get(t, r, key.Namespace, PVCName("d0", first.Name), &pvc)
+	get(t, r, key.Namespace, PVCName(DataVolumeName, first.Name), &pvc)
 
 	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got.Cmp(resource.MustParse("500Gi")) != 0 {
 		t.Errorf("PVC size = %s, want 500Gi", got.String())
@@ -81,8 +79,7 @@ func TestReconcileDiskGrow(t *testing.T) {
 		t.Errorf("node %q StatefulSet was not deleted", first.Name)
 	}
 
-	// Exactly one node is touched per pass — the others are untouched (no
-	// deletion timestamp).
+	// Exactly one node is touched per pass.
 	for _, node := range nodes[1:] {
 		var set appsv1.StatefulSet
 		get(t, r, key.Namespace, node.Name, &set)
@@ -90,6 +87,12 @@ func TestReconcileDiskGrow(t *testing.T) {
 		if set.DeletionTimestamp != nil {
 			t.Errorf("node %q was also deleted; storage surgery must be one at a time", node.Name)
 		}
+	}
+
+	// The layout follows the declared size.
+	applied := fake.appliedLayouts()
+	if len(applied) != 2 || applied[1].Members[0].Capacity != 500<<30 {
+		t.Errorf("layouts = %+v, want a second one at 500Gi per node", applied)
 	}
 
 	// Stand in for the garbage collector, then the next pass recreates the
@@ -101,134 +104,48 @@ func TestReconcileDiskGrow(t *testing.T) {
 	var set appsv1.StatefulSet
 	get(t, r, key.Namespace, first.Name, &set)
 
-	claim := claimNamed(t, &set, "d0")
+	claim := claimNamed(t, &set, DataVolumeName)
 	if got := claim.Spec.Resources.Requests[corev1.ResourceStorage]; got.Cmp(resource.MustParse("500Gi")) != 0 {
 		t.Errorf("recreated StatefulSet claim size = %s, want 500Gi", got.String())
 	}
 }
 
-// TestReconcileAddsTheStateVolumeToAnOlderNode covers the upgrade path of a
-// cluster built before nodes had a state volume: its StatefulSets have no such
-// claim template, and a claim template cannot be patched in. The node has to
-// go through the same orphan-recreate as a disk being added — one node at a
-// time, keeping the pod and its data — rather than the operator failing to
-// apply a StatefulSet forever.
-func TestReconcileAddsTheStateVolumeToAnOlderNode(t *testing.T) {
-	r, _, admin := reconcilerWithAdmin(t)
-
-	key := createCluster(t, r, "state-upgrade", nil)
-	nodes := steady(t, r, admin, key)
-	provisionPVCs(t, r, key, nodes, "200Gi")
-
-	// Rebuild the first node the way the previous operator version would
-	// have: every claim except the state volume.
-	first := nodes[0]
-
-	var before appsv1.StatefulSet
-	get(t, r, key.Namespace, first.Name, &before)
-
-	older := before.DeepCopy()
-	older.Spec.VolumeClaimTemplates = slices.DeleteFunc(older.Spec.VolumeClaimTemplates,
-		func(claim corev1.PersistentVolumeClaim) bool {
-			return claim.Name == fsv1alpha1.StateVolumeName
-		})
-
-	container := &older.Spec.Template.Spec.Containers[0]
-	container.VolumeMounts = slices.DeleteFunc(container.VolumeMounts,
-		func(mount corev1.VolumeMount) bool {
-			return mount.Name == fsv1alpha1.StateVolumeName
-		})
-
-	recreateStatefulSet(t, r, older)
-
-	// The replacement starts with an empty status, so put the node back in the
-	// serving state the storage step insists on before it touches anything.
-	serving(t, r, key, first)
-
-	reconcile(t, r, key)
-
-	var deleted appsv1.StatefulSet
-	get(t, r, key.Namespace, first.Name, &deleted)
-
-	if deleted.DeletionTimestamp == nil {
-		t.Fatalf("node %q was not orphan-deleted; its state volume can never appear", first.Name)
-	}
-
-	finishGarbageCollection(t, r, key.Namespace, first.Name)
-
-	reconcile(t, r, key)
-
-	var after appsv1.StatefulSet
-	get(t, r, key.Namespace, first.Name, &after)
-
-	claim := claimNamed(t, &after, fsv1alpha1.StateVolumeName)
-	if got := claim.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != fsv1alpha1.DefaultStateSize {
-		t.Errorf("state claim = %s, want %s", got.String(), fsv1alpha1.DefaultStateSize)
-	}
-}
-
-// recreateStatefulSet replaces a StatefulSet with one whose immutable fields
-// differ — what envtest cannot do with an update.
-func recreateStatefulSet(t *testing.T, r *Reconciler, set *appsv1.StatefulSet) {
-	t.Helper()
-
-	if err := r.Delete(t.Context(), set); err != nil {
-		t.Fatalf("delete statefulset %q: %v", set.Name, err)
-	}
-
-	var gone appsv1.StatefulSet
-	if err := r.Get(t.Context(), types.NamespacedName{Namespace: set.Namespace, Name: set.Name},
-		&gone); !apierrors.IsNotFound(err) {
-		t.Fatalf("statefulset %q did not go away (err=%v)", set.Name, err)
-	}
-
-	fresh := set.DeepCopy()
-	fresh.ObjectMeta = metav1.ObjectMeta{
-		Name:            set.Name,
-		Namespace:       set.Namespace,
-		Labels:          set.Labels,
-		Annotations:     set.Annotations,
-		OwnerReferences: set.OwnerReferences,
-	}
-	fresh.Status = appsv1.StatefulSetStatus{}
-
-	if err := r.Create(t.Context(), fresh); err != nil {
-		t.Fatalf("recreate statefulset %q: %v", set.Name, err)
-	}
-}
-
-// TestReconcileRefusesDiskShrink covers the refusal: a disk may only grow.
-func TestReconcileRefusesDiskShrink(t *testing.T) {
-	r, _, admin := reconcilerWithAdmin(t)
+func TestReconcileRefusesStorageShrink(t *testing.T) {
+	r, _, fake := reconcilerWithAdmin(t)
 	ensureExpandableClass(t, r)
 
-	key := createCluster(t, r, "disk-shrink", nil)
-
-	nodes := steady(t, r, admin, key)
-	provisionPVCs(t, r, key, nodes, "200Gi")
+	key := laidOut(t, r, fake, "storage-shrink", 3)
 
 	var cluster fsv1alpha1.FSCluster
 	get(t, r, key.Namespace, key.Name, &cluster)
-	cluster.Spec.Storage.Disks[0].Size = resource.MustParse("100Gi")
+
+	nodes := Nodes(&cluster)
+	provisionPVCs(t, r, key, nodes, "200Gi")
+
+	cluster.Spec.Storage.Size = resource.MustParse("100Gi")
 
 	if err := r.Update(t.Context(), &cluster); err != nil {
-		t.Fatalf("shrink the disk: %v", err)
+		t.Fatalf("shrink the storage: %v", err)
 	}
 
 	reconcile(t, r, key)
 
 	c := condition(t, r, key, fsv1alpha1.ConditionSpecValid)
-	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != fsv1alpha1.ReasonDiskShrinkForbidden {
-		t.Fatalf("SpecValid = %v, want False/%s", c, fsv1alpha1.ReasonDiskShrinkForbidden)
+	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != fsv1alpha1.ReasonStorageShrinkForbidden {
+		t.Fatalf("SpecValid = %v, want False/%s", c, fsv1alpha1.ReasonStorageShrinkForbidden)
 	}
 
-	// Nothing was deleted.
+	// Nothing was deleted, and the layout was left alone.
 	for _, node := range nodes {
 		get(t, r, key.Namespace, node.Name, &appsv1.StatefulSet{})
 	}
+
+	if got := len(fake.appliedLayouts()); got != 1 {
+		t.Errorf("%d layouts applied for a refused spec, want only the first", got)
+	}
 }
 
-// provisionPVCs creates the disk PVCs a StatefulSet controller would, at the
+// provisionPVCs creates the data PVCs a StatefulSet controller would, at the
 // given size, so the storage step has volumes to expand.
 func provisionPVCs(t *testing.T, r *Reconciler, key types.NamespacedName, nodes []Node, size string) {
 	t.Helper()
@@ -236,7 +153,7 @@ func provisionPVCs(t *testing.T, r *Reconciler, key types.NamespacedName, nodes 
 	for _, node := range nodes {
 		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      PVCName("d0", node.Name),
+				Name:      PVCName(DataVolumeName, node.Name),
 				Namespace: key.Namespace,
 			},
 			Spec: corev1.PersistentVolumeClaimSpec{
@@ -307,9 +224,6 @@ func ensureExpandableClass(t *testing.T, r *Reconciler) {
 // that is running and ready. nodeServing reads that as "not serving", so the
 // node never counts as healthy again and every later storage change and
 // rollout blocks behind it — for good, because nothing else replaces that pod.
-//
-// It matters for a second reason too: a running pod cannot gain a volume
-// mount, so a disk added this way is never actually mounted until the pod goes.
 func TestStorageReplacesTheAdoptedPod(t *testing.T) {
 	r, _ := reconciler(t)
 	key := createCluster(t, r, "adopted-pod", nil)

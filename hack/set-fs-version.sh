@@ -112,13 +112,13 @@ done
 
 echo "pinned fs ${pinned} -> ${version}; regenerating manifests and chart CRDs"
 
-make manifests generate helm-sync-crds
+make manifests generate helm-sync-crds docs-api-ref
 
 cat <<EOF
 
 fs is now pinned to ${version}. Before committing:
   - run 'make test' and the e2e suite against the new image;
-  - read the upstream release notes for schema changes: a cluster whose
-    binary implements a newer schema needs a migration, and a rollback past
-    one is unsupported (SPEC §8.2).
+  - read the upstream release notes for config keys and on-disk formats:
+    fs refuses a config key it does not know, and a release that changes
+    its storage format may not upgrade in place.
 EOF

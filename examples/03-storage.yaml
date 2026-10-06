@@ -1,0 +1,24 @@
+# Storage: every node gets one PersistentVolumeClaim, mounted at fs's storage
+# root, holding everything the node keeps — metadata, data blocks and the
+# adopted layout.
+#
+# storage.size is also the node's capacity in the layout, so a node's share of
+# the data follows it. It may only grow (the StorageClass must allow volume
+# expansion); growing it expands each node's PVC one node at a time and raises
+# its capacity in the layout.
+apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-storage
+spec:
+  # image is omitted: it defaults to the pinned fs release this operator
+  # version is validated against (bump it in one place with `make fs-version`).
+  topology:
+    nodes: 4
+  storage:
+    size: 500Gi
+    # Metadata is written on every request: the fastest class you have.
+    storageClass: fast-nvme
+    # Retain (the default) keeps a removed node's volume, and every volume
+    # when the cluster is deleted; Delete removes them with the node.
+    reclaimPolicy: Retain

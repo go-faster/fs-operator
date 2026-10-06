@@ -265,8 +265,8 @@ subjects:
 		// This container covers the operator as a deployment: it runs, it
 		// serves metrics, its webhook answers. What the operator *does* lives
 		// in its own containers, which run alongside this one — FSCluster
-		// (provisioning, S3, decommission, disk add/remove, refusals),
-		// Managed etcd, and Examples.
+		// (provisioning, S3, tenancy, node removal, refusals), Single-node
+		// cluster, and Examples.
 	})
 })
 

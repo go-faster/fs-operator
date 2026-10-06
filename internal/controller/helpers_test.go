@@ -44,12 +44,7 @@ func makeCluster(ctx context.Context, name string) {
 				Nodes:           &nodes,
 				PodAntiAffinity: fsv1alpha1.AntiAffinityPreferred,
 			},
-			Storage: fsv1alpha1.StorageSpec{
-				Disks: []fsv1alpha1.DiskSpec{{Name: "d0", Size: resource.MustParse("10Gi")}},
-			},
-			Etcd: fsv1alpha1.EtcdSpec{
-				External: &fsv1alpha1.ExternalEtcdSpec{Endpoints: []string{"http://etcd.default.svc:2379"}},
-			},
+			Storage: fsv1alpha1.StorageSpec{Size: resource.MustParse("10Gi")},
 		},
 	}
 	Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
@@ -63,8 +58,8 @@ func makeCluster(ctx context.Context, name string) {
 	})
 }
 
-// makeSingleNodeCluster creates the development shape: one node on fs's
-// filesystem backend, with no etcd and no replication.
+// makeSingleNodeCluster creates the development shape: one node, with no
+// layout and no replication.
 func makeSingleNodeCluster(ctx context.Context, name string) {
 	nodes := int32(1)
 
@@ -72,9 +67,7 @@ func makeSingleNodeCluster(ctx context.Context, name string) {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
 		Spec: fsv1alpha1.FSClusterSpec{
 			Topology: fsv1alpha1.TopologySpec{Nodes: &nodes},
-			Storage: fsv1alpha1.StorageSpec{
-				Disks: []fsv1alpha1.DiskSpec{{Name: "d0", Size: resource.MustParse("10Gi")}},
-			},
+			Storage:  fsv1alpha1.StorageSpec{Size: resource.MustParse("10Gi")},
 		},
 	}
 	Expect(k8sClient.Create(ctx, cluster)).To(Succeed())

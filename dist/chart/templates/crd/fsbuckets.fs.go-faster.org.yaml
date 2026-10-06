@@ -88,11 +88,13 @@ spec:
                 type: string
               scheme:
                 description: |-
-                  scheme overrides the cluster's default replication scheme for this
-                  bucket's objects: "rf2.5", "rf3" or "ec:k,m" (e.g. "ec:4,2"). Empty
-                  applies the cluster default. Changing it affects new writes cluster-wide
-                  within seconds; existing objects convert through repair/rebalance.
-                pattern: ^(rf2\.5|rf3|ec:[0-9]+,[0-9]+)?$
+                  scheme is how this bucket's objects are stored: "rf3" (three
+                  replicas, the default) or "ec:k,m" (erasure coded, e.g. "ec:4,2").
+                  An erasure scheme needs the cluster's spec.layout.widths to include
+                  k+m, and is refused on a single-node cluster. A change applies to data
+                  written from then on; existing data keeps the scheme it was written
+                  with.
+                pattern: ^(rf3|ec:[1-9][0-9]*,[1-9][0-9]*)?$
                 type: string
             required:
             - clusterRef

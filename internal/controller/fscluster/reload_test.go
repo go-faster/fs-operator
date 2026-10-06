@@ -28,10 +28,8 @@ import (
 
 // TestReconcileConfigurationInSync checks the config-revision verification the
 // reload step performs: ConfigurationInSync flips True only once every node
-// reports the config revision it was given. Credentials and public-read are no
-// longer rendered into the config (they are cluster-wide in etcd, fs §6.8), so
-// what the step guards now is that a node is actually running the intended
-// config after a change was applied.
+// reports the config revision it was given — which is how a credential change,
+// applied by reload rather than restart, is known to have landed (SPEC §8.3).
 func TestReconcileConfigurationInSync(t *testing.T) {
 	r, _, admin := reconcilerWithAdmin(t)
 	key := createCluster(t, r, "config-insync", nil)

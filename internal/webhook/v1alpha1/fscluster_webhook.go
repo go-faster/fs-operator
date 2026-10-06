@@ -84,9 +84,8 @@ func (v *FSClusterValidator) ValidateUpdate(
 		reject(updated.Name, validation.ClusterUpdate(defaulted(before), spec))
 }
 
-// ValidateDelete admits every delete. Deletion is choreographed by the
-// finalizer, not gated here: a cluster the user wants gone should go, and
-// whether its etcd keys go with it is spec.etcd.cleanupOnDelete's business
+// ValidateDelete admits every delete: a cluster the user wants gone should go,
+// and whether its data goes with it is spec.storage.reclaimPolicy's business
 // (SPEC §8.6).
 func (v *FSClusterValidator) ValidateDelete(
 	context.Context, *fsv1alpha1.FSCluster,

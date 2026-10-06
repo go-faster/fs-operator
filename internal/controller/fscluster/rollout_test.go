@@ -43,7 +43,7 @@ func TestRollOrderInterleavesRacks(t *testing.T) {
 		stale = append(stale, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: node.Name}})
 	}
 
-	ordered := rollOrder(stale, nodes)
+	ordered := rollOrder(&fsv1alpha1.FSClusterSpec{}, stale, nodes)
 
 	order := make([]string, 0, len(ordered))
 	for _, set := range ordered {
@@ -66,7 +66,7 @@ func TestRollOrderKeepsFlatOrder(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: node2}},
 	}
 
-	ordered := rollOrder(stale, nodes)
+	ordered := rollOrder(&fsv1alpha1.FSClusterSpec{}, stale, nodes)
 	if len(ordered) != 2 || ordered[0].Name != node0 || ordered[1].Name != node2 {
 		t.Errorf("roll order = %v, want the declared order", ordered)
 	}
@@ -76,18 +76,13 @@ func TestRollOrderKeepsFlatOrder(t *testing.T) {
 // changed pod template reaches one node, and the next node waits until that
 // one is serving again.
 func TestRolloutReplacesOneNodeAtATime(t *testing.T) {
-	r, _ := reconciler(t)
-	key := createCluster(t, r, "rollout", nil)
-
-	reconcile(t, r, key)
+	r, _, fake := reconcilerWithAdmin(t)
+	key := laidOut(t, r, fake, "rollout", 3)
 
 	var cluster fsv1alpha1.FSCluster
 	get(t, r, key.Namespace, key.Name, &cluster)
 
 	nodes := Nodes(&cluster)
-	for _, node := range nodes {
-		serving(t, r, key, node)
-	}
 
 	before := templateRevisions(t, r, key, nodes)
 
@@ -161,6 +156,66 @@ func TestRolloutCreatesNewNodesAtOnce(t *testing.T) {
 
 	if got, want := len(statefulSets(t, r, key)), 6; got != want {
 		t.Errorf("%d node statefulsets, want all %d created at once", got, want)
+	}
+}
+
+// TestRolloutReplacesNodesThatAreDown covers the fresh cluster whose first
+// spec was wrong — an image that does not pull. No pod is Ready before the
+// first layout, so the one-at-a-time gate would wait forever on nodes only the
+// fix can bring up. A node that is already down costs nothing to replace.
+func TestRolloutReplacesNodesThatAreDown(t *testing.T) {
+	r, _ := reconciler(t)
+	key := createCluster(t, r, "rollout-down", nil)
+
+	reconcile(t, r, key)
+
+	var cluster fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	nodes := Nodes(&cluster)
+	before := templateRevisions(t, r, key, nodes)
+
+	cluster.Spec.Image.Tag = "v0.14.0-fixed"
+
+	if err := r.Update(t.Context(), &cluster); err != nil {
+		t.Fatalf("fix the image: %v", err)
+	}
+
+	reconcile(t, r, key)
+
+	if rolled := changedNodes(before, templateRevisions(t, r, key, nodes)); len(rolled) != len(nodes) {
+		t.Errorf("%d of %d down nodes replaced, want all of them at once", len(rolled), len(nodes))
+	}
+}
+
+// TestRolloutReplacesTheBrokenNodeFirst: one node of a laid-out cluster is
+// crash looping; the change that fixes it must reach it although the cluster
+// is not converged — the node it is waiting on is that one.
+func TestRolloutReplacesTheBrokenNodeFirst(t *testing.T) {
+	r, _, fake := reconcilerWithAdmin(t)
+	key := laidOut(t, r, fake, "rollout-broken", 3)
+
+	var cluster fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	nodes := Nodes(&cluster)
+
+	notServing(t, r, key, nodes[1].Name)
+	fake.setUp(false, nodes[1].Name)
+
+	before := templateRevisions(t, r, key, nodes)
+
+	cluster.Spec.Image.Tag = "v0.14.0-fixed"
+
+	if err := r.Update(t.Context(), &cluster); err != nil {
+		t.Fatalf("bump the image: %v", err)
+	}
+
+	reconcile(t, r, key)
+
+	rolled := changedNodes(before, templateRevisions(t, r, key, nodes))
+	if len(rolled) != 1 || rolled[0] != nodes[1].Name {
+		t.Errorf("rolled %v, want only the broken %s", rolled, nodes[1].Name)
 	}
 }
 

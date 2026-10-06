@@ -26,3 +26,27 @@ FSCluster/v1alpha1.spec.etcd: new validation rule '!has(self.external) || !has(s
 # grpc is also what the SDK falls back to — so every existing cluster renders
 # the transport it rendered before.
 FSCluster/v1alpha1.spec.observability.otlp.protocol: default 'grpc' -> None
+
+# fs v0.14 (operator v0.9.0) is a deliberate break of v1alpha1, decided over a
+# new API version: fs v0.14 cannot read a v0.13 cluster's data (the engine
+# replaced the filesystem backend, the layout replaced etcd), so no stored
+# FSCluster survives the upgrade — every one is deleted and recreated, and its
+# FSBuckets and FSAccessKeys with it. A conversion to a new version would
+# preserve objects that describe clusters nothing can run. The upgrade notes
+# say to delete them before installing the new CRDs. These findings are that
+# break, and nothing else.
+FSBucket/v1alpha1.spec.scheme: pattern '^(rf2\\.5|rf3|ec:[0-9]+,[0-9]+)?$' -> '^(rf3|ec:[1-9][0-9]*,[1-9][0-9]*)?$'
+FSCluster/v1alpha1.spec.etcd: removed (stored objects lose this field)
+FSCluster/v1alpha1.spec.integrity: removed (stored objects lose this field)
+FSCluster/v1alpha1.spec.rebalance: removed (stored objects lose this field)
+FSCluster/v1alpha1.spec.scheme: removed (stored objects lose this field)
+FSCluster/v1alpha1.spec.storage.disks: removed (stored objects lose this field)
+FSCluster/v1alpha1.spec.storage.state: removed (stored objects lose this field)
+FSCluster/v1alpha1.spec.storage.size: newly required
+FSCluster/v1alpha1.spec.topology.nodes: new validation rule 'self != 2'
+FSCluster/v1alpha1.spec.updatePolicy.schemaMigration: removed (stored objects lose this field)
+FSCluster/v1alpha1.status.rebalance: removed (stored objects lose this field)
+FSCluster/v1alpha1.status.registeredNodes: removed (stored objects lose this field)
+FSCluster/v1alpha1.status.schemaVersion: removed (stored objects lose this field)
+FSCluster/v1alpha1.status.update.disk: removed (stored objects lose this field)
+FSCluster/v1alpha1.status.update.phase: enum value 'Migrating' no longer accepted

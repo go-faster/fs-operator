@@ -24,7 +24,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -201,13 +200,13 @@ func TestReconcileIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestReconcileRefusesSchemeTopologyMismatch covers a spec the controller must
-// not half-apply: erasure coding needs more failure domains than the topology
-// has, so nothing is created at all.
-func TestReconcileRefusesSchemeTopologyMismatch(t *testing.T) {
+// TestReconcileRefusesLayoutTopologyMismatch covers a spec the controller must
+// not half-apply: an ec:4,2 width needs six nodes, the topology has three, so
+// nothing is created at all.
+func TestReconcileRefusesLayoutTopologyMismatch(t *testing.T) {
 	r, recorder := reconciler(t)
 	key := createCluster(t, r, "mismatch", func(c *fsv1alpha1.FSCluster) {
-		c.Spec.Scheme = schemeEC
+		c.Spec.Layout.Widths = []int32{3, 6}
 	})
 
 	reconcile(t, r, key)
@@ -217,8 +216,8 @@ func TestReconcileRefusesSchemeTopologyMismatch(t *testing.T) {
 		t.Fatalf("SpecValid = %v, want False", c)
 	}
 
-	if c.Reason != fsv1alpha1.ReasonSchemeTopologyMismatch {
-		t.Errorf("reason = %q, want %q", c.Reason, fsv1alpha1.ReasonSchemeTopologyMismatch)
+	if c.Reason != fsv1alpha1.ReasonLayoutTopologyMismatch {
+		t.Errorf("reason = %q, want %q", c.Reason, fsv1alpha1.ReasonLayoutTopologyMismatch)
 	}
 
 	if sets := statefulSets(t, r, key); len(sets) != 0 {
@@ -236,7 +235,7 @@ func TestReconcileRefusesSchemeTopologyMismatch(t *testing.T) {
 }
 
 // TestReconcileScalesUp covers the additive half: new nodes may all join at
-// once, since joining is what the rebalancer converges.
+// once, since each joins the layout when it is up.
 func TestReconcileScalesUp(t *testing.T) {
 	r, _ := reconciler(t)
 	key := createCluster(t, r, "scale-up", nil)
@@ -286,10 +285,11 @@ func TestReconcileRefusesMissingSecret(t *testing.T) {
 }
 
 // TestReconcileReportsQuorum drives the health summary the way the world does:
-// pods become ready one at a time, and the cluster starts serving when enough
-// failure domains do.
+// pods become ready one at a time, and the cluster starts serving once a layout
+// exists and all but one failure domain are up — fs writes metadata to three
+// replicas in distinct domains and acknowledges at two.
 func TestReconcileReportsQuorum(t *testing.T) {
-	r, _ := reconciler(t)
+	r, _, fake := reconcilerWithAdmin(t)
 	key := createCluster(t, r, "quorum", nil)
 
 	reconcile(t, r, key)
@@ -299,20 +299,32 @@ func TestReconcileReportsQuorum(t *testing.T) {
 
 	nodes := Nodes(&cluster)
 
-	// One ready node is a single failure domain: rf2.5 acknowledges a write
-	// only once two of them hold a full replica.
-	serving(t, r, key, nodes[0])
+	// No layout yet: nothing serves S3, however many pods are up.
+	for _, node := range nodes {
+		serving(t, r, key, node)
+	}
+
+	reconcile(t, r, key)
+
+	if c := condition(t, r, key, fsv1alpha1.ConditionReady); c == nil || c.Reason != fsv1alpha1.ReasonLayoutPending {
+		t.Errorf("Ready = %v, want False/%s before the first layout", c, fsv1alpha1.ReasonLayoutPending)
+	}
+
+	fake.setLayout(1, nodes[0].Name, nodes[1].Name, nodes[2].Name)
+
+	notServing(t, r, key, nodes[1].Name)
+	notServing(t, r, key, nodes[2].Name)
 	reconcile(t, r, key)
 
 	if c := condition(t, r, key, fsv1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionFalse {
-		t.Errorf("Ready = %v, want False with one node up", c)
+		t.Errorf("Ready = %v, want False with two of three domains down", c)
 	}
 
 	serving(t, r, key, nodes[1])
 	reconcile(t, r, key)
 
 	if c := condition(t, r, key, fsv1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionTrue {
-		t.Errorf("Ready = %v, want True once the write quorum is up", c)
+		t.Errorf("Ready = %v, want True with one domain down", c)
 	}
 
 	get(t, r, key.Namespace, key.Name, &cluster)
@@ -321,17 +333,16 @@ func TestReconcileReportsQuorum(t *testing.T) {
 		t.Errorf("status.readyNodes = %d, want %d", got, want)
 	}
 
-	if cluster.Status.CurrentRevision != "" {
-		t.Errorf("current revision = %q, want none until every node runs it", cluster.Status.CurrentRevision)
+	if cluster.Status.Layout == nil || cluster.Status.Layout.Version != 1 {
+		t.Errorf("status.layout = %+v, want version 1", cluster.Status.Layout)
 	}
 }
 
-// TestReconcileSingleNode covers the development shape end to end: one node
-// running fs's filesystem backend, with no etcd to reach and no quorum to
-// wait for. The cluster-mode steps must stay out of its way — a cluster that
+// TestReconcileSingleNode covers the development shape end to end: one node,
+// with no layout to apply and no quorum to wait for. The cluster-mode steps must stay out of its way — a cluster that
 // is serving everything it has is Ready.
 func TestReconcileSingleNode(t *testing.T) {
-	r, _ := reconciler(t)
+	r, _, fake := reconcilerWithAdmin(t)
 	key := createCluster(t, r, "single-node", singleNodeSpec)
 
 	reconcile(t, r, key)
@@ -348,16 +359,12 @@ func TestReconcileSingleNode(t *testing.T) {
 		t.Fatalf("%d nodes, want 1", len(nodes))
 	}
 
-	// Its storage root is its disk, so it carries no state claim: a second
-	// volume would be one nothing ever writes to.
+	// One volume, as on every node.
 	set := NewStatefulSet(&cluster, nodes[0], "rev")
-	for _, claim := range set.Spec.VolumeClaimTemplates {
-		if claim.Name == fsv1alpha1.StateVolumeName {
-			t.Error("a single node was given a state volume it has no root for")
-		}
+	if claims := set.Spec.VolumeClaimTemplates; len(claims) != 1 || claims[0].Name != DataVolumeName {
+		t.Errorf("claims = %v, want the one data volume", claims)
 	}
 
-	// No etcd is declared, so none of its resources may exist.
 	var sets appsv1.StatefulSetList
 	if err := r.List(t.Context(), &sets, client.InNamespace(key.Namespace)); err != nil {
 		t.Fatalf("list statefulsets: %v", err)
@@ -374,18 +381,22 @@ func TestReconcileSingleNode(t *testing.T) {
 		t.Errorf("Ready = %v, want True once the only node is serving", c)
 	}
 
-	// Schema currency is a control-plane property; a single node has none.
-	if c := condition(t, r, key, fsv1alpha1.ConditionSchemaCurrent); c != nil {
-		t.Errorf("SchemaCurrent = %v, want unset on a single-node cluster", c)
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	if cluster.Status.UpNodes != 1 {
+		t.Errorf("status.upNodes = %d, want the serving node counted", cluster.Status.UpNodes)
+	}
+
+	// No layout is ever applied to a single node.
+	if got := len(fake.appliedLayouts()); got != 0 {
+		t.Errorf("%d layouts applied to a single node", got)
 	}
 }
 
-// singleNodeSpec is the development shape: one node, one disk, no etcd.
+// singleNodeSpec is the development shape: one node.
 func singleNodeSpec(c *fsv1alpha1.FSCluster) {
 	nodes := int32(1)
 	c.Spec.Topology.Nodes = &nodes
-	c.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{{Name: "d0", Size: resource.MustParse("10Gi")}}
-	c.Spec.Etcd = fsv1alpha1.EtcdSpec{}
 }
 
 // setNames names StatefulSets for a failure message.

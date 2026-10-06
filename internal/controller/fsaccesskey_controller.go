@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,15 +46,15 @@ import (
 	"github.com/go-faster/fs-operator/internal/metrics"
 )
 
-// accessKeyFinalizer keeps the FSAccessKey around until the controller has
-// removed its credential from the cluster's etcd key store, revoking it
-// cluster-wide (fs §6.8).
+// accessKeyFinalizer keeps the FSAccessKey around until no node accepts its
+// credential any more: deleting the object is revoking the key.
 const accessKeyFinalizer = "fs.go-faster.org/accesskey"
 
-// credentialHashAnnotation fingerprints the credential material last pushed to
-// the cluster. The admin API omits secrets from listings, so this is how the
-// controller detects an imported Secret rotating (same access key, new secret)
-// and re-creates the key with the new material.
+// credentialHashAnnotation fingerprints the resolved credential material.
+// Bumping it on a change (notably an imported Secret rotating: same access
+// key, new secret) is an update to the FSAccessKey, which the FSCluster
+// watches — so the cluster re-renders and reloads even though the
+// FSAccessKey spec did not change.
 const credentialHashAnnotation = "fs.go-faster.org/credential-hash"
 
 // requeueAfterPending is how soon to re-check an FSAccessKey that is waiting on
@@ -61,9 +62,10 @@ const credentialHashAnnotation = "fs.go-faster.org/credential-hash"
 const requeueAfterPending = 10 * time.Second
 
 // FSAccessKeyReconciler reconciles an FSAccessKey: it resolves the credential
-// (minting a generated one once, or reading an imported Secret) and reconciles
-// it into the cluster's etcd-backed key store through the admin API — created,
-// re-created on grant or material drift, and deleted on removal (fs §6.8).
+// (minting a generated one once, or reading an imported Secret), keeps a
+// fingerprint that drives the cluster's config, and reports whether every node
+// accepts the key (SPEC §7). The FSCluster controller is what renders the key
+// into every node's config.
 type FSAccessKeyReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -95,8 +97,8 @@ func (r *FSAccessKeyReconciler) adminClient(baseURL, token string) (fsclient.Int
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// Reconcile resolves an FSAccessKey's credential and reconciles it into the
-// cluster's key store.
+// Reconcile resolves an FSAccessKey's credential and reports whether the
+// cluster accepts it.
 func (r *FSAccessKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	result, err := r.reconcile(ctx, req)
 	if err != nil {
@@ -133,7 +135,14 @@ func (r *FSAccessKeyReconciler) reconcile(ctx context.Context, req ctrl.Request)
 		return r.report(ctx, key, "", *cond)
 	}
 
-	cond, requeue := r.ensureInCluster(ctx, key, access, secret)
+	// Record the material fingerprint: a change to it is an update to this
+	// object, which the FSCluster watches, so an imported Secret rotating
+	// re-renders and reloads the cluster even though no spec changed.
+	if err := r.stampCredentialHash(ctx, key, credentialHash(access, secret)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	cond, requeue := r.verifyAccepted(ctx, key, access)
 
 	result, err := r.report(ctx, key, access, *cond)
 	if err == nil && requeue && result.RequeueAfter == 0 {
@@ -145,60 +154,85 @@ func (r *FSAccessKeyReconciler) reconcile(ctx context.Context, req ctrl.Request)
 	return result, err
 }
 
-// ensureInCluster creates or updates the credential in the cluster's key store
-// via the admin API. A grant change or an imported-Secret rotation re-creates
-// it (delete then create, since the admin API has no in-place update).
-func (r *FSAccessKeyReconciler) ensureInCluster(ctx context.Context, key *fsv1alpha1.FSAccessKey, access, secret string) (*readyCondition, bool) {
-	admin, cond, requeue := r.clusterAdmin(ctx, key)
+// verifyAccepted confirms that every node of the cluster accepts the key. The
+// FSCluster controller renders the key into each node's config and reloads it
+// (SPEC §7); this only reads the result back. Until every node lists the key it
+// is not Ready and the reconcile requeues.
+func (r *FSAccessKeyReconciler) verifyAccepted(ctx context.Context, key *fsv1alpha1.FSAccessKey, access string) (*readyCondition, bool) {
+	listings, cond, requeue := r.nodeKeys(ctx, key)
 	if cond != nil {
 		return cond, requeue
 	}
 
-	keys, err := admin.ListAccessKeys(ctx)
+	var missing []string
+
+	for node, keys := range listings {
+		switch {
+		case keys == nil:
+			missing = append(missing, node+" (unreachable)")
+		case !slices.Contains(keys, access):
+			missing = append(missing, node)
+		}
+	}
+
+	if len(missing) > 0 {
+		slices.Sort(missing)
+
+		return falseCondition(fsv1alpha1.ReasonConfigReloadPending,
+			"waiting for node(s) to apply the credential: "+strings.Join(missing, ", ")), true
+	}
+
+	return trueCondition(fsv1alpha1.ReasonKeyAccepted, "credential accepted by every node"), false
+}
+
+// nodeKeys lists the access keys every node of the key's cluster accepts,
+// keyed by node; a node that did not answer maps to nil.
+func (r *FSAccessKeyReconciler) nodeKeys(
+	ctx context.Context, key *fsv1alpha1.FSAccessKey,
+) (map[string][]string, *readyCondition, bool) {
+	cluster := &fsv1alpha1.FSCluster{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: key.Namespace, Name: key.Spec.ClusterRef.Name}, cluster); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, falseCondition(fsv1alpha1.ReasonClusterNotFound,
+				"FSCluster "+key.Spec.ClusterRef.Name+" not found"), true
+		}
+
+		return nil, falseCondition(fsv1alpha1.ReasonReconcileError, err.Error()), true
+	}
+
+	nodes := fscluster.Nodes(cluster)
+	if len(nodes) == 0 {
+		return nil, falseCondition(fsv1alpha1.ReasonClusterNotReady, "cluster has no nodes yet"), true
+	}
+
+	token, err := r.adminToken(ctx, cluster)
 	if err != nil {
-		return falseCondition(fsv1alpha1.ReasonConfigReloadPending, "cluster not reachable yet"), true
+		return nil, falseCondition(fsv1alpha1.ReasonClusterNotReady, "admin token unavailable"), true
 	}
 
-	desired := grantsFor(key)
-	materialHash := credentialHash(access, secret)
+	listings := make(map[string][]string, len(nodes))
 
-	var existing *fsclient.AccessKey
+	for _, node := range nodes {
+		listings[node.Name] = nil
 
-	for i := range keys {
-		if keys[i].AccessKey == access {
-			existing = &keys[i]
-
-			break
+		admin, err := r.adminClient(fscluster.AdminURL(cluster.Name, cluster.Namespace, node.Name), token)
+		if err != nil {
+			return nil, falseCondition(fsv1alpha1.ReasonClusterNotReady, err.Error()), true
 		}
+
+		keys, err := admin.AccessKeys(ctx)
+		if err != nil {
+			continue
+		}
+
+		if keys == nil {
+			keys = []string{}
+		}
+
+		listings[node.Name] = keys
 	}
 
-	switch {
-	case existing == nil:
-		if err := admin.CreateAccessKey(ctx, access, secret, desired); err != nil {
-			return falseCondition(fsv1alpha1.ReasonConfigReloadPending, errors.Wrap(err, "create key").Error()), true
-		}
-
-		r.event(key, corev1.EventTypeNormal, "KeyCreated", "created credential "+access)
-	case !grantsEqual(existing.Grants, desired) || key.Annotations[credentialHashAnnotation] != materialHash:
-		// Grants changed, or an imported Secret rotated: re-create with the
-		// current material and grants.
-		if err := admin.DeleteAccessKey(ctx, access); err != nil {
-			return falseCondition(fsv1alpha1.ReasonConfigReloadPending, errors.Wrap(err, "replace key").Error()), true
-		}
-
-		if err := admin.CreateAccessKey(ctx, access, secret, desired); err != nil {
-			return falseCondition(fsv1alpha1.ReasonConfigReloadPending, errors.Wrap(err, "recreate key").Error()), true
-		}
-
-		r.event(key, corev1.EventTypeNormal, "KeyUpdated", "updated credential "+access)
-	}
-
-	// Record the applied material fingerprint so a later rotation is detected.
-	if err := r.stampCredentialHash(ctx, key, materialHash); err != nil {
-		return falseCondition(fsv1alpha1.ReasonReconcileError, err.Error()), false
-	}
-
-	return trueCondition(fsv1alpha1.ReasonKeyAccepted, "credential accepted by the cluster"), false
+	return listings, nil, false
 }
 
 // resolveCredential returns the access/secret halves of the key, or a Ready
@@ -303,36 +337,6 @@ func (r *FSAccessKeyReconciler) ensureGenerated(ctx context.Context, key *fsv1al
 	return access, secretKey, nil
 }
 
-// clusterAdmin resolves an admin client to a node of the key's cluster.
-func (r *FSAccessKeyReconciler) clusterAdmin(ctx context.Context, key *fsv1alpha1.FSAccessKey) (fsclient.Interface, *readyCondition, bool) {
-	cluster := &fsv1alpha1.FSCluster{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: key.Namespace, Name: key.Spec.ClusterRef.Name}, cluster); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, falseCondition(fsv1alpha1.ReasonClusterNotFound,
-				"FSCluster "+key.Spec.ClusterRef.Name+" not found"), true
-		}
-
-		return nil, falseCondition(fsv1alpha1.ReasonReconcileError, err.Error()), true
-	}
-
-	nodes := fscluster.Nodes(cluster)
-	if len(nodes) == 0 {
-		return nil, falseCondition(fsv1alpha1.ReasonClusterNotReady, "cluster has no nodes yet"), true
-	}
-
-	token, err := r.adminToken(ctx, cluster)
-	if err != nil {
-		return nil, falseCondition(fsv1alpha1.ReasonClusterNotReady, "admin token unavailable"), true
-	}
-
-	admin, err := r.adminClient(fscluster.AdminURL(cluster.Name, cluster.Namespace, nodes[0].Name), token)
-	if err != nil {
-		return nil, falseCondition(fsv1alpha1.ReasonClusterNotReady, err.Error()), true
-	}
-
-	return admin, nil, false
-}
-
 // adminToken reads the cluster's admin bearer token from its Secret.
 func (r *FSAccessKeyReconciler) adminToken(ctx context.Context, cluster *fsv1alpha1.FSCluster) (string, error) {
 	secret := &corev1.Secret{}
@@ -369,28 +373,33 @@ func (r *FSAccessKeyReconciler) stampCredentialHash(ctx context.Context, key *fs
 	return nil
 }
 
-// finalize revokes the key: it is deleted from the cluster's key store, then
-// the finalizer is removed (which lets the owned credential Secret be
-// garbage-collected). A cluster that is already gone cannot hold the credential.
+// finalize waits for the key to be revoked: the FSCluster re-renders without
+// it (the render skips keys being deleted) and reloads every node. The
+// finalizer goes once no node that answers still accepts the key, which lets
+// the owned credential Secret be garbage-collected. A node that does not answer
+// is not waited for: it reads the re-rendered config when it next starts. A
+// cluster that is already gone cannot hold the credential.
 func (r *FSAccessKeyReconciler) finalize(ctx context.Context, key *fsv1alpha1.FSAccessKey) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(key, accessKeyFinalizer) {
 		return ctrl.Result{}, nil
 	}
 
-	if key.Status.AccessKey != "" {
-		admin, cond, _ := r.clusterAdmin(ctx, key)
+	if access := key.Status.AccessKey; access != "" {
+		listings, cond, _ := r.nodeKeys(ctx, key)
+
 		switch {
 		case cond != nil && cond.reason == fsv1alpha1.ReasonClusterNotFound:
-			// The cluster (and its etcd) is gone; nothing to revoke.
+			// The cluster is gone; nothing to revoke.
 		case cond != nil:
-			// Cluster unreachable: retry rather than leave a live credential.
 			return ctrl.Result{RequeueAfter: requeueAfterPending}, nil
 		default:
-			if err := admin.DeleteAccessKey(ctx, key.Status.AccessKey); err != nil {
-				return ctrl.Result{RequeueAfter: requeueAfterPending}, nil //nolint:nilerr // retry, not fail
+			for _, keys := range listings {
+				if slices.Contains(keys, access) {
+					return ctrl.Result{RequeueAfter: requeueAfterPending}, nil
+				}
 			}
 
-			r.event(key, corev1.EventTypeNormal, "KeyDeleted", "revoked credential "+key.Status.AccessKey)
+			r.event(key, corev1.EventTypeNormal, "KeyDeleted", "revoked credential "+access)
 		}
 	}
 
@@ -466,41 +475,8 @@ func (r *FSAccessKeyReconciler) importedSecretToKeys(ctx context.Context, obj cl
 	return reqs
 }
 
-// grantsFor converts an FSAccessKey's API grants to the admin-client form.
-func grantsFor(key *fsv1alpha1.FSAccessKey) []fsclient.Grant {
-	out := make([]fsclient.Grant, 0, len(key.Spec.Grants))
-	for _, g := range key.Spec.Grants {
-		out = append(out, fsclient.Grant{Bucket: g.Bucket, Permission: g.Permission})
-	}
-
-	return out
-}
-
-// grantsEqual reports whether two grant sets are equal, order-independent.
-func grantsEqual(a, b []fsclient.Grant) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	key := func(g fsclient.Grant) string { return g.Bucket + "\x00" + g.Permission }
-
-	as := make([]string, len(a))
-	for i, g := range a {
-		as[i] = key(g)
-	}
-
-	bs := make([]string, len(b))
-	for i, g := range b {
-		bs[i] = key(g)
-	}
-
-	slices.Sort(as)
-	slices.Sort(bs)
-
-	return slices.Equal(as, bs)
-}
-
-// credentialHash fingerprints the credential material.
+// credentialHash fingerprints the credential material, so a change to it —
+// an imported Secret rotating — is visible as an annotation change.
 func credentialHash(access, secret string) string {
 	sum := sha256.Sum256([]byte(access + "\x00" + secret))
 

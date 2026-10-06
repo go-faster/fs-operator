@@ -21,9 +21,9 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"gopkg.in/yaml.v3"
@@ -32,7 +32,6 @@ import (
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/fsconfig"
-	"github.com/go-faster/fs-operator/internal/scheme"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files in testdata")
@@ -47,18 +46,18 @@ const (
 	zoneA   = "eu-central-1a"
 	rackKey = "rack"
 
-	// schemeEC needs six failure domains, one more than any test topology
-	// provides by accident.
-	schemeEC = "ec:4,2"
-
 	storageClass = "fast-nvme"
 	tlsSecret    = "prod-s3-tls"
 	teamValue    = "storage"
 	publicBucket = "public"
 )
 
-// testCluster is a minimal valid cluster: three flat nodes, one disk, external
-// etcd. Cases below start from it and change one thing at a time.
+// testCapacity is the test clusters' volume size in bytes: what each node
+// joins the layout with.
+const testCapacity = 200 << 30
+
+// testCluster is a minimal valid cluster: three flat nodes with 200Gi each.
+// Cases below start from it and change one thing at a time.
 func testCluster() *fsv1alpha1.FSCluster {
 	nodes := int32(3)
 
@@ -66,23 +65,17 @@ func testCluster() *fsv1alpha1.FSCluster {
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "tenant-a"},
 		Spec: fsv1alpha1.FSClusterSpec{
 			Topology: fsv1alpha1.TopologySpec{Nodes: &nodes},
-			Storage: fsv1alpha1.StorageSpec{
-				Disks: []fsv1alpha1.DiskSpec{
-					{Name: "d0", Size: resource.MustParse("200Gi")},
-				},
-			},
-			Etcd: fsv1alpha1.EtcdSpec{
-				External: &fsv1alpha1.ExternalEtcdSpec{
-					Endpoints: []string{
-						"http://etcd-0.etcd.fs-system:2379",
-						"http://etcd-1.etcd.fs-system:2379",
-						"http://etcd-2.etcd.fs-system:2379",
-					},
-				},
-			},
+			Storage:  fsv1alpha1.StorageSpec{Size: resource.MustParse("200Gi")},
 		},
 	}
 }
+
+// testKeys is a declarative credential set as the render step collects it.
+var testKeys = []fsconfig.Key{{
+	AccessKey: "AKmedia",
+	SecretKey: "media-secret-key-0123456789",
+	Grants:    []fsconfig.Grant{{Bucket: "media-*", Permission: "write"}},
+}}
 
 func TestRenderNodeConfig(t *testing.T) {
 	for _, tc := range []struct {
@@ -96,14 +89,10 @@ func TestRenderNodeConfig(t *testing.T) {
 			mutate: func(*fsv1alpha1.FSCluster) {},
 		},
 		{
-			// Failure domains, several weighted disks, TLS, declarative
-			// credentials and every tuning knob the renderer passes through.
+			// Failure domains, TLS, declarative credentials, a public bucket
+			// and the telemetry switches the file carries.
 			name: "racks-full",
 			mutate: func(c *fsv1alpha1.FSCluster) {
-				half := resource.MustParse("0.5")
-				watermark := resource.MustParse("0.85")
-
-				c.Spec.Scheme = schemeEC
 				c.Spec.Topology = fsv1alpha1.TopologySpec{
 					Racks: []fsv1alpha1.RackSpec{
 						{Name: "a", Nodes: 2, Zone: zoneA},
@@ -111,61 +100,23 @@ func TestRenderNodeConfig(t *testing.T) {
 						{Name: "c", Nodes: 2, NodeSelector: map[string]string{rackKey: "c"}},
 					},
 				}
-				c.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{
-					{Name: "d0", Size: resource.MustParse("1Ti"), StorageClass: storageClass},
-					{Name: "d1", Size: resource.MustParse("1Ti"), Weight: &half},
-				}
-				c.Spec.Etcd.Prefix = "/fs/prod"
-				c.Spec.Etcd.TTL = &metav1.Duration{Duration: 15 * time.Second}
+				c.Spec.Layout.Widths = []int32{3, 6}
+				c.Spec.Storage.StorageClass = storageClass
 				c.Spec.S3.TLS.SecretName = tlsSecret
-				c.Spec.Rebalance = fsv1alpha1.RebalanceSpec{
-					Settle:        &metav1.Duration{Duration: 2 * time.Minute},
-					Cooldown:      &metav1.Duration{Duration: 30 * time.Minute},
-					FullWatermark: &watermark,
-				}
-				c.Spec.Integrity = fsv1alpha1.IntegritySpec{
-					VerifyOnRead:    true,
-					ScrubInterval:   &metav1.Duration{Duration: 12 * time.Hour},
-					ScrubQuarantine: true,
-				}
+				c.Spec.Auth.PublicReadBuckets = []string{publicBucket}
 				c.Spec.Observability.LogLevel = "debug"
 				c.Spec.Observability.OTLP.Endpoint = "http://otel-collector.observability:4317"
 			},
+			opts: RenderOptions{Keys: testKeys},
 		},
 		{
-			// A node being decommissioned: its disks leave placement while
-			// its peers keep theirs (SPEC §8.4).
-			name:   "drained-node",
-			mutate: func(*fsv1alpha1.FSCluster) {},
-			opts:   RenderOptions{Drained: map[string]bool{node1: true}},
-		},
-		{
-			// The single-node development shape: fs's filesystem backend
-			// rooted at the node's one disk, no cluster section, and the
-			// public-read list in the file because there is no etcd to hold
-			// it (SPEC §5.2).
+			// The single-node development shape: no cluster section at all.
 			name: "single-node",
 			mutate: func(c *fsv1alpha1.FSCluster) {
 				nodes := int32(1)
 
 				c.Spec.Topology = fsv1alpha1.TopologySpec{Nodes: &nodes}
-				c.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{
-					{Name: "d0", Size: resource.MustParse("10Gi")},
-				}
-				c.Spec.Etcd = fsv1alpha1.EtcdSpec{}
-				c.Spec.Auth.PublicReadBuckets = []string{"public"}
-			},
-		},
-		{
-			// Rebalancing off and a disk the operator was asked to drain
-			// directly through its weight.
-			name: "disabled-rebalance",
-			mutate: func(c *fsv1alpha1.FSCluster) {
-				zero := resource.MustParse("0")
-
-				c.Spec.Rebalance.AutoDisabled = true
-				c.Spec.Storage.Disks = append(c.Spec.Storage.Disks,
-					fsv1alpha1.DiskSpec{Name: "d1", Size: resource.MustParse("200Gi"), Weight: &zero})
+				c.Spec.Auth.PublicReadBuckets = []string{publicBucket}
 			},
 		},
 	} {
@@ -213,11 +164,14 @@ func assertUsable(t *testing.T, rc RenderedConfig, node Node) {
 		t.Errorf("rendered config is not valid for fs: %v", err)
 	}
 
-	if cfg.Storage.Type == fsconfig.StorageTypeFilesystem {
-		// The single-node backend has no identity to carry: everything below
-		// is about the node's place in a cluster it is not part of.
-		if cfg.Cluster.NodeID != "" || len(cfg.Cluster.Disks) > 0 || len(cfg.Cluster.Etcd.Endpoints) > 0 {
-			t.Errorf("cluster section = %+v, want it empty on the filesystem backend", cfg.Cluster)
+	if cfg.Storage.Root != StorageRoot {
+		t.Errorf("storage.root = %q, want the data volume's mount %q", cfg.Storage.Root, StorageRoot)
+	}
+
+	if cfg.Cluster.NodeID == "" {
+		// A single node: nothing below applies.
+		if len(cfg.Cluster.Peers) > 0 || cfg.Cluster.AdvertiseAddr != "" {
+			t.Errorf("cluster section = %+v, want it empty on a single node", cfg.Cluster)
 		}
 
 		return
@@ -227,12 +181,12 @@ func assertUsable(t *testing.T, rc RenderedConfig, node Node) {
 		t.Errorf("node_id = %q, want %q", cfg.Cluster.NodeID, node.Name)
 	}
 
-	if cfg.Cluster.Rack != node.Rack {
-		t.Errorf("rack = %q, want %q", cfg.Cluster.Rack, node.Rack)
-	}
-
 	if want := PodName(node.Name) + "."; !strings.HasPrefix(cfg.Cluster.AdvertiseAddr, want) {
 		t.Errorf("advertise_addr = %q, want it to start with %q", cfg.Cluster.AdvertiseAddr, want)
+	}
+
+	if slices.Contains(cfg.Cluster.Peers, cfg.Cluster.AdvertiseAddr) || len(cfg.Cluster.Peers) == 0 {
+		t.Errorf("peers = %v, want every other node and not this one", cfg.Cluster.Peers)
 	}
 
 	// The config carries the revision the operator reads back to verify a
@@ -249,13 +203,12 @@ func assertUsable(t *testing.T, rc RenderedConfig, node Node) {
 // TestRenderNodeConfigNoSecretMaterial pins the rule that keeps generated
 // Secrets from leaking into places they are not expected: fs takes the peer
 // secret and the admin token from the environment, so neither may ever appear
-// in a rendered file. Credentials are cluster-wide in etcd (fs §6.8), so the
-// config selects that source and carries no keys at all.
+// in a rendered file.
 func TestRenderNodeConfigNoSecretMaterial(t *testing.T) {
 	cluster := testCluster()
 	cluster.Spec.WithDefaults()
 
-	rc, err := RenderNodeConfig(cluster, Nodes(cluster)[0], RenderOptions{})
+	rc, err := RenderNodeConfig(cluster, Nodes(cluster)[0], RenderOptions{Keys: testKeys})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -279,13 +232,10 @@ func TestRenderNodeConfigNoSecretMaterial(t *testing.T) {
 		t.Error("admin.token is rendered into the config; it must come from FS_ADMIN_TOKEN")
 	}
 
-	auth := section("auth")
-	if auth["source"] != fsconfig.AuthSourceEtcd {
-		t.Errorf("auth.source = %v, want %q (credentials are cluster-wide)", auth["source"], fsconfig.AuthSourceEtcd)
-	}
-
-	if _, ok := auth["keys"]; ok {
-		t.Error("auth.keys is rendered into the config; credentials live in etcd, not the config file")
+	// FSAccessKey credentials are the one secret the file does carry: that is
+	// how every node accepts them and a reload applies a change everywhere.
+	if _, ok := section("auth")["keys"]; !ok {
+		t.Error("auth.keys is missing; the cluster's FSAccessKeys are rendered into every node")
 	}
 }
 
@@ -383,12 +333,11 @@ func TestConfigRevision(t *testing.T) {
 	}
 }
 
-// TestRestartRevisionTracksConfig checks that a restart-requiring config change
-// (the scheme) moves both the config revision — so the change is verifiable —
-// and the restart revision — so the node is actually replaced to pick it up —
-// while re-rendering an unchanged spec moves neither. Credentials and
-// public-read are no longer in the config (they are cluster-wide in etcd,
-// fs §6.8), so the config's remaining fields are all restart-requiring.
+// TestRestartRevisionTracksConfig checks which changes replace a node and which
+// a reload applies. Turning TLS on is restart-requiring: both revisions move.
+// A credential, or a node added to the cluster, moves only the config
+// revision — the credential is reloaded, and the peer list is read only by a
+// starting node — and re-rendering an unchanged spec moves neither.
 func TestRestartRevisionTracksConfig(t *testing.T) {
 	cluster := testCluster()
 	cluster.Spec.WithDefaults()
@@ -408,17 +357,35 @@ func TestRestartRevisionTracksConfig(t *testing.T) {
 		t.Error("re-rendering an unchanged spec moved the restart revision")
 	}
 
-	// The scheme lives in the config and is restart-requiring: both move.
-	cluster.Spec.Scheme = scheme.RF3
-	schemeCfg := mustRender(t, cluster, node, base)
-	schemeRestart := mustRestart(t, cluster, node, base)
-
-	if schemeCfg.Revision == baseCfg.Revision {
-		t.Error("changing the scheme did not change the config revision")
+	keyed := RenderOptions{Keys: testKeys}
+	if mustRender(t, cluster, node, keyed).Revision == baseCfg.Revision {
+		t.Error("a new credential did not change the config revision")
 	}
 
-	if schemeRestart == baseRestart {
-		t.Error("changing the scheme did not change the restart revision; the node would not pick it up")
+	if mustRestart(t, cluster, node, keyed) != baseRestart {
+		t.Error("a new credential changed the restart revision; it is a reload, not a restart")
+	}
+
+	grown := cluster.DeepCopy()
+	grown.Spec.Topology.Nodes = new(int32(4))
+
+	if mustRender(t, grown, node, base).Revision == baseCfg.Revision {
+		t.Error("adding a node did not change the peer list")
+	}
+
+	if mustRestart(t, grown, node, base) != baseRestart {
+		t.Error("adding a node changed the restart revision; every node would restart for a peer list")
+	}
+
+	tls := cluster.DeepCopy()
+	tls.Spec.S3.TLS.SecretName = tlsSecret
+
+	if mustRender(t, tls, node, base).Revision == baseCfg.Revision {
+		t.Error("turning TLS on did not change the config revision")
+	}
+
+	if mustRestart(t, tls, node, base) == baseRestart {
+		t.Error("turning TLS on did not change the restart revision; the node would not pick it up")
 	}
 }
 
@@ -442,32 +409,6 @@ func mustRestart(t *testing.T, cluster *fsv1alpha1.FSCluster, node Node, opts Re
 	}
 
 	return rev
-}
-
-func TestDiskWeight(t *testing.T) {
-	weight := func(s string) *resource.Quantity {
-		q := resource.MustParse(s)
-		return &q
-	}
-
-	for _, tc := range []struct {
-		name    string
-		disk    fsv1alpha1.DiskSpec
-		drained bool
-		want    float64
-	}{
-		{name: "unset", disk: fsv1alpha1.DiskSpec{}, want: DefaultDiskWeight},
-		{name: "explicit", disk: fsv1alpha1.DiskSpec{Weight: weight("3")}, want: 3},
-		{name: "fractional", disk: fsv1alpha1.DiskSpec{Weight: weight("0.5")}, want: 0.5},
-		{name: "zero drains", disk: fsv1alpha1.DiskSpec{Weight: weight("0")}, want: DrainWeight},
-		{name: "drained node", disk: fsv1alpha1.DiskSpec{Weight: weight("2")}, drained: true, want: DrainWeight},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := diskWeight(tc.disk, tc.drained); got != tc.want {
-				t.Errorf("diskWeight = %v, want %v", got, tc.want)
-			}
-		})
-	}
 }
 
 // TestS3Endpoint covers the one name that depends on more than its inputs'

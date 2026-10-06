@@ -60,14 +60,22 @@ func TestExamplesAreAccepted(t *testing.T) {
 			// An example may hold several documents (a cluster plus its
 			// buckets and keys); only the clusters are this package's.
 			for doc := range bytes.SplitSeq(data, []byte("\n---")) {
-				var cluster fsv1alpha1.FSCluster
+				var meta struct{ Kind string }
 
-				if err := yaml.Unmarshal(doc, &cluster); err != nil {
+				if err := yaml.Unmarshal(doc, &meta); err != nil {
 					t.Fatalf("parse: %v", err)
 				}
 
-				if cluster.Kind != "FSCluster" {
+				if meta.Kind != "FSCluster" {
 					continue
+				}
+
+				// Strict, as the API server's field validation is: a field
+				// the API does not have is an example that does not apply.
+				var cluster fsv1alpha1.FSCluster
+
+				if err := yaml.UnmarshalStrict(doc, &cluster); err != nil {
+					t.Fatalf("parse: %v", err)
 				}
 
 				clusters++

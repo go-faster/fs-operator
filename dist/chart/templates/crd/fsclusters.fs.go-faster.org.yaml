@@ -29,9 +29,9 @@ spec:
     - jsonPath: .status.readyNodes
       name: ReadyNodes
       type: integer
-    - jsonPath: .spec.scheme
-      name: Scheme
-      type: string
+    - jsonPath: .status.layout.version
+      name: Layout
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -106,243 +106,6 @@ spec:
                 x-kubernetes-validations:
                 - message: clusterSecretRef is immutable
                   rule: self == oldSelf
-              etcd:
-                description: |-
-                  etcd configures the control plane the cluster registers in. Required
-                  for a clustered topology; a single-node cluster runs fs's
-                  non-clustered filesystem backend, which has no control plane, and
-                  must leave it unset.
-                properties:
-                  cleanupOnDelete:
-                    description: |-
-                      cleanupOnDelete deletes the cluster's keys under prefix when the
-                      FSCluster is deleted. Off by default: with a shared etcd, prefer
-                      leaving state over destroying a neighbour's.
-                    type: boolean
-                  external:
-                    description: |-
-                      external points the cluster at user-operated etcd endpoints. This is
-                      the production mode, and the only supported one.
-                    properties:
-                      authSecretRef:
-                        description: |-
-                          authSecretRef references a Secret with keys "username" and "password"
-                          for etcd role-based authentication. Both keys are required. The
-                          credentials reach the nodes as environment variables, never through
-                          the rendered configuration, so they are not written to a config file.
-                        properties:
-                          name:
-                            default: ""
-                            description: |-
-                              Name of the referent.
-                              This field is effectively required, but due to backwards compatibility is
-                              allowed to be empty. Instances of this type with an empty value here are
-                              almost certainly wrong.
-                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                            type: string
-                        type: object
-                        x-kubernetes-map-type: atomic
-                      endpoints:
-                        description: |-
-                          endpoints are the etcd client URLs. An "https://" endpoint is served
-                          over TLS; fs enables it from the scheme alone, so an https endpoint
-                          works without tls below (verifying against the system roots).
-                        items:
-                          minLength: 1
-                          type: string
-                        minItems: 1
-                        type: array
-                      tls:
-                        description: |-
-                          tls secures the connection to etcd. etcd holds the node registry and
-                          the cluster's credential store, sealed with the cluster secret, so
-                          anything that can write to it can reshape the cluster.
-                        properties:
-                          insecureSkipVerify:
-                            description: |-
-                              insecureSkipVerify disables verification of etcd's certificate. It
-                              makes TLS decorative — anything on the path can impersonate the
-                              cluster's control plane — and exists for development against
-                              self-signed certificates only.
-                            type: boolean
-                          secretName:
-                            description: |-
-                              secretName names a Secret with the trust material. Key "ca.crt" is the
-                              bundle etcd's certificate is verified against; "tls.crt" and "tls.key",
-                              when present, are this client's certificate for mutual TLS — a
-                              kubernetes.io/tls Secret with a ca.crt added serves both.
-
-                              Setting it turns TLS on. Omit it against an https endpoint to verify
-                              with the system roots instead.
-                            type: string
-                          serverName:
-                            description: |-
-                              serverName overrides the name verified against etcd's certificate, for
-                              reaching it through an address the certificate does not name.
-                            type: string
-                        type: object
-                    required:
-                    - endpoints
-                    type: object
-                  managed:
-                    description: |-
-                      managed asks the operator to run a minimal etcd for this cluster.
-
-                      For development and demos only, permanently. It has no backups, no
-                      defrag automation, no member replacement and no restore path: losing
-                      its volume loses the cluster's control plane, and with it the sealed
-                      credentials and the topology. The operator says so on every cluster
-                      that uses it (Ready condition message plus an event) — that is not a
-                      warning that will be softened once it is "good enough", because etcd
-                      lifecycle management is its own discipline and this is not it.
-                      Production clusters use external (SPEC §2).
-                    properties:
-                      image:
-                        description: |-
-                          image is the etcd image. Defaults to the release this operator is
-                          tested against.
-                        properties:
-                          pullPolicy:
-                            default: IfNotPresent
-                            description: pullPolicy is the image pull policy.
-                            enum:
-                            - Always
-                            - IfNotPresent
-                            - Never
-                            type: string
-                          repository:
-                            default: quay.io/coreos/etcd
-                            description: repository is the etcd image repository.
-                            type: string
-                          tag:
-                            default: v3.5.17
-                            description: tag is the etcd image tag.
-                            minLength: 1
-                            type: string
-                        type: object
-                      replicas:
-                        description: |-
-                          replicas is the etcd member count: 1 for a laptop, 3 for a demo that
-                          should survive a node restart. Even counts cannot form a quorum and are
-                          refused. Immutable, because this etcd has no member-replacement path:
-                          growing it would need a join dance the operator does not implement.
-                        enum:
-                        - 1
-                        - 3
-                        format: int32
-                        type: integer
-                        x-kubernetes-validations:
-                        - message: etcd.managed.replicas is immutable
-                          rule: self == oldSelf
-                      resources:
-                        description: resources are the etcd container's resource requirements.
-                        properties:
-                          claims:
-                            description: |-
-                              Claims lists the names of resources, defined in spec.resourceClaims,
-                              that are used by this container.
-
-                              This field depends on the
-                              DynamicResourceAllocation feature gate.
-
-                              This field is immutable. It can only be set for containers.
-                            items:
-                              description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                              properties:
-                                name:
-                                  description: |-
-                                    Name must match the name of one entry in pod.spec.resourceClaims of
-                                    the Pod where this field is used. It makes that resource available
-                                    inside a container.
-                                  type: string
-                                request:
-                                  description: |-
-                                    Request is the name chosen for a request in the referenced claim.
-                                    If empty, everything from the claim is made available, otherwise
-                                    only the result of this request.
-                                  type: string
-                              required:
-                              - name
-                              type: object
-                            type: array
-                            x-kubernetes-list-map-keys:
-                            - name
-                            x-kubernetes-list-type: map
-                          limits:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              Limits describes the maximum amount of compute resources allowed.
-                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                            type: object
-                          requests:
-                            additionalProperties:
-                              anyOf:
-                              - type: integer
-                              - type: string
-                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                              x-kubernetes-int-or-string: true
-                            description: |-
-                              Requests describes the minimum amount of compute resources required.
-                              If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                              otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                              More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                            type: object
-                        type: object
-                      storage:
-                        description: |-
-                          storage sizes each member's volume. etcd holds only control-plane
-                          state — the node registry, cursors, the sealed key store — so this is
-                          kilobytes of data with room for history and compaction.
-                        properties:
-                          reclaimPolicy:
-                            default: Delete
-                            description: |-
-                              reclaimPolicy decides what happens to the members' volumes when the
-                              cluster is deleted. Delete by default, unlike the data disks: this etcd
-                              is a development convenience, and leaving its volumes behind means a
-                              re-created cluster adopts a key store whose sealed credentials it can no
-                              longer open (SPEC §8.6).
-                            enum:
-                            - Retain
-                            - Delete
-                            type: string
-                          size:
-                            anyOf:
-                            - type: integer
-                            - type: string
-                            description: size is the capacity requested for each member's
-                              PVC.
-                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                            x-kubernetes-int-or-string: true
-                          storageClass:
-                            description: storageClass selects the StorageClass; empty
-                              uses the cluster default.
-                            type: string
-                        type: object
-                    type: object
-                  prefix:
-                    description: |-
-                      prefix namespaces this cluster's keys in etcd. Defaults to
-                      /fs/<namespace>/<name>. Immutable.
-                    maxLength: 250
-                    type: string
-                  ttl:
-                    description: |-
-                      ttl is the node registration lease: how long a dead node lingers in
-                      the topology. Zero defers to the fs default (10s); minimum 1s.
-                    type: string
-                type: object
-                x-kubernetes-validations:
-                - message: etcd.prefix is immutable
-                  rule: has(self.prefix) == has(oldSelf.prefix) && (!has(self.prefix)
-                    || self.prefix == oldSelf.prefix)
-                - message: at most one of etcd.external or etcd.managed may be set
-                  rule: '!has(self.external) || !has(self.managed)'
               image:
                 default: {}
                 description: |-
@@ -390,7 +153,7 @@ spec:
                     description: repository is the image repository.
                     type: string
                   tag:
-                    default: v0.13.1
+                    default: v0.14.1
                     description: |-
                       tag is the image tag. Defaults to the pinned fs release this operator
                       version is validated against — always set a pinned version, never a
@@ -399,24 +162,28 @@ spec:
                     minLength: 1
                     type: string
                 type: object
-              integrity:
-                description: integrity configures object integrity checking (scrub).
+              layout:
+                description: |-
+                  layout tunes the cluster layout the operator applies. Ignored by a
+                  single-node cluster, which has no layout to apply.
                 properties:
-                  scrubInterval:
+                  widths:
                     description: |-
-                      scrubInterval, if positive, runs a background scrubber walking all
-                      objects on this cadence. Zero disables it.
-                    type: string
-                  scrubQuarantine:
-                    description: |-
-                      scrubQuarantine moves corrupt objects aside instead of only reporting
-                      them.
-                    type: boolean
-                  verifyOnRead:
-                    description: |-
-                      verifyOnRead recomputes and checks each object's checksum before
-                      serving it (costs a full extra read per GET).
-                    type: boolean
+                      widths are the slot counts the layout spreads over distinct failure
+                      domains: 3 for replicated data (rf3), and K+M for every erasure scheme
+                      a bucket uses, so that an FSBucket with scheme "ec:4,2" needs 6 here.
+                      Each width needs at least that many nodes. Defaults to [3]. Adding a
+                      width moves data; removing one that a bucket still uses is refused by
+                      fs.
+                    items:
+                      format: int32
+                      maximum: 64
+                      minimum: 1
+                      type: integer
+                    maxItems: 8
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
                 type: object
               networkPolicy:
                 description: |-
@@ -878,36 +645,6 @@ spec:
                       type: object
                     type: array
                 type: object
-              rebalance:
-                description: |-
-                  rebalance tunes the automatic rebalancer. Zero values defer to the fs
-                  defaults.
-                properties:
-                  autoDisabled:
-                    description: |-
-                      autoDisabled turns automatic rebalancing off; relocation then happens
-                      only via periodic scrubs and manual runs.
-                    type: boolean
-                  cooldown:
-                    description: |-
-                      cooldown is the minimum gap between a node's automatic trigger
-                      attempts (fs default 15m).
-                    type: string
-                  fullWatermark:
-                    anyOf:
-                    - type: integer
-                    - type: string
-                    description: |-
-                      fullWatermark is the disk-fullness fraction (0,1] beyond which a node
-                      warns that the disk should be drained (fs default 0.9).
-                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                    x-kubernetes-int-or-string: true
-                  settle:
-                    description: |-
-                      settle is how long the membership must be stable before data moves
-                      (fs default 1m).
-                    type: string
-                type: object
               s3:
                 description: s3 configures how the S3 endpoint is exposed.
                 properties:
@@ -950,121 +687,38 @@ spec:
                         type: string
                     type: object
                 type: object
-              scheme:
-                default: rf2.5
-                description: |-
-                  scheme is the default replication scheme for all buckets: "rf2.5"
-                  (2 replicas + half parity), "rf3" (3 replicas) or "ec:k,m"
-                  (Reed-Solomon). Changeable at runtime: new writes use it immediately
-                  and existing objects converge via repair/rebalance. The controller
-                  refuses a scheme the topology cannot host (distinct failure domains
-                  below the scheme requirement). Ignored by a single-node cluster,
-                  which stores objects on one disk and replicates nothing.
-                pattern: ^(rf2\.5|rf3|ec:[1-9][0-9]*,[1-9][0-9]*)$
-                type: string
               storage:
-                description: |-
-                  storage declares each node's disks. Every disk becomes one
-                  PersistentVolumeClaim per node.
+                description: storage sizes each node's data volume.
                 properties:
-                  disks:
-                    description: |-
-                      disks are this cluster's per-node storage devices: every entry becomes
-                      one PersistentVolumeClaim on every node, mounted at
-                      /var/lib/fs/disks/<name>. A single-node cluster declares exactly one:
-                      fs's filesystem backend stores everything under a single root.
-
-                      Entries may be added, and removed. Removing one is a decommission, not
-                      a delete: the disk is drained out of placement on every node, and its
-                      volumes go only once fs reports it holds nothing (SPEC §8.5). Sizes may
-                      only grow. A disk is identified by its name, so renaming one reads as
-                      removing a disk and adding an empty one — which is a slow, safe, and
-                      almost certainly unintended way to spend a rebalance.
-                    items:
-                      description: DiskSpec is one per-node disk.
-                      properties:
-                        name:
-                          description: name identifies the disk within each node (the
-                            fs disk id). Immutable.
-                          maxLength: 15
-                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-                          type: string
-                        size:
-                          anyOf:
-                          - type: integer
-                          - type: string
-                          description: |-
-                            size is the capacity requested for each node's PVC of this disk. It
-                            may only grow, and growing it requires the StorageClass to allow
-                            volume expansion. The growth check is the controller's: expressing it
-                            in CEL costs more than the API server's validation budget allows for a
-                            list of this size.
-                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                          x-kubernetes-int-or-string: true
-                        storageClass:
-                          description: |-
-                            storageClass selects the StorageClass for this disk's PVCs; empty uses
-                            the cluster default.
-                          type: string
-                        weight:
-                          anyOf:
-                          - type: integer
-                          - type: string
-                          description: |-
-                            weight is the disk's relative capacity weight for placement (fs
-                            semantics; default 1). Expressed as a quantity so fractional weights
-                            like "0.5" are possible. Changing weights rolls the cluster.
-                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                          x-kubernetes-int-or-string: true
-                      required:
-                      - name
-                      - size
-                      type: object
-                    maxItems: 32
-                    minItems: 1
-                    type: array
-                    x-kubernetes-list-map-keys:
-                    - name
-                    x-kubernetes-list-type: map
                   reclaimPolicy:
                     default: Retain
                     description: |-
-                      reclaimPolicy controls what happens to a node's PVCs when the node is
-                      removed or the cluster is deleted. It covers the state volume too:
-                      Kubernetes sets the policy per StatefulSet, not per claim.
+                      reclaimPolicy controls what happens to a node's volume when the node
+                      is removed or the cluster is deleted.
                     enum:
                     - Retain
                     - Delete
                     type: string
-                  state:
-                    default: {}
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
                     description: |-
-                      state sizes the per-node volume holding fs's node-local state: the
-                      object index it keeps beside the disks, at the storage root. Every
-                      node gets one; it is not optional, because the container filesystem is
-                      read-only and fs writes there at startup.
-                    properties:
-                      size:
-                        anyOf:
-                        - type: integer
-                        - type: string
-                        description: |-
-                          size is the capacity requested for each node's state PVC. Defaults to
-                          10Gi: the index runs to a few hundred bytes per object, so the default
-                          carries a node with tens of millions of them. Like a disk it may only
-                          grow, and growing it requires the StorageClass to allow expansion.
-                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                        x-kubernetes-int-or-string: true
-                      storageClass:
-                        description: |-
-                          storageClass selects the StorageClass for the state PVCs; empty uses
-                          the cluster default. The index is written constantly and read on every
-                          listing, so this is the one volume of a node worth putting on the
-                          fastest class available.
-                        type: string
-                    type: object
+                      size is the capacity of each node's data volume, which holds
+                      everything the node stores: metadata, blocks and runtime state. It is
+                      also the capacity the node joins the layout with, so the layout gives
+                      a node a share of the data in proportion to it. It may only grow, and
+                      growing it requires the StorageClass to allow volume expansion.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  storageClass:
+                    description: |-
+                      storageClass selects the StorageClass of the data volumes; empty
+                      uses the cluster default. Metadata is written on every request, so
+                      this is worth putting on the fastest class available.
+                    type: string
                 required:
-                - disks
+                - size
                 type: object
               topology:
                 description: topology declares the cluster's nodes and failure domains.
@@ -1072,13 +726,16 @@ spec:
                   nodes:
                     description: |-
                       nodes is the flat topology: N nodes, each its own failure domain.
-                      One node is a development install: that node runs fs's single-node
-                      filesystem backend — one disk, no etcd, no replication, no failure
-                      tolerance — instead of joining a cluster.
+                      One node is a development install: one volume, no peers, no
+                      replication and no failure tolerance. Two is refused: a replicated
+                      layout needs three nodes.
                     format: int32
                     maximum: 16
                     minimum: 1
                     type: integer
+                    x-kubernetes-validations:
+                    - message: a cluster has one node or at least three
+                      rule: self != 2
                   podAntiAffinity:
                     default: Required
                     description: |-
@@ -1092,10 +749,11 @@ spec:
                     type: string
                   racks:
                     description: |-
-                      racks are explicit failure domains; placement spreads object copies
-                      across racks first. Rack membership is declared here and pinned with
-                      node affinity — it is never derived from where a pod happens to be
-                      scheduled.
+                      racks are explicit failure domains. Every node of a rack joins the
+                      layout with the rack's name as its fs rack and the rack's zone as its
+                      fs zone, and the layout spreads each partition over zones first, then
+                      racks. Rack membership is declared here and pinned with node affinity
+                      — it is never derived from where a pod happens to be scheduled.
                     items:
                       description: RackSpec is one failure domain and its scheduling
                         constraints.
@@ -1124,7 +782,8 @@ spec:
                         zone:
                           description: |-
                             zone pins the rack's nodes to a topology.kubernetes.io/zone value
-                            (sugar for nodeSelector).
+                            (sugar for nodeSelector), and is the fs zone of the rack's nodes:
+                            racks sharing a zone are one failure domain at the zone level.
                           type: string
                       required:
                       - name
@@ -1147,20 +806,11 @@ spec:
                     default: 30m
                     description: |-
                       convergenceTimeout bounds how long the operator waits, between node
-                      restarts, for the cluster to reconverge (pod ready, node registered,
-                      repair queue drained). On timeout the rollout halts — it never
-                      proceeds to another node while the cluster is unconverged — and
-                      resumes automatically when the gate passes.
-                    type: string
-                  schemaMigration:
-                    default: Auto
-                    description: |-
-                      schemaMigration selects whether the operator runs `fs cluster migrate`
-                      automatically after a successful full rollout (Auto) or only surfaces
-                      the pending migration via the SchemaCurrent condition (Manual).
-                    enum:
-                    - Auto
-                    - Manual
+                      restarts, for the cluster to reconverge (pod ready, every node up and
+                      on the current layout, no layout change in transition). On timeout
+                      the rollout halts — it never proceeds to another node while the
+                      cluster is unconverged — and resumes automatically when the gate
+                      passes.
                     type: string
                 type: object
             required:
@@ -1177,8 +827,7 @@ spec:
                 description: |-
                   conditions represent the current state of the FSCluster. See the
                   documented condition types (SpecValid, ReconcileSucceeded, Ready,
-                  NodesHealthy, ClusterSizeAligned, ConfigurationInSync, Converged,
-                  SchemaCurrent).
+                  NodesHealthy, ClusterSizeAligned, ConfigurationInSync, Converged).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -1252,6 +901,36 @@ spec:
                     description: s3 is the in-cluster S3 endpoint URL.
                     type: string
                 type: object
+              layout:
+                description: layout is the cluster layout as fs reports it.
+                properties:
+                  members:
+                    description: members is the number of nodes the layout gives data
+                      to.
+                    format: int32
+                    type: integer
+                  retainedVersions:
+                    description: |-
+                      retainedVersions are older versions still in transition: data is
+                      moving to where the current version puts it, and writes go to both.
+                      Empty when nothing is moving.
+                    items:
+                      format: int64
+                      type: integer
+                    type: array
+                  version:
+                    description: |-
+                      version is the layout version the cluster has adopted; every applied
+                      change increments it.
+                    format: int64
+                    type: integer
+                  widths:
+                    description: widths are the slot counts the layout spreads for.
+                    items:
+                      format: int32
+                      type: integer
+                    type: array
+                type: object
               nodes:
                 description: nodes is the desired node count.
                 format: int32
@@ -1266,56 +945,26 @@ spec:
                 description: readyNodes is the number of node pods that are Ready.
                 format: int32
                 type: integer
-              rebalance:
-                description: rebalance summarizes rebalance/repair across nodes.
-                properties:
-                  repairQueueDepth:
-                    description: repairQueueDepth is the summed pending repair tasks
-                      across nodes.
-                    format: int64
-                    type: integer
-                  state:
-                    description: state is the worst rebalance state across nodes.
-                    type: string
-                type: object
-              registeredNodes:
-                description: registeredNodes is the number of nodes present in the
-                  etcd topology.
-                format: int32
-                type: integer
-              schemaVersion:
-                description: schemaVersion reports the fs schema versions in play.
-                properties:
-                  binary:
-                    description: binary is the schema version the deployed image implements.
-                    format: int64
-                    type: integer
-                  cluster:
-                    description: cluster is the schema version recorded in etcd.
-                    format: int64
-                    type: integer
-                type: object
               statefulSetRevision:
                 description: statefulSetRevision is the hash of the desired pod templates.
                 type: string
+              upNodes:
+                description: |-
+                  upNodes is the number of nodes the cluster's own view reports up:
+                  reachable by their peers, which a Ready pod alone does not prove.
+                format: int32
+                type: integer
               update:
                 description: update is present while a rolling change is in flight.
                 properties:
-                  disk:
-                    description: |-
-                      disk is the disk being drained out of the cluster, when the change in
-                      flight is a disk removal. A disk is removed from every node at once, so
-                      it is not attributable to one node the way a rolling change is.
-                    type: string
                   node:
-                    description: node is the node currently being replaced or decommissioned.
+                    description: node is the node currently being replaced or removed.
                     type: string
                   phase:
                     description: phase is the state-machine phase.
                     enum:
                     - Preflight
                     - RollingNodes
-                    - Migrating
                     - Draining
                     type: string
                   startedAt:

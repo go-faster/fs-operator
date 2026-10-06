@@ -43,9 +43,9 @@ const (
 	singleCluster = "fs-dev"
 )
 
-// Single-node mode renders a configuration nothing else in the suite does —
-// fs's filesystem backend, no cluster section, no etcd — and the only way to
-// know fs accepts it is to start fs with it. Everything here goes through the
+// Single-node mode renders a configuration nothing else in the suite does — no
+// cluster section, no peers, no layout — and the only way to know fs accepts
+// it is to start fs with it. Everything here goes through the
 // surfaces a developer has: the published example, kubectl, and S3.
 var _ = Describe("Single-node cluster", Ordered, func() {
 	BeforeAll(func() {
@@ -68,7 +68,7 @@ var _ = Describe("Single-node cluster", Ordered, func() {
 			"--ignore-not-found", "--wait=false"))
 	})
 
-	It("brings up one node with no etcd", func() {
+	It("brings up one node with no layout", func() {
 		By("applying examples/00-single-node.yaml")
 		apply := exec.Command("kubectl", "apply", "-n", singleNamespace, "-f",
 			"examples/00-single-node.yaml")
@@ -81,8 +81,6 @@ var _ = Describe("Single-node cluster", Ordered, func() {
 			out, err := utils.Run(exec.Command("kubectl", "get", "statefulset",
 				"-n", singleNamespace, "-o", "jsonpath={.items[*].status.readyReplicas}"))
 			g.Expect(err).NotTo(HaveOccurred())
-			// One StatefulSet, and it is the node's: a managed etcd would be
-			// a second one here.
 			g.Expect(strings.Fields(out)).To(HaveLen(1), "expected exactly one StatefulSet")
 			g.Expect(strings.TrimSpace(out)).To(Equal("1"), "the node is not ready")
 		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
@@ -143,15 +141,15 @@ var _ = Describe("Single-node cluster", Ordered, func() {
 	})
 
 	It("refuses to be grown into a cluster", func() {
-		// The backends store data differently, so raising the node count in
-		// place would come back as an empty cluster (SPEC §5.2).
+		// A single node holds its data as a one-node layout of its own, which
+		// fs cannot merge into a new cluster (SPEC §5.2).
 		By("patching the node count")
 		patch := exec.Command("kubectl", "patch", "fscluster", singleCluster,
 			"-n", singleNamespace, "--type", "merge",
 			"-p", `{"spec":{"topology":{"nodes":3}}}`)
 
 		out, err := utils.Run(patch)
-		Expect(err).To(HaveOccurred(), "the API server admitted a backend switch")
+		Expect(err).To(HaveOccurred(), "the API server admitted growing a single node")
 		Expect(out + errorText(err)).To(ContainSubstring("single-node"))
 
 		By("checking the cluster is untouched")

@@ -94,8 +94,7 @@ test-e2e: setup-test-e2e manifests generate fmt vet ginkgo ## Run the e2e tests.
 	# which is what SynchronizedBeforeSuite is for.
 	#
 	# The default 10m timeout is shorter than this suite: it provisions a
-	# cluster, decommissions a node, and adds and removes a disk, each gated on
-	# a real rebalance. Hitting it kills the run mid-spec with a goroutine dump
+	# cluster and removes a node, gated on a real layout transition. Hitting it kills the run mid-spec with a goroutine dump
 	# rather than a failure, which reads as a hang.
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) $(GINKGO) --tags=e2e --procs=$(E2E_PROCS) -v --timeout=45m ./test/e2e/
 	$(MAKE) cleanup-test-e2e

@@ -6,19 +6,16 @@ server:
   idle_timeout: 5m0s
   health_path: /health
 storage:
-  root: /var/lib/fs/disks/d0
-  type: filesystem
+  root: /var/lib/fs
 auth:
-  source: file
   public_read_buckets:
     - public
 admin:
   enabled: true
   addr: :8090
-integrity: {}
 observability:
   service_name: prod
   enable_request_logging: false
   enable_metrics: true
   enable_tracing: false
-revision: cfg-11adbf7ef0ae
+revision: cfg-63f3a4e8d0d1

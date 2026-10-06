@@ -81,25 +81,6 @@ _Appears in:_
 
 
 
-#### DiskSpec
-
-
-
-DiskSpec is one per-node disk.
-
-
-
-_Appears in:_
-- [StorageSpec](#storagespec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | name identifies the disk within each node (the fs disk id). Immutable. |  | MaxLength: 15 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` <br />Required: \{\} <br /> |
-| `size` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | size is the capacity requested for each node's PVC of this disk. It<br />may only grow, and growing it requires the StorageClass to allow<br />volume expansion. The growth check is the controller's: expressing it<br />in CEL costs more than the API server's validation budget allows for a<br />list of this size. |  | Required: \{\} <br /> |
-| `storageClass` _string_ | storageClass selects the StorageClass for this disk's PVCs; empty uses<br />the cluster default. |  | Optional: \{\} <br /> |
-| `weight` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | weight is the disk's relative capacity weight for placement (fs<br />semantics; default 1). Expressed as a quantity so fractional weights<br />like "0.5" are possible. Changing weights rolls the cluster. |  | Optional: \{\} <br /> |
-
-
 #### EndpointsStatus
 
 
@@ -114,72 +95,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `s3` _string_ | s3 is the in-cluster S3 endpoint URL. |  | Optional: \{\} <br /> |
-
-
-#### EtcdSpec
-
-
-
-EtcdSpec configures the etcd control plane connection.
-
-CEL only rules out having both: a clustered topology needs exactly one, a
-single-node cluster needs neither, and which of those applies is a
-cross-field question CEL cannot see from here. internal/validation decides
-it, at admission and again in the controller.
-
-The prefix rule spells out the absent case: a rule that reads self.prefix
-directly fails evaluation — and rejects every update, including status
-writes — while the field is unset, and setting it later would move the
-cluster's keys.
-
-
-
-_Appears in:_
-- [FSClusterSpec](#fsclusterspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `external` _[ExternalEtcdSpec](#externaletcdspec)_ | external points the cluster at user-operated etcd endpoints. This is<br />the production mode, and the only supported one. |  | Optional: \{\} <br /> |
-| `managed` _[ManagedEtcdSpec](#managedetcdspec)_ | managed asks the operator to run a minimal etcd for this cluster.<br />For development and demos only, permanently. It has no backups, no<br />defrag automation, no member replacement and no restore path: losing<br />its volume loses the cluster's control plane, and with it the sealed<br />credentials and the topology. The operator says so on every cluster<br />that uses it (Ready condition message plus an event) — that is not a<br />warning that will be softened once it is "good enough", because etcd<br />lifecycle management is its own discipline and this is not it.<br />Production clusters use external (SPEC §2). |  | Optional: \{\} <br /> |
-| `prefix` _string_ | prefix namespaces this cluster's keys in etcd. Defaults to<br />/fs/<namespace>/<name>. Immutable. |  | MaxLength: 250 <br />Optional: \{\} <br /> |
-| `ttl` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#duration-v1-meta)_ | ttl is the node registration lease: how long a dead node lingers in<br />the topology. Zero defers to the fs default (10s); minimum 1s. |  | Optional: \{\} <br /> |
-| `cleanupOnDelete` _boolean_ | cleanupOnDelete deletes the cluster's keys under prefix when the<br />FSCluster is deleted. Off by default: with a shared etcd, prefer<br />leaving state over destroying a neighbour's. |  | Optional: \{\} <br /> |
-
-
-#### EtcdTLSSpec
-
-
-
-EtcdTLSSpec is the client TLS material for reaching etcd.
-
-
-
-_Appears in:_
-- [ExternalEtcdSpec](#externaletcdspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `secretName` _string_ | secretName names a Secret with the trust material. Key "ca.crt" is the<br />bundle etcd's certificate is verified against; "tls.crt" and "tls.key",<br />when present, are this client's certificate for mutual TLS — a<br />kubernetes.io/tls Secret with a ca.crt added serves both.<br />Setting it turns TLS on. Omit it against an https endpoint to verify<br />with the system roots instead. |  | Optional: \{\} <br /> |
-| `serverName` _string_ | serverName overrides the name verified against etcd's certificate, for<br />reaching it through an address the certificate does not name. |  | Optional: \{\} <br /> |
-| `insecureSkipVerify` _boolean_ | insecureSkipVerify disables verification of etcd's certificate. It<br />makes TLS decorative — anything on the path can impersonate the<br />cluster's control plane — and exists for development against<br />self-signed certificates only. |  | Optional: \{\} <br /> |
-
-
-#### ExternalEtcdSpec
-
-
-
-ExternalEtcdSpec is a user-operated etcd.
-
-
-
-_Appears in:_
-- [EtcdSpec](#etcdspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `endpoints` _string array_ | endpoints are the etcd client URLs. An "https://" endpoint is served<br />over TLS; fs enables it from the scheme alone, so an https endpoint<br />works without tls below (verifying against the system roots). |  | MinItems: 1 <br />items:MinLength: 1 <br />Required: \{\} <br /> |
-| `tls` _[EtcdTLSSpec](#etcdtlsspec)_ | tls secures the connection to etcd. etcd holds the node registry and<br />the cluster's credential store, sealed with the cluster secret, so<br />anything that can write to it can reshape the cluster. |  | Optional: \{\} <br /> |
-| `authSecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#localobjectreference-v1-core)_ | authSecretRef references a Secret with keys "username" and "password"<br />for etcd role-based authentication. Both keys are required. The<br />credentials reach the nodes as environment variables, never through<br />the rendered configuration, so they are not written to a config file. |  | Optional: \{\} <br /> |
 
 
 #### FSAccessKey
@@ -280,7 +195,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `clusterRef` _[ClusterReference](#clusterreference)_ | clusterRef is the FSCluster this bucket lives in. Immutable. |  | Required: \{\} <br /> |
 | `bucketName` _string_ | bucketName is the S3 bucket name; defaults to metadata.name.<br />Immutable. |  | MaxLength: 63 <br />Optional: \{\} <br /> |
-| `scheme` _string_ | scheme overrides the cluster's default replication scheme for this<br />bucket's objects: "rf2.5", "rf3" or "ec:k,m" (e.g. "ec:4,2"). Empty<br />applies the cluster default. Changing it affects new writes cluster-wide<br />within seconds; existing objects convert through repair/rebalance. |  | Pattern: `^(rf2\.5\|rf3\|ec:[0-9]+,[0-9]+)?$` <br />Optional: \{\} <br /> |
+| `scheme` _string_ | scheme is how this bucket's objects are stored: "rf3" (three<br />replicas, the default) or "ec:k,m" (erasure coded, e.g. "ec:4,2").<br />An erasure scheme needs the cluster's spec.layout.widths to include<br />k+m, and is refused on a single-node cluster. A change applies to data<br />written from then on; existing data keeps the scheme it was written<br />with. |  | Pattern: `^(rf3\|ec:[1-9][0-9]*,[1-9][0-9]*)?$` <br />Optional: \{\} <br /> |
 | `reclaimPolicy` _[ReclaimPolicy](#reclaimpolicy)_ | reclaimPolicy controls what happens to the bucket when this resource<br />is deleted. Retain leaves the bucket and its data; Delete removes the<br />bucket, which succeeds only once it is empty (the controller retries<br />and reports Ready=False/BucketNotEmpty until then). | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 
 
@@ -326,8 +241,8 @@ FSCluster is the Schema for the fsclusters API.
 
 
 FSClusterSpec defines the desired state of a go-faster/fs cluster: a set of
-storage nodes spread over failure domains (racks), replicating objects at
-write quorum with an etcd control plane.
+storage nodes spread over failure domains (racks), sharing a layout that
+assigns every partition of the data to nodes.
 
 
 
@@ -337,15 +252,12 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `image` _[ImageSpec](#imagespec)_ | image is the fs container image to run on every node. Defaults to the<br />pinned fs release this operator version is validated against. | \{  \} | Optional: \{\} <br /> |
-| `scheme` _string_ | scheme is the default replication scheme for all buckets: "rf2.5"<br />(2 replicas + half parity), "rf3" (3 replicas) or "ec:k,m"<br />(Reed-Solomon). Changeable at runtime: new writes use it immediately<br />and existing objects converge via repair/rebalance. The controller<br />refuses a scheme the topology cannot host (distinct failure domains<br />below the scheme requirement). Ignored by a single-node cluster,<br />which stores objects on one disk and replicates nothing. | rf2.5 | Pattern: `^(rf2\.5\|rf3\|ec:[1-9][0-9]*,[1-9][0-9]*)$` <br />Optional: \{\} <br /> |
 | `topology` _[TopologySpec](#topologyspec)_ | topology declares the cluster's nodes and failure domains. |  | Required: \{\} <br /> |
-| `storage` _[StorageSpec](#storagespec)_ | storage declares each node's disks. Every disk becomes one<br />PersistentVolumeClaim per node. |  | Required: \{\} <br /> |
-| `etcd` _[EtcdSpec](#etcdspec)_ | etcd configures the control plane the cluster registers in. Required<br />for a clustered topology; a single-node cluster runs fs's<br />non-clustered filesystem backend, which has no control plane, and<br />must leave it unset. |  | Optional: \{\} <br /> |
+| `storage` _[StorageSpec](#storagespec)_ | storage sizes each node's data volume. |  | Required: \{\} <br /> |
+| `layout` _[LayoutSpec](#layoutspec)_ | layout tunes the cluster layout the operator applies. Ignored by a<br />single-node cluster, which has no layout to apply. |  | Optional: \{\} <br /> |
 | `clusterSecretRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#localobjectreference-v1-core)_ | clusterSecretRef references a Secret with key "secret" holding the<br />shared cluster secret (HMAC peer auth, min 16 characters). Generated<br />if omitted. Immutable: fs has no secret rotation; mixed secrets<br />partition the cluster. |  | Optional: \{\} <br /> |
 | `auth` _[AuthSpec](#authspec)_ | auth configures S3 authentication. |  | Optional: \{\} <br /> |
 | `s3` _[S3Spec](#s3spec)_ | s3 configures how the S3 endpoint is exposed. |  | Optional: \{\} <br /> |
-| `rebalance` _[RebalanceSpec](#rebalancespec)_ | rebalance tunes the automatic rebalancer. Zero values defer to the fs<br />defaults. |  | Optional: \{\} <br /> |
-| `integrity` _[IntegritySpec](#integrityspec)_ | integrity configures object integrity checking (scrub). |  | Optional: \{\} <br /> |
 | `updatePolicy` _[UpdatePolicySpec](#updatepolicyspec)_ | updatePolicy tunes rolling changes. |  | Optional: \{\} <br /> |
 | `observability` _[ObservabilitySpec](#observabilityspec)_ | observability configures telemetry of the fs pods. |  | Optional: \{\} <br /> |
 | `networkPolicy` _boolean_ | networkPolicy, when true, creates a NetworkPolicy restricting the peer<br />(7080) and admin (8090) ports to cluster pods and the operator. S3<br />stays unrestricted. |  | Optional: \{\} <br /> |
@@ -368,16 +280,15 @@ _Appears in:_
 | `observedGeneration` _integer_ | observedGeneration is the last spec generation the controller acted<br />on. |  | Optional: \{\} <br /> |
 | `nodes` _integer_ | nodes is the desired node count. |  | Optional: \{\} <br /> |
 | `readyNodes` _integer_ | readyNodes is the number of node pods that are Ready. |  | Optional: \{\} <br /> |
-| `registeredNodes` _integer_ | registeredNodes is the number of nodes present in the etcd topology. |  | Optional: \{\} <br /> |
+| `upNodes` _integer_ | upNodes is the number of nodes the cluster's own view reports up:<br />reachable by their peers, which a Ready pod alone does not prove. |  | Optional: \{\} <br /> |
 | `configurationRevision` _string_ | configurationRevision is the hash of the desired rendered configs. |  | Optional: \{\} <br /> |
 | `statefulSetRevision` _string_ | statefulSetRevision is the hash of the desired pod templates. |  | Optional: \{\} <br /> |
 | `currentRevision` _string_ | currentRevision is the revision every node has converged to. |  | Optional: \{\} <br /> |
 | `updateRevision` _string_ | updateRevision is the revision being rolled out. |  | Optional: \{\} <br /> |
-| `schemaVersion` _[SchemaVersionStatus](#schemaversionstatus)_ | schemaVersion reports the fs schema versions in play. |  | Optional: \{\} <br /> |
-| `rebalance` _[RebalanceStatus](#rebalancestatus)_ | rebalance summarizes rebalance/repair across nodes. |  | Optional: \{\} <br /> |
+| `layout` _[LayoutStatus](#layoutstatus)_ | layout is the cluster layout as fs reports it. |  | Optional: \{\} <br /> |
 | `update` _[UpdateStatus](#updatestatus)_ | update is present while a rolling change is in flight. |  | Optional: \{\} <br /> |
 | `endpoints` _[EndpointsStatus](#endpointsstatus)_ | endpoints are the cluster's client endpoints. |  | Optional: \{\} <br /> |
-| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta) array_ | conditions represent the current state of the FSCluster. See the<br />documented condition types (SpecValid, ReconcileSucceeded, Ready,<br />NodesHealthy, ClusterSizeAligned, ConfigurationInSync, Converged,<br />SchemaCurrent). |  | Optional: \{\} <br /> |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#condition-v1-meta) array_ | conditions represent the current state of the FSCluster. See the<br />documented condition types (SpecValid, ReconcileSucceeded, Ready,<br />NodesHealthy, ClusterSizeAligned, ConfigurationInSync, Converged). |  | Optional: \{\} <br /> |
 
 
 #### GrantSpec
@@ -412,17 +323,17 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `repository` _string_ | repository is the image repository. | ghcr.io/go-faster/fs | Optional: \{\} <br /> |
-| `tag` _string_ | tag is the image tag. Defaults to the pinned fs release this operator<br />version is validated against — always set a pinned version, never a<br />floating tag: cluster upgrades are deliberate, one-node-at-a-time<br />operations. | v0.13.1 | MinLength: 1 <br />Optional: \{\} <br /> |
+| `tag` _string_ | tag is the image tag. Defaults to the pinned fs release this operator<br />version is validated against — always set a pinned version, never a<br />floating tag: cluster upgrades are deliberate, one-node-at-a-time<br />operations. | v0.14.1 | MinLength: 1 <br />Optional: \{\} <br /> |
 | `digest` _string_ | digest pins the image by content instead of by tag, as<br />"sha256:<hex>". When set it wins over tag, and the nodes run<br />repository@digest — the reference a mirror cannot silently change<br />under a cluster. A digest already written into repository is honoured<br />too, which is how the chart pins the operator's own image. |  | Pattern: `^[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-fA-F0-9]\{32,128\}$` <br />Optional: \{\} <br /> |
 | `pullPolicy` _[PullPolicy](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#pullpolicy-v1-core)_ | pullPolicy is the image pull policy. | IfNotPresent | Enum: [Always IfNotPresent Never] <br />Optional: \{\} <br /> |
 | `pullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#localobjectreference-v1-core) array_ | pullSecrets are image pull secrets for the fs pods. |  | Optional: \{\} <br /> |
 
 
-#### IntegritySpec
+#### LayoutSpec
 
 
 
-IntegritySpec configures object integrity checking.
+LayoutSpec tunes the layout: which partition of the data each node holds.
 
 
 
@@ -431,66 +342,26 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `verifyOnRead` _boolean_ | verifyOnRead recomputes and checks each object's checksum before<br />serving it (costs a full extra read per GET). |  | Optional: \{\} <br /> |
-| `scrubInterval` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#duration-v1-meta)_ | scrubInterval, if positive, runs a background scrubber walking all<br />objects on this cadence. Zero disables it. |  | Optional: \{\} <br /> |
-| `scrubQuarantine` _boolean_ | scrubQuarantine moves corrupt objects aside instead of only reporting<br />them. |  | Optional: \{\} <br /> |
+| `widths` _integer array_ | widths are the slot counts the layout spreads over distinct failure<br />domains: 3 for replicated data (rf3), and K+M for every erasure scheme<br />a bucket uses, so that an FSBucket with scheme "ec:4,2" needs 6 here.<br />Each width needs at least that many nodes. Defaults to [3]. Adding a<br />width moves data; removing one that a bucket still uses is refused by<br />fs. |  | MaxItems: 8 <br />MinItems: 1 <br />items:Maximum: 64 <br />items:Minimum: 1 <br />Optional: \{\} <br /> |
 
 
-#### ManagedEtcdImageSpec
-
-
-
-ManagedEtcdImageSpec pins the managed etcd image.
+#### LayoutStatus
 
 
 
-_Appears in:_
-- [ManagedEtcdSpec](#managedetcdspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `repository` _string_ | repository is the etcd image repository. | quay.io/coreos/etcd | Optional: \{\} <br /> |
-| `tag` _string_ | tag is the etcd image tag. | v3.5.17 | MinLength: 1 <br />Optional: \{\} <br /> |
-| `pullPolicy` _[PullPolicy](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#pullpolicy-v1-core)_ | pullPolicy is the image pull policy. | IfNotPresent | Enum: [Always IfNotPresent Never] <br />Optional: \{\} <br /> |
-
-
-#### ManagedEtcdSpec
-
-
-
-ManagedEtcdSpec is the operator-run development etcd (SPEC §2). Everything
-here is deliberately small: it exists so `kubectl apply` of an example
-produces a working cluster, not so anyone runs it in production.
+LayoutStatus is the cluster layout as fs reports it.
 
 
 
 _Appears in:_
-- [EtcdSpec](#etcdspec)
+- [FSClusterStatus](#fsclusterstatus)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `replicas` _integer_ | replicas is the etcd member count: 1 for a laptop, 3 for a demo that<br />should survive a node restart. Even counts cannot form a quorum and are<br />refused. Immutable, because this etcd has no member-replacement path:<br />growing it would need a join dance the operator does not implement. |  | Enum: [1 3] <br />Optional: \{\} <br /> |
-| `image` _[ManagedEtcdImageSpec](#managedetcdimagespec)_ | image is the etcd image. Defaults to the release this operator is<br />tested against. |  | Optional: \{\} <br /> |
-| `storage` _[ManagedEtcdStorageSpec](#managedetcdstoragespec)_ | storage sizes each member's volume. etcd holds only control-plane<br />state — the node registry, cursors, the sealed key store — so this is<br />kilobytes of data with room for history and compaction. |  | Optional: \{\} <br /> |
-| `resources` _[ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#resourcerequirements-v1-core)_ | resources are the etcd container's resource requirements. |  | Optional: \{\} <br /> |
-
-
-#### ManagedEtcdStorageSpec
-
-
-
-ManagedEtcdStorageSpec sizes the managed etcd's volumes.
-
-
-
-_Appears in:_
-- [ManagedEtcdSpec](#managedetcdspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `size` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | size is the capacity requested for each member's PVC. |  | Optional: \{\} <br /> |
-| `storageClass` _string_ | storageClass selects the StorageClass; empty uses the cluster default. |  | Optional: \{\} <br /> |
-| `reclaimPolicy` _[ReclaimPolicy](#reclaimpolicy)_ | reclaimPolicy decides what happens to the members' volumes when the<br />cluster is deleted. Delete by default, unlike the data disks: this etcd<br />is a development convenience, and leaving its volumes behind means a<br />re-created cluster adopts a key store whose sealed credentials it can no<br />longer open (SPEC §8.6). | Delete | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `version` _integer_ | version is the layout version the cluster has adopted; every applied<br />change increments it. |  | Optional: \{\} <br /> |
+| `members` _integer_ | members is the number of nodes the layout gives data to. |  | Optional: \{\} <br /> |
+| `widths` _integer array_ | widths are the slot counts the layout spreads for. |  | Optional: \{\} <br /> |
+| `retainedVersions` _integer array_ | retainedVersions are older versions still in transition: data is<br />moving to where the current version puts it, and writes go to both.<br />Empty when nothing is moving. |  | Optional: \{\} <br /> |
 
 
 #### MetricsSpec
@@ -595,45 +466,8 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | name identifies the rack; it becomes the fs rack label and part of<br />node names. Immutable per entry (renaming a rack is a decommission<br />plus a new rack). |  | MaxLength: 15 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` <br />Required: \{\} <br /> |
 | `nodes` _integer_ | nodes is the number of fs nodes in this rack. |  | Maximum: 16 <br />Minimum: 1 <br />Required: \{\} <br /> |
-| `zone` _string_ | zone pins the rack's nodes to a topology.kubernetes.io/zone value<br />(sugar for nodeSelector). |  | Optional: \{\} <br /> |
+| `zone` _string_ | zone pins the rack's nodes to a topology.kubernetes.io/zone value<br />(sugar for nodeSelector), and is the fs zone of the rack's nodes:<br />racks sharing a zone are one failure domain at the zone level. |  | Optional: \{\} <br /> |
 | `nodeSelector` _object (keys:string, values:string)_ | nodeSelector pins the rack's nodes to matching Kubernetes nodes.<br />Merged over zone. |  | Optional: \{\} <br /> |
-
-
-#### RebalanceSpec
-
-
-
-RebalanceSpec tunes the automatic rebalancer; zero values defer to fs
-defaults.
-
-
-
-_Appears in:_
-- [FSClusterSpec](#fsclusterspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `autoDisabled` _boolean_ | autoDisabled turns automatic rebalancing off; relocation then happens<br />only via periodic scrubs and manual runs. |  | Optional: \{\} <br /> |
-| `settle` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#duration-v1-meta)_ | settle is how long the membership must be stable before data moves<br />(fs default 1m). |  | Optional: \{\} <br /> |
-| `cooldown` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#duration-v1-meta)_ | cooldown is the minimum gap between a node's automatic trigger<br />attempts (fs default 15m). |  | Optional: \{\} <br /> |
-| `fullWatermark` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | fullWatermark is the disk-fullness fraction (0,1] beyond which a node<br />warns that the disk should be drained (fs default 0.9). |  | Optional: \{\} <br /> |
-
-
-#### RebalanceStatus
-
-
-
-RebalanceStatus summarizes rebalance/repair across nodes.
-
-
-
-_Appears in:_
-- [FSClusterStatus](#fsclusterstatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `state` _string_ | state is the worst rebalance state across nodes. |  | Optional: \{\} <br /> |
-| `repairQueueDepth` _integer_ | repairQueueDepth is the summed pending repair tasks across nodes. |  | Optional: \{\} <br /> |
 
 
 #### ReclaimPolicy
@@ -646,7 +480,6 @@ ReclaimPolicy controls the fate of data-bearing resources on removal.
 
 _Appears in:_
 - [FSBucketSpec](#fsbucketspec)
-- [ManagedEtcdStorageSpec](#managedetcdstoragespec)
 - [StorageSpec](#storagespec)
 
 | Field | Description |
@@ -706,40 +539,6 @@ _Appears in:_
 | `secretName` _string_ | secretName names a kubernetes.io/tls Secret with the serving<br />certificate. Empty serves plaintext. |  | Optional: \{\} <br /> |
 
 
-#### SchemaMigrationPolicy
-
-_Underlying type:_ _string_
-
-SchemaMigrationPolicy selects who triggers fs schema migrations.
-
-
-
-_Appears in:_
-- [UpdatePolicySpec](#updatepolicyspec)
-
-| Field | Description |
-| --- | --- |
-| `Auto` |  |
-| `Manual` |  |
-
-
-#### SchemaVersionStatus
-
-
-
-SchemaVersionStatus reports the fs schema versions in play.
-
-
-
-_Appears in:_
-- [FSClusterStatus](#fsclusterstatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `cluster` _integer_ | cluster is the schema version recorded in etcd. |  | Optional: \{\} <br /> |
-| `binary` _integer_ | binary is the schema version the deployed image implements. |  | Optional: \{\} <br /> |
-
-
 #### SignalSpec
 
 
@@ -758,36 +557,11 @@ _Appears in:_
 | `protocol` _string_ | protocol overrides otlp.protocol for this signal alone, which is what<br />a collector that speaks one transport on one port needs. |  | Enum: [grpc http/protobuf] <br />Optional: \{\} <br /> |
 
 
-#### StateSpec
-
-
-
-StateSpec sizes a node's state volume — the storage root, where fs keeps
-what it derives from the disks rather than the objects themselves.
-
-Since fs v0.13.0 that is the pebble object index: one entry per object the
-node holds, which is what answers a listing, a usage recount or a scrub
-sweep without reading every sidecar on every disk. The index is derived and
-never authoritative — losing it costs a rebuild by walking the disks — but
-on a node holding tens of millions of objects that walk is an event, which
-is why this is a claim and not an emptyDir.
-
-
-
-_Appears in:_
-- [StorageSpec](#storagespec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `size` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | size is the capacity requested for each node's state PVC. Defaults to<br />10Gi: the index runs to a few hundred bytes per object, so the default<br />carries a node with tens of millions of them. Like a disk it may only<br />grow, and growing it requires the StorageClass to allow expansion. |  | Optional: \{\} <br /> |
-| `storageClass` _string_ | storageClass selects the StorageClass for the state PVCs; empty uses<br />the cluster default. The index is written constantly and read on every<br />listing, so this is the one volume of a node worth putting on the<br />fastest class available. |  | Optional: \{\} <br /> |
-
-
 #### StorageSpec
 
 
 
-StorageSpec declares the per-node disks and how their claims are reclaimed.
+StorageSpec sizes each node's data volume and says how it is reclaimed.
 
 
 
@@ -796,9 +570,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `disks` _[DiskSpec](#diskspec) array_ | disks are this cluster's per-node storage devices: every entry becomes<br />one PersistentVolumeClaim on every node, mounted at<br />/var/lib/fs/disks/<name>. A single-node cluster declares exactly one:<br />fs's filesystem backend stores everything under a single root.<br />Entries may be added, and removed. Removing one is a decommission, not<br />a delete: the disk is drained out of placement on every node, and its<br />volumes go only once fs reports it holds nothing (SPEC §8.5). Sizes may<br />only grow. A disk is identified by its name, so renaming one reads as<br />removing a disk and adding an empty one — which is a slow, safe, and<br />almost certainly unintended way to spend a rebalance. |  | MaxItems: 32 <br />MinItems: 1 <br />Required: \{\} <br /> |
-| `state` _[StateSpec](#statespec)_ | state sizes the per-node volume holding fs's node-local state: the<br />object index it keeps beside the disks, at the storage root. Every<br />node gets one; it is not optional, because the container filesystem is<br />read-only and fs writes there at startup. | \{  \} | Optional: \{\} <br /> |
-| `reclaimPolicy` _[ReclaimPolicy](#reclaimpolicy)_ | reclaimPolicy controls what happens to a node's PVCs when the node is<br />removed or the cluster is deleted. It covers the state volume too:<br />Kubernetes sets the policy per StatefulSet, not per claim. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
+| `size` _[Quantity](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#quantity-resource-api)_ | size is the capacity of each node's data volume, which holds<br />everything the node stores: metadata, blocks and runtime state. It is<br />also the capacity the node joins the layout with, so the layout gives<br />a node a share of the data in proportion to it. It may only grow, and<br />growing it requires the StorageClass to allow volume expansion. |  | Required: \{\} <br /> |
+| `storageClass` _string_ | storageClass selects the StorageClass of the data volumes; empty<br />uses the cluster default. Metadata is written on every request, so<br />this is worth putting on the fastest class available. |  | Optional: \{\} <br /> |
+| `reclaimPolicy` _[ReclaimPolicy](#reclaimpolicy)_ | reclaimPolicy controls what happens to a node's volume when the node<br />is removed or the cluster is deleted. | Retain | Enum: [Retain Delete] <br />Optional: \{\} <br /> |
 
 
 #### TopologySpec
@@ -815,8 +589,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `nodes` _integer_ | nodes is the flat topology: N nodes, each its own failure domain.<br />One node is a development install: that node runs fs's single-node<br />filesystem backend — one disk, no etcd, no replication, no failure<br />tolerance — instead of joining a cluster. |  | Maximum: 16 <br />Minimum: 1 <br />Optional: \{\} <br /> |
-| `racks` _[RackSpec](#rackspec) array_ | racks are explicit failure domains; placement spreads object copies<br />across racks first. Rack membership is declared here and pinned with<br />node affinity — it is never derived from where a pod happens to be<br />scheduled. |  | MaxItems: 16 <br />MinItems: 1 <br />Optional: \{\} <br /> |
+| `nodes` _integer_ | nodes is the flat topology: N nodes, each its own failure domain.<br />One node is a development install: one volume, no peers, no<br />replication and no failure tolerance. Two is refused: a replicated<br />layout needs three nodes. |  | Maximum: 16 <br />Minimum: 1 <br />Optional: \{\} <br /> |
+| `racks` _[RackSpec](#rackspec) array_ | racks are explicit failure domains. Every node of a rack joins the<br />layout with the rack's name as its fs rack and the rack's zone as its<br />fs zone, and the layout spreads each partition over zones first, then<br />racks. Rack membership is declared here and pinned with node affinity<br />— it is never derived from where a pod happens to be scheduled. |  | MaxItems: 16 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `podAntiAffinity` _[AntiAffinityMode](#antiaffinitymode)_ | podAntiAffinity spreads fs nodes over distinct Kubernetes nodes.<br />Required (the default) keeps the failure model honest; use Preferred<br />or None only for dev clusters. | Required | Enum: [Required Preferred None] <br />Optional: \{\} <br /> |
 
 
@@ -835,8 +609,7 @@ _Appears in:_
 | --- | --- |
 | `Preflight` |  |
 | `RollingNodes` |  |
-| `Migrating` |  |
-| `Draining` | UpdatePhaseDraining is a node being decommissioned: taken out of<br />placement and waiting for the cluster to move its data off, before it is<br />removed (SPEC §8.4).<br /> |
+| `Draining` | UpdatePhaseDraining is a node being removed: out of the layout and<br />still running while the cluster moves its data elsewhere (SPEC §8.4).<br /> |
 
 
 #### UpdatePolicySpec
@@ -852,8 +625,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `convergenceTimeout` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#duration-v1-meta)_ | convergenceTimeout bounds how long the operator waits, between node<br />restarts, for the cluster to reconverge (pod ready, node registered,<br />repair queue drained). On timeout the rollout halts — it never<br />proceeds to another node while the cluster is unconverged — and<br />resumes automatically when the gate passes. | 30m | Optional: \{\} <br /> |
-| `schemaMigration` _[SchemaMigrationPolicy](#schemamigrationpolicy)_ | schemaMigration selects whether the operator runs `fs cluster migrate`<br />automatically after a successful full rollout (Auto) or only surfaces<br />the pending migration via the SchemaCurrent condition (Manual). | Auto | Enum: [Auto Manual] <br />Optional: \{\} <br /> |
+| `convergenceTimeout` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#duration-v1-meta)_ | convergenceTimeout bounds how long the operator waits, between node<br />restarts, for the cluster to reconverge (pod ready, every node up and<br />on the current layout, no layout change in transition). On timeout<br />the rollout halts — it never proceeds to another node while the<br />cluster is unconverged — and resumes automatically when the gate<br />passes. | 30m | Optional: \{\} <br /> |
 
 
 #### UpdateStatus
@@ -869,9 +641,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `phase` _[UpdatePhase](#updatephase)_ | phase is the state-machine phase. |  | Enum: [Preflight RollingNodes Migrating Draining] <br />Optional: \{\} <br /> |
-| `node` _string_ | node is the node currently being replaced or decommissioned. |  | Optional: \{\} <br /> |
-| `disk` _string_ | disk is the disk being drained out of the cluster, when the change in<br />flight is a disk removal. A disk is removed from every node at once, so<br />it is not attributable to one node the way a rolling change is. |  | Optional: \{\} <br /> |
+| `phase` _[UpdatePhase](#updatephase)_ | phase is the state-machine phase. |  | Enum: [Preflight RollingNodes Draining] <br />Optional: \{\} <br /> |
+| `node` _string_ | node is the node currently being replaced or removed. |  | Optional: \{\} <br /> |
 | `startedAt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.36/#time-v1-meta)_ | startedAt is when the rolling change started. |  | Optional: \{\} <br /> |
 
 

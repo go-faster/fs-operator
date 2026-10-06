@@ -109,7 +109,8 @@ func TestRecordClusterPublishesStatus(t *testing.T) {
 	c := cluster("alpha")
 	c.Status.Nodes = 4
 	c.Status.ReadyNodes = 3
-	c.Status.RegisteredNodes = 3
+	c.Status.UpNodes = 3
+	c.Status.Layout = &fsv1alpha1.LayoutStatus{Version: 5, RetainedVersions: []int64{3, 4}}
 	c.Status.Conditions = []metav1.Condition{
 		{Type: fsv1alpha1.ConditionReady, Status: metav1.ConditionTrue},
 	}
@@ -125,13 +126,18 @@ func TestRecordClusterPublishesStatus(t *testing.T) {
 
 	nodes := sample(t, "fsoperator_cluster_nodes")
 	for state, want := range map[string]float64{
-		metrics.NodeStateDeclared:   4,
-		metrics.NodeStateReady:      3,
-		metrics.NodeStateRegistered: 3,
+		metrics.NodeStateDeclared: 4,
+		metrics.NodeStateReady:    3,
+		metrics.NodeStateUp:       3,
 	} {
 		if got := nodes[clusterKey("alpha", "state", state)]; got != want {
 			t.Errorf("cluster_nodes{state=%q} = %v, want %v", state, got, want)
 		}
+	}
+
+	// A layout change in transition is the number an alert watches.
+	if got := sample(t, "fsoperator_cluster_layout_retained_versions")[clusterKey("alpha")]; got != 2 {
+		t.Errorf("layout_retained_versions = %v, want 2", got)
 	}
 
 	// The phase the cluster is in reads 1; the others are published as 0 rather
@@ -164,7 +170,7 @@ func TestRecordClusterUnready(t *testing.T) {
 
 	// A cluster with no rolling change in flight is in no phase at all.
 	phases := sample(t, "fsoperator_update_phase")
-	for _, phase := range []string{"Preflight", "RollingNodes", "Draining", "Migrating"} {
+	for _, phase := range []string{"Preflight", "RollingNodes", "Draining"} {
 		if got := phases[clusterKey("beta", "phase", phase)]; got != 0 {
 			t.Errorf("update_phase{%s} = %v, want 0 with no update in flight", phase, got)
 		}
@@ -189,6 +195,7 @@ func TestForgetDropsTheSeries(t *testing.T) {
 	for _, name := range []string{
 		"fsoperator_cluster_ready",
 		"fsoperator_cluster_nodes",
+		"fsoperator_cluster_layout_retained_versions",
 		"fsoperator_update_phase",
 	} {
 		for labels := range sample(t, name) {

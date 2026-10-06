@@ -25,8 +25,6 @@ import (
 	"time"
 
 	"github.com/go-faster/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
 	"github.com/go-faster/fs-operator/internal/fsconfig"
@@ -63,14 +61,9 @@ const (
 
 // Paths inside the fs container.
 const (
-	// StorageRoot is fs's storage root. In cluster mode object data lives on
-	// the disks below it and the root itself holds node-local state fs can
-	// rebuild — the object index of fs v0.13.0 — so it is backed by an
-	// emptyDir rather than a claim (see volumes in statefulset.go).
+	// StorageRoot is fs's storage root, where the node's data volume is
+	// mounted: metadata, blocks and runtime state all live below it.
 	StorageRoot = "/var/lib/fs"
-
-	// DisksDir holds one mounted claim per disk: <DisksDir>/<disk name>.
-	DisksDir = StorageRoot + "/disks"
 
 	// ConfigDir is where the node's config Secret is mounted.
 	ConfigDir = "/etc/fs"
@@ -85,23 +78,6 @@ const (
 	// TLSDir is where the S3 serving certificate Secret is mounted. The keys
 	// are the kubernetes.io/tls ones.
 	TLSDir = ConfigDir + "/tls"
-
-	// EtcdTLSDir is where the etcd trust material is mounted. Separate from
-	// TLSDir: that one holds the certificate fs *serves*, this one the
-	// material it verifies etcd with, and a Secret rotated for one reason
-	// should not disturb the other.
-	EtcdTLSDir = ConfigDir + "/etcd-tls"
-
-	// Keys of the etcd TLS Secret. ca.crt is the bundle etcd is verified
-	// against; tls.crt/tls.key are this client's certificate for mutual TLS,
-	// which is the layout of a kubernetes.io/tls Secret with a CA added.
-	EtcdCAKey   = "ca.crt"
-	EtcdCertKey = "tls.crt"
-	EtcdKeyKey  = "tls.key"
-
-	// Keys of the etcd auth Secret.
-	EtcdUsernameKey = "username"
-	EtcdPasswordKey = "password"
 
 	// TLSCertPath and TLSKeyPath are the mounted certificate and key.
 	TLSCertPath = TLSDir + "/tls.crt"
@@ -122,20 +98,6 @@ const (
 // it and is not configurable.
 const healthPath = "/health"
 
-// DefaultDiskWeight is the placement weight of a disk whose spec leaves the
-// weight unset.
-const DefaultDiskWeight = 1.0
-
-// DrainWeight takes a disk out of placement so the auto-rebalancer moves its
-// data elsewhere (SPEC §8.4).
-//
-// It is negative on purpose. fs's config layer reads weight 0 as "unset" and
-// substitutes 1 (cmd/fs/cluster.go), while placement skips every disk whose
-// weight is not positive (internal/cluster/placement). A negative weight is
-// therefore the only way to express a drained disk through the config file;
-// fs §11.6 (a persisted drain flag) would replace this with an API call.
-const DrainWeight = -1.0
-
 // debugLogLevel is the only log level at which the operator turns on fs's
 // per-request logging: on a busy S3 endpoint one line per request is a cost,
 // not an insight. Every other level go-faster/sdk accepts — up to fatal —
@@ -145,20 +107,10 @@ const debugLogLevel = "debug"
 // RenderOptions carries the inputs a rendered config needs beyond the
 // FSCluster itself.
 type RenderOptions struct {
-	// Drained holds the names of nodes being decommissioned: their disks are
-	// rendered at DrainWeight (SPEC §8.4).
-	Drained map[string]bool
-
-	// RetainDisks are, per node, disks the spec no longer declares that the
-	// node's StatefulSet still carries. They stay mounted and configured until
-	// the disk is empty, because fs cannot move data off a volume the pod does
-	// not have (SPEC §8.5).
-	RetainDisks map[string][]string
-
-	// EtcdClientCert says the referenced etcd TLS Secret carries a client
-	// certificate, so the config should name it. Only an API read knows, and
-	// naming a file that is not mounted fails the node at startup (§11.4).
-	EtcdClientCert bool
+	// Keys are the cluster's FSAccessKey credentials, rendered into every
+	// node so that each accepts them and a reload applies a change everywhere
+	// (SPEC §7).
+	Keys []fsconfig.Key
 }
 
 // RenderedConfig is a node's rendered config.yaml and its revision — the
@@ -243,43 +195,26 @@ func nodeConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) (f
 	spec := &cluster.Spec
 
 	cfg := fsconfig.Config{
-		Server: serverConfig(spec),
-		Storage: fsconfig.Storage{
-			Root: StorageRoot,
-			Type: fsconfig.StorageTypeCluster,
+		Server:  serverConfig(spec),
+		Storage: fsconfig.Storage{Root: StorageRoot},
+		Auth: fsconfig.Auth{
+			Keys:              opts.Keys,
+			PublicReadBuckets: spec.Auth.PublicReadBuckets,
 		},
-		Auth: authConfig(spec),
 		Admin: fsconfig.Admin{
 			Enabled: true,
 			Addr:    listenAddr(AdminPort),
 		},
-		Cluster:       clusterConfig(cluster, node, opts, opts.Drained[node.Name]),
-		Integrity:     integrityConfig(spec),
 		Observability: observabilityConfig(cluster),
 	}
 
-	if spec.SingleNode() {
-		singleNodeConfig(spec, &cfg)
+	// A single node runs with no cluster section at all: no peers to find
+	// and no layout to join (SPEC §5.2).
+	if !spec.SingleNode() {
+		cfg.Cluster = clusterConfig(cluster, node)
 	}
 
 	return cfg, nil
-}
-
-// singleNodeConfig turns a node's config into fs's non-clustered form: the
-// filesystem backend rooted at the node's one disk, no cluster section, and no
-// etcd to hold credentials or a public-read list — so both of those are
-// rendered into the file instead, where fs hot-reloads them (SPEC §5.2).
-//
-// The disk is mounted where it is in cluster mode, so nothing about the pod or
-// its claims changes with the backend.
-func singleNodeConfig(spec *fsv1alpha1.FSClusterSpec, cfg *fsconfig.Config) {
-	cfg.Storage.Root = DiskPath(spec.Storage.Disks[0].Name)
-	cfg.Storage.Type = fsconfig.StorageTypeFilesystem
-	cfg.Cluster = fsconfig.Cluster{}
-	cfg.Auth = fsconfig.Auth{
-		Source:            fsconfig.AuthSourceFile,
-		PublicReadBuckets: spec.Auth.PublicReadBuckets,
-	}
 }
 
 // serverConfig renders the S3 listener, terminating TLS in fs itself when the
@@ -303,141 +238,27 @@ func serverConfig(spec *fsv1alpha1.FSClusterSpec) fsconfig.Server {
 	return server
 }
 
-// authConfig selects the cluster-wide etcd credential store (fs §6.8): runtime
-// credentials live in etcd, sealed by the cluster secret and hot-reloaded on
-// every node. The operator manages them through the admin API — the FSAccessKey
-// controller for keys, the public-read step for anonymous buckets — so no keys
-// or public-read list are rendered into the config. The root credential reaches
-// the cluster through the FS_ROOT_* env, which seeds etcd on first boot.
-func authConfig(_ *fsv1alpha1.FSClusterSpec) fsconfig.Auth {
-	return fsconfig.Auth{Source: fsconfig.AuthSourceEtcd}
-}
-
-// etcdTLSConfig renders the client TLS block for reaching etcd.
+// clusterConfig renders the node's identity and the peers it joins through.
+// The shared cluster secret is deliberately absent: it is injected through
+// FS_CLUSTER_SECRET so it never lands in a rendered file.
 //
-// The file paths are where the referenced Secret is mounted; only the keys the
-// Secret actually carries are named, because fs requires cert_file and
-// key_file together and pointing at a file that is not there fails the node at
-// startup. serverName and insecureSkipVerify apply with or without a Secret,
-// so an https endpoint verified against the system roots can still be reached
-// through an address its certificate does not name.
-func etcdTLSConfig(spec *fsv1alpha1.FSClusterSpec, opts RenderOptions) fsconfig.EtcdTLS {
-	external := spec.Etcd.External
-	if external == nil {
-		// The managed development etcd is plaintext in-cluster (SPEC §2).
-		return fsconfig.EtcdTLS{}
-	}
+// Every other declared node is a peer. One that answers is enough to join;
+// listing them all is what lets a node restarted while some of the others
+// are down still find the cluster.
+func clusterConfig(cluster *fsv1alpha1.FSCluster, node Node) fsconfig.Cluster {
+	var peers []string
 
-	tls := fsconfig.EtcdTLS{
-		ServerName:         external.TLS.ServerName,
-		InsecureSkipVerify: external.TLS.InsecureSkipVerify,
-	}
-
-	if external.TLS.SecretName != "" {
-		tls.CAFile = EtcdTLSDir + "/" + EtcdCAKey
-
-		if opts.EtcdClientCert {
-			tls.CertFile = EtcdTLSDir + "/" + EtcdCertKey
-			tls.KeyFile = EtcdTLSDir + "/" + EtcdKeyKey
+	for _, name := range cluster.Spec.NodeNames(cluster.Name) {
+		if name != node.Name {
+			peers = append(peers, AdvertiseAddr(cluster.Name, cluster.Namespace, name))
 		}
 	}
 
-	return tls
-}
-
-// clusterConfig renders the node's identity, disks and control plane. The
-// shared cluster secret is deliberately absent: it is injected through
-// FS_CLUSTER_SECRET so it never lands in a rendered file.
-func clusterConfig(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions, drained bool) fsconfig.Cluster {
-	spec := &cluster.Spec
-
 	return fsconfig.Cluster{
 		NodeID:        node.Name,
-		Rack:          node.Rack,
 		Addr:          listenAddr(PeerPort),
 		AdvertiseAddr: AdvertiseAddr(cluster.Name, cluster.Namespace, node.Name),
-		Scheme:        spec.Scheme,
-		Disks:         diskConfigs(spec, opts.RetainDisks[node.Name], drained),
-		Etcd: fsconfig.Etcd{
-			Endpoints: EtcdEndpoints(cluster),
-			Prefix:    spec.EtcdPrefix(cluster.Namespace, cluster.Name),
-			TTL:       duration(spec.Etcd.TTL),
-			TLS:       etcdTLSConfig(spec, opts),
-			// Auth is deliberately absent: the credentials reach fs through
-			// FS_ETCD_USERNAME / FS_ETCD_PASSWORD, so an etcd password is
-			// never written into a rendered config (SPEC §9).
-		},
-		Rebalance: fsconfig.Rebalance{
-			AutoDisabled:  spec.Rebalance.AutoDisabled,
-			Settle:        duration(spec.Rebalance.Settle),
-			Cooldown:      duration(spec.Rebalance.Cooldown),
-			FullWatermark: quantity(spec.Rebalance.FullWatermark),
-		},
-	}
-}
-
-// diskConfigs renders this node's disks: one claim per spec entry, mounted
-// below DisksDir under its own name.
-func diskConfigs(spec *fsv1alpha1.FSClusterSpec, retained []string, drained bool) []fsconfig.Disk {
-	disks := make([]fsconfig.Disk, 0, len(spec.Storage.Disks)+len(retained))
-
-	for _, disk := range spec.Storage.Disks {
-		disks = append(disks, fsconfig.Disk{
-			ID:     disk.Name,
-			Path:   DiskPath(disk.Name),
-			Weight: diskWeight(disk, drained),
-		})
-	}
-
-	// A disk being removed stays in the config until its data has moved off.
-	// Dropping it here would be worse than dropping the mount: fs would not
-	// know the disk exists, so it could neither serve what is on it nor move
-	// it — the data would simply be stranded on a volume nobody reads.
-	//
-	// It is registered at DrainWeight so it takes no new data even before the
-	// control-plane override lands (SPEC §8.5).
-	for _, name := range retained {
-		disks = append(disks, fsconfig.Disk{
-			ID:     name,
-			Path:   DiskPath(name),
-			Weight: DrainWeight,
-		})
-	}
-
-	return disks
-}
-
-// DiskPath is where a disk's claim is mounted inside the container.
-func DiskPath(disk string) string {
-	return DisksDir + "/" + disk
-}
-
-// diskWeight resolves a disk's placement weight. A node being drained, and a
-// disk the spec weights at zero or less, both render as DrainWeight — fs's
-// documented "weight 0 drains the disk" semantics, expressed the way its
-// config layer actually reads (see DrainWeight).
-func diskWeight(disk fsv1alpha1.DiskSpec, drained bool) float64 {
-	if drained {
-		return DrainWeight
-	}
-
-	if disk.Weight == nil {
-		return DefaultDiskWeight
-	}
-
-	if weight := disk.Weight.AsApproximateFloat64(); weight > 0 {
-		return weight
-	}
-
-	return DrainWeight
-}
-
-// integrityConfig renders the scrub and read-verification passthrough.
-func integrityConfig(spec *fsv1alpha1.FSClusterSpec) fsconfig.Integrity {
-	return fsconfig.Integrity{
-		VerifyOnRead:    spec.Integrity.VerifyOnRead,
-		ScrubInterval:   duration(spec.Integrity.ScrubInterval),
-		ScrubQuarantine: spec.Integrity.ScrubQuarantine,
+		Peers:         peers,
 	}
 }
 
@@ -460,26 +281,6 @@ func observabilityConfig(cluster *fsv1alpha1.FSCluster) fsconfig.Observability {
 // listenAddr binds a port on every interface of the pod network.
 func listenAddr(port int32) string {
 	return fmt.Sprintf(":%d", port)
-}
-
-// duration unwraps an optional duration; the zero value leaves fs's own
-// default in place.
-func duration(d *metav1.Duration) time.Duration {
-	if d == nil {
-		return 0
-	}
-
-	return d.Duration
-}
-
-// quantity unwraps an optional quantity as a float, which is how fs expresses
-// fractional tuning values.
-func quantity(q *resource.Quantity) float64 {
-	if q == nil {
-		return 0
-	}
-
-	return q.AsApproximateFloat64()
 }
 
 // Revision prefixes distinguish a configuration revision from a pod-template
@@ -521,20 +322,25 @@ func Revision(config []byte) string {
 }
 
 // RestartRevision fingerprints the configuration a node can only pick up by
-// restarting — everything except the credentials and certificate fs reloads on
-// SIGHUP. It rides on the pod template, so a change to it replaces the pod,
-// while a change to the rest is a reload (SPEC §8.2, §8.3).
+// restarting — everything except what a reload re-reads and what fs reads only
+// once, at startup. It rides on the pod template, so a change to it replaces
+// the pod, while a change to the rest is a reload (SPEC §8.2, §8.3).
 func RestartRevision(cluster *fsv1alpha1.FSCluster, node Node, opts RenderOptions) (string, error) {
 	cfg, err := nodeConfig(cluster, node, opts)
 	if err != nil {
 		return "", err
 	}
 
-	// Everything fs re-reads on SIGHUP: the credentials, their grants and the
+	// Everything a reload re-reads: the credentials, their grants and the
 	// anonymously readable buckets. The certificate is reloaded from the same
 	// paths, which is why the paths themselves stay in the fingerprint —
 	// turning TLS on or off does need a restart.
 	cfg.Auth = fsconfig.Auth{}
+
+	// The peers are only where a starting node looks for the cluster; once
+	// it has joined, gossip keeps the membership. Scaling the cluster changes
+	// every node's list, and restarting every node for it would buy nothing.
+	cfg.Cluster.Peers = nil
 
 	// The revision marker moves with every config change, hot-reloadable ones
 	// included; excluding it keeps a credential-only change off the restart

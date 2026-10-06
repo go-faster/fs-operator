@@ -24,7 +24,6 @@ import (
 	"go.uber.org/zap/zapcore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/utils/ptr"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
@@ -312,39 +311,28 @@ func TestStatefulSetExtraEnvWins(t *testing.T) {
 
 func TestStatefulSetStorage(t *testing.T) {
 	cluster := testCluster()
-	cluster.Spec.Storage.Disks = []fsv1alpha1.DiskSpec{
-		{Name: "d0", Size: resource.MustParse("200Gi"), StorageClass: storageClass},
-		{Name: "d1", Size: resource.MustParse("1Ti")},
-	}
+	cluster.Spec.Storage.StorageClass = storageClass
 
 	set := nodeStatefulSet(t, cluster)
 
-	// One per disk, plus the state volume every node carries.
-	if got, want := len(set.Spec.VolumeClaimTemplates), 3; got != want {
-		t.Fatalf("%d claim templates, want %d", got, want)
+	if got, want := len(set.Spec.VolumeClaimTemplates), 1; got != want {
+		t.Fatalf("%d claim templates, want %d: one data volume per node", got, want)
 	}
 
-	first := claimNamed(t, set, "d0")
-	if first.Spec.StorageClassName == nil || *first.Spec.StorageClassName != storageClass {
-		t.Errorf("storage class = %v, want fast-nvme", first.Spec.StorageClassName)
+	data := claimNamed(t, set, DataVolumeName)
+	if data.Spec.StorageClassName == nil || *data.Spec.StorageClassName != storageClass {
+		t.Errorf("storage class = %v, want %s", data.Spec.StorageClassName, storageClass)
 	}
 
-	if got := first.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "200Gi" {
+	if got := data.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != "200Gi" {
 		t.Errorf("size = %s, want 200Gi", got.String())
 	}
 
-	// A disk without a class must not pin one, or the cluster default is lost.
-	if claimNamed(t, set, "d1").Spec.StorageClassName != nil {
-		t.Error("a disk without a storage class pinned one anyway")
-	}
-
-	mounts := set.Spec.Template.Spec.Containers[0].VolumeMounts
-	for _, disk := range []string{"d0", "d1"} {
-		if !slices.ContainsFunc(mounts, func(m corev1.VolumeMount) bool {
-			return m.Name == disk && m.MountPath == DiskPath(disk)
-		}) {
-			t.Errorf("disk %q is not mounted at %q", disk, DiskPath(disk))
-		}
+	// Without a class the claim must not pin one, or the cluster default is
+	// lost.
+	cluster.Spec.Storage.StorageClass = ""
+	if claimNamed(t, nodeStatefulSet(t, cluster), DataVolumeName).Spec.StorageClassName != nil {
+		t.Error("a volume without a storage class pinned one anyway")
 	}
 
 	if got, want := set.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted,
@@ -482,45 +470,21 @@ func TestStatefulSetMountsItsOwnConfig(t *testing.T) {
 }
 
 // TestStatefulSetMountsAWritableStorageRoot covers what a read-only container
-// filesystem takes away: fs writes node-local state directly under the storage
-// root — since v0.13.0 the object index — and without somewhere to put it the
-// node exits at startup with "mkdir /var/lib/fs/cluster: read-only file
-// system", which is a crash loop rather than a degraded node.
+// filesystem takes away: fs writes everything under the storage root, and
+// without a volume there the node exits at startup with a read-only file
+// system error — a crash loop rather than a degraded node.
 func TestStatefulSetMountsAWritableStorageRoot(t *testing.T) {
 	cluster := testCluster()
 	cluster.Spec.WithDefaults()
 
 	set := NewStatefulSet(cluster, Nodes(cluster)[0], testRevision)
 
-	state := claimNamed(t, set, stateVolumeName)
-	if got := state.Spec.Resources.Requests[corev1.ResourceStorage]; got.String() != fsv1alpha1.DefaultStateSize {
-		t.Errorf("state claim = %s, want the default %s", got.String(), fsv1alpha1.DefaultStateSize)
-	}
-
 	mounts := set.Spec.Template.Spec.Containers[0].VolumeMounts
 
-	index := -1
-
-	for i, mount := range mounts {
-		if mount.MountPath == StorageRoot {
-			index = i
-
-			if mount.ReadOnly {
-				t.Error("the storage root is mounted read-only; fs writes under it")
-			}
-		}
-	}
-
-	if index == -1 {
-		t.Fatalf("no mount at %s", StorageRoot)
-	}
-
-	// The disks mount below the root, and the kubelet mounts a nested path
-	// after its parent: a disk hidden under a later root mount reads as empty.
-	for _, mount := range mounts[:index] {
-		if strings.HasPrefix(mount.MountPath, StorageRoot+"/") {
-			t.Errorf("%s mounts before the storage root it lives under", mount.MountPath)
-		}
+	if !slices.ContainsFunc(mounts, func(m corev1.VolumeMount) bool {
+		return m.Name == DataVolumeName && m.MountPath == StorageRoot && !m.ReadOnly
+	}) {
+		t.Errorf("mounts = %v, want the data volume writable at %s", mounts, StorageRoot)
 	}
 }
 

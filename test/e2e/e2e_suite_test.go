@@ -47,7 +47,7 @@ const (
 // tenantNamespaces are the per-container namespaces the suite creates, each
 // owned by one top-level container and torn down asynchronously by its
 // AfterAll. The suite waits for them together at the end.
-var tenantNamespaces = []string{clusterNamespace, managedNamespace}
+var tenantNamespaces = []string{clusterNamespace, singleNamespace}
 
 // TestE2E runs the e2e suite against a Kind cluster.
 //
@@ -194,7 +194,7 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 
 // fsImage is the fs release the operator defaults to; it has to be in the
 // cluster before a node can start.
-const fsImage = "ghcr.io/go-faster/fs:v0.13.1"
+const fsImage = "ghcr.io/go-faster/fs:v0.14.1"
 
 // loadFSImage pulls the fs image on the host and loads it into Kind.
 func loadFSImage() error {

@@ -17,12 +17,12 @@ limitations under the License.
 package validation_test
 
 import (
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	fsv1alpha1 "github.com/go-faster/fs-operator/api/v1alpha1"
-	"github.com/go-faster/fs-operator/internal/scheme"
 	"github.com/go-faster/fs-operator/internal/validation"
 )
 
@@ -31,13 +31,8 @@ import (
 func spec(mutate func(*fsv1alpha1.FSClusterSpec)) *fsv1alpha1.FSClusterSpec {
 	nodes := int32(3)
 	s := &fsv1alpha1.FSClusterSpec{
-		Scheme:   scheme.RF3,
 		Topology: fsv1alpha1.TopologySpec{Nodes: &nodes},
-		Etcd: fsv1alpha1.EtcdSpec{
-			External: &fsv1alpha1.ExternalEtcdSpec{
-				Endpoints: []string{"http://etcd.default.svc:2379"},
-			},
-		},
+		Storage:  fsv1alpha1.StorageSpec{Size: resource.MustParse("10Gi")},
 	}
 
 	if mutate != nil {
@@ -47,6 +42,10 @@ func spec(mutate func(*fsv1alpha1.FSClusterSpec)) *fsv1alpha1.FSClusterSpec {
 	s.WithDefaults()
 
 	return s
+}
+
+func nodes(n int32) func(*fsv1alpha1.FSClusterSpec) {
+	return func(s *fsv1alpha1.FSClusterSpec) { s.Topology.Nodes = &n }
 }
 
 func TestClusterAcceptsAValidSpec(t *testing.T) {
@@ -62,50 +61,29 @@ func TestClusterRejects(t *testing.T) {
 		reason fsv1alpha1.ConditionReason
 	}{
 		{
-			name:   "unparseable scheme",
-			mutate: func(s *fsv1alpha1.FSClusterSpec) { s.Scheme = "rf9" },
-			reason: fsv1alpha1.ReasonSpecInvalid,
+			// Three copies on distinct nodes; two nodes cannot hold them.
+			name:   "two nodes",
+			mutate: nodes(2),
+			reason: fsv1alpha1.ReasonUnsupportedTopology,
 		},
 		{
-			// rf3 places on three domains; two nodes cannot host it.
-			name: "topology too small for the scheme",
+			name: "two nodes across racks",
 			mutate: func(s *fsv1alpha1.FSClusterSpec) {
-				nodes := int32(2)
-				s.Topology.Nodes = &nodes
-			},
-			reason: fsv1alpha1.ReasonSchemeTopologyMismatch,
-		},
-		{
-			name: "erasure coding needs more domains than the topology has",
-			mutate: func(s *fsv1alpha1.FSClusterSpec) {
-				s.Scheme = "ec:4,2"
-				nodes := int32(5)
-				s.Topology.Nodes = &nodes
-			},
-			reason: fsv1alpha1.ReasonSchemeTopologyMismatch,
-		},
-		{
-			// The single node stores everything under one root; a second disk
-			// would be a volume nothing ever reads.
-			name: "single node with more than one disk",
-			mutate: func(s *fsv1alpha1.FSClusterSpec) {
-				nodes := int32(1)
-				s.Topology.Nodes = &nodes
-				s.Storage = disks(map[string]string{"d0": diskSize, "d1": diskSize})
-				s.Etcd = fsv1alpha1.EtcdSpec{}
+				s.Topology = fsv1alpha1.TopologySpec{Racks: []fsv1alpha1.RackSpec{
+					{Name: "a", Nodes: 1},
+					{Name: "b", Nodes: 1},
+				}}
 			},
 			reason: fsv1alpha1.ReasonUnsupportedTopology,
 		},
 		{
-			// There is no cluster to register in, so etcd would be a control
-			// plane the node never dials.
-			name: "single node declaring etcd",
+			// An ec:4,2 bucket needs its six shards on six nodes.
+			name: "a width wider than the cluster",
 			mutate: func(s *fsv1alpha1.FSClusterSpec) {
-				nodes := int32(1)
-				s.Topology.Nodes = &nodes
-				s.Storage = disks(map[string]string{"d0": diskSize})
+				s.Topology.Nodes = new(int32(5))
+				s.Layout.Widths = []int32{3, 6}
 			},
-			reason: fsv1alpha1.ReasonSpecInvalid,
+			reason: fsv1alpha1.ReasonLayoutTopologyMismatch,
 		},
 		{
 			// An OTLP exporter with no endpoint ships to localhost:4318 and
@@ -138,11 +116,13 @@ func TestClusterRejects(t *testing.T) {
 			reason: fsv1alpha1.ReasonSpecInvalid,
 		},
 		{
-			name: "more nodes than fs supports",
-			mutate: func(s *fsv1alpha1.FSClusterSpec) {
-				nodes := int32(validation.MaxNodes + 1)
-				s.Topology.Nodes = &nodes
-			},
+			name:   "no storage",
+			mutate: func(s *fsv1alpha1.FSClusterSpec) { s.Storage.Size = resource.Quantity{} },
+			reason: fsv1alpha1.ReasonSpecInvalid,
+		},
+		{
+			name:   "more nodes than fs supports",
+			mutate: nodes(validation.MaxNodes + 1),
 			reason: fsv1alpha1.ReasonUnsupportedTopology,
 		},
 	} {
@@ -156,6 +136,19 @@ func TestClusterRejects(t *testing.T) {
 				t.Errorf("reason = %q, want %q (%s)", failure.Reason, tc.reason, failure.Message)
 			}
 		})
+	}
+}
+
+// TestClusterAcceptsAWidthItHasNodesFor covers the erasure-coded cluster: six
+// nodes host an ec:4,2 bucket's width.
+func TestClusterAcceptsAWidthItHasNodesFor(t *testing.T) {
+	s := spec(func(s *fsv1alpha1.FSClusterSpec) {
+		s.Topology.Nodes = new(int32(6))
+		s.Layout.Widths = []int32{3, 6}
+	})
+
+	if failure := validation.Cluster(s); failure != nil {
+		t.Fatalf("a six-node cluster with width 6 was refused: %v", failure)
 	}
 }
 
@@ -174,175 +167,83 @@ func TestClusterAcceptsASignalWithItsOwnEndpoint(t *testing.T) {
 	}
 }
 
-// singleNode is the development shape: one node, one disk, no control plane.
-func singleNode(s *fsv1alpha1.FSClusterSpec) {
-	nodes := int32(1)
-	s.Topology.Nodes = &nodes
-	s.Storage = disks(map[string]string{"d0": diskSize})
-	s.Etcd = fsv1alpha1.EtcdSpec{}
-}
-
-// TestClusterAcceptsSingleNode covers the development shape: fs's filesystem
-// backend, which needs neither the failure domains the scheme asks for nor the
-// etcd a cluster registers in.
+// TestClusterAcceptsSingleNode covers the development shape, which has no
+// layout and so no width to check: the default width 3 must not refuse it.
 func TestClusterAcceptsSingleNode(t *testing.T) {
-	dev := spec(singleNode)
+	dev := spec(nodes(1))
 
 	if failure := validation.Cluster(dev); failure != nil {
-		t.Fatalf("a single-node dev cluster was refused: %v", failure)
+		t.Fatalf("a single-node spec was refused: %v", failure)
 	}
 
 	warnings := validation.ClusterWarnings(dev)
 	if len(warnings) != 1 || warnings[0] != validation.SingleNodeWarning {
-		t.Errorf("warnings = %v, want the single-node warning", warnings)
+		t.Errorf("warnings = %q, want the single-node warning", warnings)
 	}
 }
 
-// TestClusterUpdateRefusesCrossingTheSingleNodeLine covers the two changes that
-// would silently strand a single node's data: growing it into a cluster, which
-// changes the storage backend, and renaming the disk its root lives on.
-func TestClusterUpdateRefusesCrossingTheSingleNodeLine(t *testing.T) {
-	dev := spec(singleNode)
+// TestClusterWarnsOnAWidthWiderThanTheDomains covers a layout that has to put
+// two slots of one partition in one failure domain: allowed — fs places them
+// on distinct nodes — but losing that domain then costs both.
+func TestClusterWarnsOnAWidthWiderThanTheDomains(t *testing.T) {
+	s := spec(func(s *fsv1alpha1.FSClusterSpec) {
+		s.Topology = fsv1alpha1.TopologySpec{Racks: []fsv1alpha1.RackSpec{
+			{Name: "a", Nodes: 2, Zone: "z1"},
+			{Name: "b", Nodes: 2, Zone: "z2"},
+		}}
+	})
 
+	if failure := validation.Cluster(s); failure != nil {
+		t.Fatalf("a four-node, two-zone cluster was refused: %v", failure)
+	}
+
+	warnings := validation.ClusterWarnings(s)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "2 failure domains") {
+		t.Errorf("warnings = %q, want one about width 3 over 2 domains", warnings)
+	}
+
+	if w := validation.ClusterWarnings(spec(nil)); len(w) != 0 {
+		t.Errorf("three flat nodes warned: %q", w)
+	}
+}
+
+func TestClusterUpdateRefusesCrossingTheSingleNodeLine(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		updated *fsv1alpha1.FSClusterSpec
+		name     string
+		old, new *fsv1alpha1.FSClusterSpec
 	}{
-		{
-			// The user's natural patch: raise the node count and nothing else.
-			// The backend switch has to be what they are told about, not the
-			// etcd a clustered topology would separately need.
-			name: "grown into a cluster",
-			updated: spec(func(s *fsv1alpha1.FSClusterSpec) {
-				s.Storage = disks(map[string]string{"d0": diskSize})
-				s.Etcd = fsv1alpha1.EtcdSpec{}
-			}),
-		},
-		{
-			name: "disk renamed",
-			updated: spec(func(s *fsv1alpha1.FSClusterSpec) {
-				singleNode(s)
-				s.Storage = disks(map[string]string{"data": diskSize})
-			}),
-		},
+		{name: "growing a single node", old: spec(nodes(1)), new: spec(nil)},
+		{name: "shrinking to a single node", old: spec(nil), new: spec(nodes(1))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			failure := validation.ClusterUpdate(dev, tc.updated)
-			if failure == nil {
-				t.Fatal("the update was admitted")
-			}
-
-			if failure.Reason != fsv1alpha1.ReasonUnsupportedTopology {
-				t.Errorf("reason = %q, want %q (%s)",
-					failure.Reason, fsv1alpha1.ReasonUnsupportedTopology, failure.Message)
+			failure := validation.ClusterUpdate(tc.old, tc.new)
+			if failure == nil || failure.Reason != fsv1alpha1.ReasonUnsupportedTopology {
+				t.Errorf("failure = %v, want UnsupportedTopology", failure)
 			}
 		})
 	}
 }
 
-// TestClusterWarnsOnDevSizedCluster covers what is allowed but worth saying:
-// a cluster too small to host a replicated scheme is a development toy, and a
-// user should hear that at apply time rather than discover it in production.
-func TestClusterWarnsOnDevSizedCluster(t *testing.T) {
-	// Below three nodes, but with a scheme that does not itself refuse it.
-	small := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		nodes := int32(2)
-		s.Topology.Nodes = &nodes
-		s.Scheme = "ec:1,1"
-	})
-
-	warnings := validation.ClusterWarnings(small)
-	if len(warnings) != 1 {
-		t.Fatalf("warnings = %v, want one about the cluster being dev-sized", warnings)
+func TestClusterUpdateStorage(t *testing.T) {
+	size := func(q string) func(*fsv1alpha1.FSClusterSpec) {
+		return func(s *fsv1alpha1.FSClusterSpec) { s.Storage.Size = resource.MustParse(q) }
 	}
 
-	if len(validation.ClusterWarnings(spec(nil))) != 0 {
-		t.Error("a supported topology should warn about nothing")
+	if failure := validation.ClusterUpdate(spec(size("10Gi")), spec(size("20Gi"))); failure != nil {
+		t.Errorf("growing storage was refused: %v", failure)
+	}
+
+	failure := validation.ClusterUpdate(spec(size("20Gi")), spec(size("10Gi")))
+	if failure == nil || failure.Reason != fsv1alpha1.ReasonStorageShrinkForbidden {
+		t.Errorf("shrinking storage: failure = %v, want StorageShrinkForbidden", failure)
 	}
 }
 
-// diskSize is the size the disk fixtures start at.
-const diskSize = "100Gi"
-
-// disks builds a storage spec with the given disk sizes.
-func disks(sizes map[string]string) fsv1alpha1.StorageSpec {
-	storage := fsv1alpha1.StorageSpec{}
-
-	for name, size := range sizes {
-		storage.Disks = append(storage.Disks, fsv1alpha1.DiskSpec{
-			Name: name,
-			Size: resource.MustParse(size),
-		})
-	}
-
-	return storage
-}
-
-// TestClusterUpdateRefusesDiskShrink covers the check that has to compare
-// against the previous spec: a PVC cannot shrink, so a spec that asks for it
-// would leave the cluster stuck rather than resized.
-func TestClusterUpdateRefusesDiskShrink(t *testing.T) {
-	before := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		s.Storage = disks(map[string]string{"d0": diskSize, "d1": diskSize})
-	})
-
-	shrunk := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		s.Storage = disks(map[string]string{"d0": diskSize, "d1": "50Gi"})
-	})
-
-	failure := validation.ClusterUpdate(before, shrunk)
-	if failure == nil {
-		t.Fatal("a shrinking disk was admitted")
-	}
-
-	if failure.Reason != fsv1alpha1.ReasonDiskShrinkForbidden {
-		t.Errorf("reason = %q, want %q", failure.Reason, fsv1alpha1.ReasonDiskShrinkForbidden)
-	}
-}
-
-func TestClusterUpdateAllowsDiskGrowth(t *testing.T) {
-	before := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		s.Storage = disks(map[string]string{"d0": diskSize})
-	})
-
-	grown := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		s.Storage = disks(map[string]string{"d0": "200Gi"})
-	})
-
-	if failure := validation.ClusterUpdate(before, grown); failure != nil {
-		t.Fatalf("growing a disk was refused: %v", failure)
-	}
-}
-
-// TestClusterUpdateIgnoresRemovedDisks covers the distinction the shrink check
-// has to make: a disk the update no longer mentions is being removed, which is
-// a different operation with its own rules — not a disk shrinking to zero.
-func TestClusterUpdateIgnoresRemovedDisks(t *testing.T) {
-	before := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		s.Storage = disks(map[string]string{"d0": diskSize, "d1": diskSize})
-	})
-
-	fewer := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		s.Storage = disks(map[string]string{"d0": diskSize})
-	})
-
-	if failure := validation.ClusterUpdate(before, fewer); failure != nil {
-		t.Fatalf("removing a disk was reported as a shrink: %v", failure)
-	}
-}
-
-// TestClusterUpdateStillChecksTheSpecItself: an update has to pass everything a
-// create would, or a cluster could be edited into a shape it could never have
-// been created in.
+// TestClusterUpdateStillChecksTheSpecItself pins that an update is judged on
+// its own too, not only against what it replaces.
 func TestClusterUpdateStillChecksTheSpecItself(t *testing.T) {
-	before := spec(nil)
-	shrunkTopology := spec(func(s *fsv1alpha1.FSClusterSpec) {
-		nodes := int32(2)
-		s.Topology.Nodes = &nodes
-	})
-
-	failure := validation.ClusterUpdate(before, shrunkTopology)
-	if failure == nil || failure.Reason != fsv1alpha1.ReasonSchemeTopologyMismatch {
-		t.Fatalf("failure = %v, want %q", failure, fsv1alpha1.ReasonSchemeTopologyMismatch)
+	failure := validation.ClusterUpdate(spec(nil), spec(nodes(2)))
+	if failure == nil || failure.Reason != fsv1alpha1.ReasonUnsupportedTopology {
+		t.Errorf("failure = %v, want UnsupportedTopology for two nodes", failure)
 	}
 }

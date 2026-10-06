@@ -18,12 +18,11 @@ kubectl get fscluster prod -o jsonpath='{range .status.conditions[*]}{.type}={.s
 |---|---|---|
 | `SpecValid` | The spec passed cross-field validation. | The spec is coherent and applied. |
 | `ReconcileSucceeded` | The last reconcile pass completed without error. | The pass finished cleanly. |
-| `Ready` | The cluster serves S3 at write quorum. | A write quorum of failure domains is serving. |
+| `Ready` | The cluster serves S3 at write quorum. | A layout exists and all but one failure domain are serving (all of them below three domains). |
 | `NodesHealthy` | Every node's pod is up and current. | All nodes Ready. |
-| `ClusterSizeAligned` | The running node set matches the topology. | Every declared node exists and runs its pod template. |
+| `ClusterSizeAligned` | The running node set and the layout match the topology. | Every declared node exists, runs its pod template and is a layout member. |
 | `ConfigurationInSync` | Every node has applied the desired configuration. | Each node reports the target `config_revision`. |
-| `Converged` | The cluster has settled. | Repair queue empty and no rebalance running. |
-| `SchemaCurrent` | The cluster schema matches the deployed binary. | `schemaVersion.cluster == schemaVersion.binary`. |
+| `Converged` | The cluster has settled. | Every node is up on the current layout and no layout change is in transition. |
 
 ### Condition reasons
 
@@ -37,26 +36,25 @@ off: the controller runs the same checks either way.
 
 | Reason | On | Meaning |
 |---|---|---|
-| `SpecValid` / `SpecInvalid` | `SpecValid` | Spec passed / an unparseable value (e.g. bad scheme). |
-| `SchemeTopologyMismatch` | `SpecValid` | The scheme needs more failure domains than the topology has. |
-| `UnsupportedTopology` | `SpecValid` | Node count outside the 3–16 envelope; a [single-node](scaling.md#single-node) cluster declaring more than one disk, renaming it, or being grown into a cluster. Also the reason on the warning event a 1–2 node development cluster carries. |
-| `DiskShrinkForbidden` | `SpecValid` | A disk would shrink; disks may only grow. |
+| `SpecValid` / `SpecInvalid` | `SpecValid` | Spec passed / an invalid value (e.g. a zero storage size, an OTLP exporter with nowhere to send). |
+| `LayoutTopologyMismatch` | `SpecValid` | A layout width is wider than the cluster has nodes. |
+| `UnsupportedTopology` | `SpecValid` | Node count of 2 or above 16; a [single-node](scaling.md#single-node) cluster being grown into a cluster, or the reverse. Also the reason on the warning event a width wider than the failure domains carries. |
+| `StorageShrinkForbidden` | `SpecValid` | `storage.size` would shrink; it may only grow. |
 | `SecretNotFound` / `SecretInvalid` | `SpecValid` | A referenced Secret is missing or lacks the expected keys. |
 | `ReconcileFinished` / `ReconcileError` | `ReconcileSucceeded` | The pass finished / the pass failed (message carries the error). |
 | `QuorumAvailable` / `QuorumUnavailable` | `Ready` | Enough / not enough failure domains are serving for a write. |
-| `RootCredentialUnregistered` | `Ready` | Quorum is serving, but the cluster's key store does not hold the root credential — the cluster started on an etcd prefix left behind by a previous incarnation. See [deletion.md](deletion.md). |
+| `LayoutPending` | `Ready`, `ClusterSizeAligned`, `Converged` | No layout yet, or the layout does not describe the declared nodes and the operator is waiting for them to be up before it applies one. |
 | `AllNodesReady` / `NodesNotReady` | `NodesHealthy` | All / not all node pods are Ready. |
 | `UpToDate` | `ClusterSizeAligned`, `ConfigurationInSync` | Everything matches the spec. |
-| `ScalingUp` | `ClusterSizeAligned` | New nodes are joining. |
-| `Draining` | `ClusterSizeAligned` | A node is being decommissioned; the message says what the drain is still waiting for. See [scaling.md](scaling.md). |
+| `ScalingUp` | `ClusterSizeAligned` | New nodes are being created. |
+| `LayoutRejected` | `ClusterSizeAligned` | fs refused the layout the spec asks for; the message carries its reason. |
+| `Draining` | `ClusterSizeAligned` | Nodes are being removed; the message says what their removal is still waiting for. See [scaling.md](scaling.md#scale-down). |
 | `StorageExpanding` | `ClusterSizeAligned` | A node's storage is being grown. |
 | `RollingNodes` | `ClusterSizeAligned` | A pod-template rollout is in flight. |
 | `ConfigReloadPending` | `ConfigurationInSync` | Some node has not applied the target configuration yet. |
-| `Converged` | `Converged` | Repair queue empty, placement settled. |
-| `RepairQueueBacklog` | `Converged` | Repair tasks are pending. |
-| `Rebalancing` | `Converged` | A rebalance is moving data. |
-| `ConvergenceTimeout` | `Converged` | A rollout has been stuck past `convergenceTimeout`. |
-| `MigrationPending` / `MigrationRunning` | `SchemaCurrent` | A schema migration is waiting to run / running. |
+| `Converged` | `Converged` | Every node up on the current layout, no data moving. |
+| `LayoutTransition` | `Converged` | A layout change is moving data; older versions are still retained. |
+| `ConvergenceTimeout` | `Converged` | A rollout or removal has been stuck past `convergenceTimeout`. |
 
 ## Events
 
@@ -76,26 +74,19 @@ kubectl get events --field-selector involvedObject.name=prod --sort-by=.lastTime
 | `ConfigReloaded` | Normal | A node hot-reloaded to a new configuration. |
 | `ReloadFailed` | Warning | A node's reload failed. |
 | `StorageExpanding` | Normal | A node's PVCs are being grown and its StatefulSet recreated. |
-| `NodeDraining` | Normal | A decommission started: the node is being taken out of placement. |
-| `NodeDrained` | Normal | A decommissioning node reports no data left; it is being removed. |
-| `NodeRemoved` | Normal | A decommissioned node's StatefulSet and config were deleted. |
-| `DiskDraining` | Normal | A disk the spec dropped is being taken out of placement, or restored because it was declared again. See [storage.md](storage.md#removing-a-disk). |
-| `DiskRemoved` | Normal | A drained disk holds no data; it is being removed from a node. |
-| `ManagedEtcdUnsupported` | Warning | The cluster runs the operator-managed development etcd. Permanent, and repeated every reconcile. See [configuration.md](configuration.md#managed--development-only). |
-| `MigrationFailed` | Warning | The schema migration Job failed. |
-| `SchemeTopologyMismatch`, `UnsupportedTopology`, … | Warning | A spec was refused (same names as the condition reasons). |
+| `LayoutApplied` | Normal | The operator applied a new layout version (nodes joined or left, capacity or widths changed). |
+| `LayoutRejected` | Warning | fs refused the layout the spec asks for. |
+| `NodeDraining` | Normal | A removal started: nodes are leaving the layout and kept running while their data moves. |
+| `NodeRemoved` | Normal | A removed node's StatefulSet and config were deleted. |
+| `LayoutTopologyMismatch`, `UnsupportedTopology`, … | Warning | A spec was refused (same names as the condition reasons). |
 | `PodMonitorUnavailable` | Warning | `observability.podMonitor` is set but the Prometheus-operator CRDs are absent. |
-| `RootCredentialUnregistered` | Warning | The cluster's key store does not hold its root credential. |
-| `EtcdCleanup` | Normal | A deleted cluster's nodes are being stopped before its etcd keys go. |
-| `EtcdCleanupComplete` | Normal | A deleted cluster's etcd keys were removed. |
-| `EtcdCleanupFailed` | Warning | The etcd cleanup failed; the cluster is held until it succeeds. |
 
 ## Metrics
 
 ### fs cluster metrics
 
-Each fs pod exports Prometheus metrics (disk fullness, placement skew, repair
-queue, rebalance/scrub counters, request metrics) on port `9464`. To scrape
+Each fs pod exports Prometheus metrics (`fs.cluster.*` layout and peer state,
+`fs.engine.*` storage, request metrics) on port `9464`. To scrape
 them with the Prometheus operator, set:
 
 ```yaml
@@ -185,7 +176,7 @@ Endpoints have no such quirk: the exporters resolve those themselves and a
 signal's own wins, so the shared and per-signal variables are rendered
 together.
 
-[`examples/10-telemetry.yaml`](../../examples/10-telemetry.yaml) is all of it
+[`examples/08-telemetry.yaml`](../../examples/08-telemetry.yaml) is all of it
 in one manifest: metrics scraped, traces to the cluster collector, logs to a
 separate gateway, profiles to Pyroscope.
 
@@ -260,7 +251,8 @@ the clusters it is reconciling:
 | Metric | Labels | Meaning |
 |---|---|---|
 | `fsoperator_cluster_ready` | `namespace`, `cluster` | 1 when the cluster can serve writes, 0 otherwise — the `Ready` condition, alertable. |
-| `fsoperator_cluster_nodes` | `namespace`, `cluster`, `state` | Node counts by `declared` (the topology asks for), `ready` (pod is up) and `registered` (present in the cluster's own etcd topology). |
+| `fsoperator_cluster_nodes` | `namespace`, `cluster`, `state` | Node counts by `declared` (the topology asks for), `ready` (pod is up) and `up` (reachable by its peers, in the cluster's own gossip view). |
+| `fsoperator_cluster_layout_retained_versions` | `namespace`, `cluster` | Older layout versions still in transition; 0 when no data is moving. |
 | `fsoperator_update_phase` | `namespace`, `cluster`, `phase` | 1 for the phase a rolling change is in, 0 for the others. |
 | `fsoperator_update_duration_seconds` | `namespace`, `cluster` | Histogram of *completed* rolling changes. |
 | `fsoperator_reconcile_errors_total` | `controller` | Passes that ended in an error. |
@@ -313,12 +305,12 @@ max by (namespace, cluster, phase) (fsoperator_update_phase) == 1
   quorum.
 - `Converged=False` (reason `ConvergenceTimeout`) — a rollout is stuck; check
   the fs pods.
-- `SchemaCurrent=False` (reason `MigrationPending`) under the Manual policy —
-  a migration is waiting for you.
-- A rising fs repair-queue metric — nodes are failing or disks filling.
+- `fsoperator_cluster_layout_retained_versions > 0` for hours — a layout
+  change cannot finish; usually a node that is gone (see
+  [scaling.md](scaling.md#a-stalled-transition)).
 - `fsoperator_cluster_ready == 0` — the same signal as `Ready=False`, without
   needing to read conditions.
 - `fsoperator_cluster_nodes{state="ready"} < fsoperator_cluster_nodes{state="declared"}`
   for long — a node is not coming back.
-- `fsoperator_update_phase{phase="Draining"} == 1` for hours — a decommission
-  cannot move a node's data off. See [scaling.md](scaling.md).
+- `fsoperator_update_phase{phase="Draining"} == 1` for hours — a removal is
+  waiting on a transition that does not finish. See [scaling.md](scaling.md).
