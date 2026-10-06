@@ -112,7 +112,7 @@ done
 
 echo "pinned fs ${pinned} -> ${version}; regenerating manifests and chart CRDs"
 
-make manifests generate helm-sync-crds
+make manifests generate helm-sync-crds docs-api-ref
 
 cat <<EOF
 
