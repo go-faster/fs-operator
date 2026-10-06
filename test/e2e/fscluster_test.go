@@ -39,8 +39,8 @@ import (
 )
 
 const (
-	// clusterNamespace is where the fs cluster and its etcd run — a tenant
-	// namespace, separate from the operator's.
+	// clusterNamespace is where the fs cluster runs — a tenant namespace,
+	// separate from the operator's.
 	clusterNamespace = "fs-e2e"
 
 	// clusterName is the FSCluster of examples/01-minimal.yaml.
@@ -54,8 +54,8 @@ const (
 // an HTTP/2 frame arriving where an S3 response should be.
 var forwardPort string
 
-// This is the end-to-end claim of P1: `kubectl apply` one FSCluster on a
-// cluster with etcd produces a running fs cluster serving S3. Everything below
+// This is the end-to-end claim of P1: `kubectl apply` one FSCluster produces a
+// running fs cluster serving S3. Everything below
 // goes through the same surfaces a user has — kubectl, the published example,
 // the S3 API — and nothing reaches into the operator's internals.
 var _ = Describe("FSCluster", Ordered, func() {
@@ -70,15 +70,6 @@ var _ = Describe("FSCluster", Ordered, func() {
 			return err
 		}).WithTimeout(2*time.Minute).WithPolling(3*time.Second).Should(Succeed(),
 			"Failed to create the tenant namespace")
-
-		By("deploying a three-member etcd")
-		_, err := utils.Run(exec.Command("kubectl", "apply",
-			"-n", clusterNamespace, "-f", "test/e2e/testdata/etcd.yaml"))
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy etcd")
-
-		_, err = utils.Run(exec.Command("kubectl", "rollout", "status",
-			"statefulset/etcd", "-n", clusterNamespace, "--timeout", "5m"))
-		Expect(err).NotTo(HaveOccurred(), "etcd did not become ready")
 	})
 
 	AfterAll(func() {
@@ -86,8 +77,8 @@ var _ = Describe("FSCluster", Ordered, func() {
 			dumpCluster()
 		}
 
-		// Ask, but do not wait: emptying this namespace takes ~45s (three
-		// StatefulSets, their PVCs, an etcd, and the cluster finalizer), and
+		// Ask, but do not wait: emptying this namespace takes a while (three
+		// StatefulSets and their PVCs), and
 		// nothing after this point needs it gone. The suite collects every
 		// tenant namespace once, in SynchronizedAfterSuite, where the wait
 		// overlaps the other containers instead of blocking them.
@@ -125,6 +116,10 @@ var _ = Describe("FSCluster", Ordered, func() {
 		Expect(clusterCondition("SpecValid")).To(Equal("True"))
 		Expect(clusterCondition("NodesHealthy")).To(Equal("True"))
 		Expect(clusterCondition("ConfigurationInSync")).To(Equal("True"))
+
+		// Ready needs a layout, which the operator applied once every node
+		// was up in the cluster's own view.
+		Expect(resourceField("fscluster", clusterName, "{.status.layout.members}")).To(Equal("3"))
 	})
 
 	It("serves S3", func() {
@@ -166,15 +161,15 @@ var _ = Describe("FSCluster", Ordered, func() {
 		_, err := utils.Run(apply)
 		Expect(err).NotTo(HaveOccurred(), "Failed to apply the tenancy resources")
 
-		By("waiting for the bucket to be Ready with its scheme override")
+		By("waiting for the bucket to be Ready with its scheme")
 		Eventually(func(g Gomega) {
 			g.Expect(resourceCondition("fsbucket", "e2e-media", "Ready")).To(Equal("True"))
 		}).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
 
 		Expect(resourceField("fsbucket", "e2e-media", "{.status.scheme}")).To(Equal("rf3"),
-			"the per-bucket scheme override did not take effect")
+			"the per-bucket scheme did not take effect")
 
-		By("waiting for the access key to be accepted by the cluster")
+		By("waiting for every node to accept the access key")
 		Eventually(func(g Gomega) {
 			g.Expect(resourceCondition("fsaccesskey", "e2e-writer", "Ready")).To(Equal("True"))
 		}).WithTimeout(3 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
@@ -209,7 +204,7 @@ var _ = Describe("FSCluster", Ordered, func() {
 		Expect(got).To(Equal(payload), "the tenant object came back different")
 	})
 
-	It("decommissions a node without losing data", func() {
+	It("removes a node without losing data", func() {
 		By("growing the cluster to four nodes")
 		_, err := utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
 			"-n", clusterNamespace, "--type", "merge",
@@ -221,34 +216,31 @@ var _ = Describe("FSCluster", Ordered, func() {
 			g.Expect(readyNodes()).To(HaveLen(4), "the fourth node did not join")
 			g.Expect(clusterCondition("Ready")).To(Equal("True"))
 			g.Expect(clusterCondition("ClusterSizeAligned")).To(Equal("True"))
+			g.Expect(resourceField("fscluster", clusterName, "{.status.layout.members}")).To(Equal("4"))
 		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
 
 		victim := clusterName + "-3"
 		Expect(nodeSets()).To(ContainElement(victim))
 
-		By("dropping back to three, which decommissions the node just added")
+		By("dropping back to three, which removes the node just added")
 		_, err = utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
 			"-n", clusterNamespace, "--type", "merge",
 			"-p", `{"spec":{"topology":{"nodes":3}}}`))
 		Expect(err).NotTo(HaveOccurred(), "Failed to shrink the cluster")
 
-		// Wait for the drain to actually start before waiting for it to finish.
+		// Wait for the removal to actually start before waiting for it to finish.
 		// Without this the next assertion could pass on status the operator has
 		// not caught up with yet — and "the node is gone" would be satisfied by
 		// a node that was never there.
-		By("waiting for the operator to start draining it")
+		By("waiting for the operator to take it out of the layout")
 		Eventually(func(g Gomega) {
-			g.Expect(resourceField("fscluster", clusterName, "{.status.update.phase}")).
-				To(Equal("Draining"))
-			g.Expect(resourceField("fscluster", clusterName, "{.status.update.node}")).
-				To(Equal(victim))
+			g.Expect(resourceField("fscluster", clusterName, "{.status.layout.members}")).To(Equal("3"))
 		}).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
 
-		// It is removed only once fs reports every one of its disks empty, so
-		// this waits on a real drain rather than on a delete (SPEC §8.4). The
-		// check is existence, not readiness: a node restarting onto the drained
-		// config is briefly not ready and must not read as removed.
-		By("waiting for the node to drain and be removed")
+		// It is deleted only once the layout change that moves its data has
+		// completed — no older version retained — so this waits on a real
+		// transition rather than on a delete (SPEC §8.4).
+		By("waiting for its data to move and the node to be removed")
 		Eventually(func(g Gomega) {
 			g.Expect(nodeSets()).NotTo(ContainElement(victim), "the node is still there")
 		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
@@ -260,11 +252,12 @@ var _ = Describe("FSCluster", Ordered, func() {
 			g.Expect(clusterCondition("Ready")).To(Equal("True"))
 			g.Expect(clusterCondition("ClusterSizeAligned")).To(Equal("True"))
 			g.Expect(clusterCondition("SpecValid")).To(Equal("True"))
+			g.Expect(resourceField("fscluster", clusterName, "{.status.layout.retainedVersions}")).To(BeEmpty())
 		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
 
-		// The whole point: the object written before the decommission is still
+		// The whole point: the object written before the removal is still
 		// readable after it.
-		By("reading back an object written before the decommission")
+		By("reading back an object written before the removal")
 		stop := forwardS3(clusterNamespace, clusterName)
 		defer stop()
 
@@ -272,78 +265,14 @@ var _ = Describe("FSCluster", Ordered, func() {
 		defer cancel()
 
 		object, err := s3Client(clusterNamespace, clusterName).GetObject(ctx, "e2e", "hello.txt", minio.GetObjectOptions{})
-		Expect(err).NotTo(HaveOccurred(), "the object did not survive the decommission")
+		Expect(err).NotTo(HaveOccurred(), "the object did not survive the removal")
 
 		defer func() { _ = object.Close() }()
 
 		got, err := io.ReadAll(object)
-		Expect(err).NotTo(HaveOccurred(), "the object did not survive the decommission")
+		Expect(err).NotTo(HaveOccurred(), "the object did not survive the removal")
 		Expect(got).To(Equal([]byte("fs-operator end-to-end")),
-			"the object came back different after the decommission")
-	})
-
-	It("adds and removes a disk without losing data", func() {
-		By("adding a second disk to every node")
-		_, err := utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
-			"-n", clusterNamespace, "--type", "merge",
-			"-p", `{"spec":{"storage":{"disks":[{"name":"d0","size":"10Gi"},{"name":"d1","size":"10Gi"}]}}}`))
-		Expect(err).NotTo(HaveOccurred(), "Failed to add the disk")
-
-		// Adding a disk recreates each node's StatefulSet, one at a time, so
-		// this waits on the whole roll rather than on the patch.
-		By("waiting for every node to carry it")
-		Eventually(func(g Gomega) {
-			g.Expect(nodesWithDisk("d1")).To(Equal(3), "not every node has the new disk")
-			g.Expect(readyNodes()).To(HaveLen(3))
-			g.Expect(clusterCondition("Ready")).To(Equal("True"))
-		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
-
-		By("removing it again")
-		_, err = utils.Run(exec.Command("kubectl", "patch", "fscluster", clusterName,
-			"-n", clusterNamespace, "--type", "merge",
-			"-p", `{"spec":{"storage":{"disks":[{"name":"d0","size":"10Gi"}]}}}`))
-		Expect(err).NotTo(HaveOccurred(), "Failed to remove the disk")
-
-		// The drain has to be observed starting, or "the disk is gone" below
-		// would also be satisfied by a removal that never happened.
-		By("waiting for the operator to start draining it")
-		Eventually(func(g Gomega) {
-			g.Expect(resourceField("fscluster", clusterName, "{.status.update.phase}")).
-				To(Equal("Draining"))
-		}).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
-
-		// It leaves only once fs reports it empty on every node, so this waits
-		// on a real drain rather than on a delete (SPEC §8.5).
-		By("waiting for the disk to drain and be removed from every node")
-		Eventually(func(g Gomega) {
-			g.Expect(nodesWithDisk("d1")).To(BeZero(), "the disk is still on some node")
-		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
-
-		By("waiting for the cluster to settle without it")
-		Eventually(func(g Gomega) {
-			g.Expect(readyNodes()).To(HaveLen(3))
-			g.Expect(clusterCondition("Ready")).To(Equal("True"))
-			g.Expect(clusterCondition("ClusterSizeAligned")).To(Equal("True"))
-		}).WithTimeout(10 * time.Minute).WithPolling(10 * time.Second).Should(Succeed())
-
-		// The point of draining rather than deleting: whatever the disk held
-		// moved off it first.
-		By("reading back an object written before the disk existed")
-		stop := forwardS3(clusterNamespace, clusterName)
-		defer stop()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-
-		object, err := s3Client(clusterNamespace, clusterName).GetObject(ctx, "e2e", "hello.txt", minio.GetObjectOptions{})
-		Expect(err).NotTo(HaveOccurred(), "the object did not survive the disk removal")
-
-		defer func() { _ = object.Close() }()
-
-		got, err := io.ReadAll(object)
-		Expect(err).NotTo(HaveOccurred(), "the object did not survive the disk removal")
-		Expect(got).To(Equal([]byte("fs-operator end-to-end")),
-			"the object came back different after the disk removal")
+			"the object came back different after the removal")
 	})
 
 	It("rejects an impossible spec at apply time", func() {
@@ -353,16 +282,28 @@ var _ = Describe("FSCluster", Ordered, func() {
 		// check that proves the admission path is wired — the Service selector
 		// finds the manager, cert-manager's CA reached the configuration, and
 		// the manager is serving TLS on 9443.
-		By("applying a cluster whose topology cannot host its scheme")
+		// A width wider than the cluster passes the CRD's own rules — CEL sees
+		// one field at a time — so only the webhook can refuse it.
+		By("applying a cluster too small for its layout width")
 		apply := exec.Command("kubectl", "apply", "-n", clusterNamespace, "-f", "-")
-		apply.Stdin = strings.NewReader(strings.ReplaceAll(
-			minimalExample(), "nodes: 3", "nodes: 2"))
+		apply.Stdin = strings.NewReader(`apiVersion: fs.go-faster.org/v1alpha1
+kind: FSCluster
+metadata:
+  name: fs-impossible
+spec:
+  topology:
+    nodes: 3
+  storage:
+    size: 1Gi
+  layout:
+    widths: [3, 6]
+`)
 
 		out, err := utils.Run(apply)
 		Expect(err).To(HaveOccurred(), "the API server admitted an impossible spec")
 
 		// The message a user reads has to name the reason, not just fail.
-		Expect(out + errorText(err)).To(ContainSubstring("SchemeTopologyMismatch"))
+		Expect(out + errorText(err)).To(ContainSubstring("LayoutTopologyMismatch"))
 
 		By("checking the running cluster was not touched")
 		Expect(nodeSets()).To(HaveLen(3))
@@ -380,8 +321,8 @@ func errorText(err error) string {
 }
 
 // nodeSets names every node StatefulSet the cluster has, ready or not. A
-// decommission is about existence: a node restarting onto its drained config is
-// briefly not ready, and must not be mistaken for one that has been removed.
+// removal is about existence: a node that is briefly not ready must not be
+// mistaken for one that has been removed.
 func nodeSets() []string {
 	out, err := utils.Run(exec.Command("kubectl", "get", "statefulset",
 		"-n", clusterNamespace, "-l", "fs.go-faster.org/cluster="+clusterName,
@@ -391,29 +332,6 @@ func nodeSets() []string {
 	}
 
 	return strings.Fields(out)
-}
-
-// nodesWithDisk counts the node StatefulSets whose claim templates declare a
-// disk. Counting the templates is what says whether the operator has actually
-// reshaped each node, which the PVCs cannot: they outlive their template under
-// the default Retain policy.
-func nodesWithDisk(disk string) int {
-	out, err := utils.Run(exec.Command("kubectl", "get", "statefulset",
-		"-n", clusterNamespace, "-l", "fs.go-faster.org/cluster="+clusterName,
-		"-o", `jsonpath={range .items[*]}{range .spec.volumeClaimTemplates[*]}{.metadata.name} {end}{end}`))
-	if err != nil {
-		return -1
-	}
-
-	count := 0
-
-	for _, name := range strings.Fields(out) {
-		if name == disk {
-			count++
-		}
-	}
-
-	return count
 }
 
 // readyNodes names the cluster's node StatefulSets that report their pod ready.
@@ -428,20 +346,18 @@ func readyNodes() []string {
 	return strings.Fields(out)
 }
 
-// minimalExample is the published example, pointed at the e2e etcd. Only the
-// endpoint changes: everything a reader of the docs would get, they get here.
+// minimalExample is the published example, exactly as a reader of the docs
+// gets it.
 func minimalExample() string {
 	example, err := utils.Run(exec.Command("cat", "examples/01-minimal.yaml"))
 	Expect(err).NotTo(HaveOccurred(), "Failed to read the example")
 
-	return strings.ReplaceAll(example,
-		"http://etcd.default.svc:2379",
-		fmt.Sprintf("http://etcd.%s.svc:2379", clusterNamespace))
+	return example
 }
 
 // tenancyManifest is an FSBucket and a generated FSAccessKey for the e2e
-// cluster: rf3 (hostable on three nodes) as a per-bucket scheme override, and a
-// write grant so the minted credential can round-trip an object.
+// cluster: rf3 (hostable on three nodes) as the bucket's scheme, and a write
+// grant so the minted credential can round-trip an object.
 func tenancyManifest() string {
 	return fmt.Sprintf(`apiVersion: fs.go-faster.org/v1alpha1
 kind: FSBucket

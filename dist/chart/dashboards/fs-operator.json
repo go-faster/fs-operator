@@ -78,7 +78,7 @@
     {
       "type": "stat",
       "title": "Rolling changes in flight",
-      "description": "Clusters in any update phase: a rollout, a decommission or a schema migration.",
+      "description": "Clusters in any update phase: a rollout or a node removal.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 5, "w": 5, "x": 5, "y": 1 },
       "targets": [
@@ -97,7 +97,7 @@
     {
       "type": "table",
       "title": "Cluster state",
-      "description": "Ready is the write-quorum condition. A ready count below declared for long means a node is not coming back; registered below ready means a pod is up but has not joined the cluster's own topology.",
+      "description": "Ready is the write-quorum condition. A ready count below declared for long means a node is not coming back; up below ready means a pod is Ready but its peers cannot reach it.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 10, "w": 14, "x": 10, "y": 1 },
       "targets": [
@@ -120,10 +120,10 @@
           "refId": "nodesReady"
         },
         {
-          "expr": "fsoperator_cluster_nodes{namespace=~\"$namespace\", cluster=~\"$cluster\", state=\"registered\"}",
+          "expr": "fsoperator_cluster_nodes{namespace=~\"$namespace\", cluster=~\"$cluster\", state=\"up\"}",
           "format": "table",
           "instant": true,
-          "refId": "registered"
+          "refId": "up"
         }
       ],
       "transformations": [
@@ -136,7 +136,7 @@
               "Value #ready": "Ready",
               "Value #declared": "Nodes declared",
               "Value #nodesReady": "Nodes ready",
-              "Value #registered": "Nodes registered"
+              "Value #up": "Nodes up"
             }
           }
         }
@@ -191,7 +191,7 @@
     {
       "type": "timeseries",
       "title": "Update phase",
-      "description": "1 while a cluster is in that phase. A phase stuck at 1 for hours is a change that is not progressing — for Draining, a decommission whose data cannot move off. A stuck change never reaches the duration histogram, so this is where it shows.",
+      "description": "1 while a cluster is in that phase. A phase stuck at 1 for hours is a change that is not progressing — for Draining, a node removal whose layout change never finishes moving data. A stuck change never reaches the duration histogram, so this is where it shows.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 7, "w": 14, "x": 0, "y": 12 },
       "targets": [
@@ -230,9 +230,27 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Layout versions retained",
+      "description": "Older fs layout versions still in transition. Non-zero while a layout change moves data; non-zero for long is a transition that is not finishing — usually a node that holds slots and is down, which `fs layout skip` releases.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 19 },
+      "targets": [
+        {
+          "expr": "fsoperator_cluster_layout_retained_versions{namespace=~\"$namespace\", cluster=~\"$cluster\"}",
+          "legendFormat": "{{namespace}}/{{cluster}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "none", "decimals": 0, "custom": { "drawStyle": "line", "fillOpacity": 10 }, "min": 0 },
+        "overrides": []
+      }
+    },
+    {
       "type": "row",
       "title": "Operator",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
       "collapsed": false
     },
     {
@@ -240,7 +258,7 @@
       "title": "Reconcile errors",
       "description": "Passes that ended in an error, by controller. A sustained rate means the operator cannot apply what a spec asks for.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 20 },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 27 },
       "targets": [
         {
           "expr": "sum by (controller) (rate(fsoperator_reconcile_errors_total[5m]))",
@@ -258,7 +276,7 @@
       "title": "Reconcile latency (p95)",
       "description": "controller-runtime's own histogram, for the operator's health rather than the clusters'.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 20 },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 27 },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket[5m])))",

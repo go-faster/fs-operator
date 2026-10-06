@@ -35,15 +35,14 @@ import (
 // part of "done": every example is exercised, so it cannot rot.
 //
 // Applying each one for real is not the bargain it looks like — a TLS example
-// wants a certificate, an etcd-TLS example wants a CA and client keys, and the
-// production example wants six nodes' worth of volumes. What actually decays
+// wants a certificate, and the production example wants six nodes' worth of volumes. What actually decays
 // under an example is its *validity*: the CRD schema, the CEL rules and the
 // admission webhook all reject at apply time, and all three change without
 // anyone opening examples/. A server-side dry run puts every one of them in
 // the path, which is the check SPEC §13 names as the minimum.
 //
 // Two examples are also applied for real elsewhere in this suite (01 by the
-// FSCluster container, 08 by the managed-etcd one). This covers the rest.
+// FSCluster container, 00 by the single-node one). This covers the rest.
 var _ = Describe("Examples", Ordered, func() {
 	It("keeps every example applicable", func() {
 		root, err := utils.GetProjectDir()
