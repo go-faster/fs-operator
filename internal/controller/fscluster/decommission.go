@@ -172,6 +172,9 @@ func (r *Reconciler) reconcileDecommission(ctx context.Context, p *pass) (pipeli
 	switch {
 	case !p.convergence.known || layout == nil:
 		return r.holdDrain(p, names, "no node answered, so whether their data has moved is unknown")
+	case p.layoutApplied:
+		return r.holdDrain(p, names, fmt.Sprintf(
+			"layout version %d was just applied; their data starts moving now", layout.Version))
 	case layout.Transitioning():
 		return r.holdDrain(p, names, fmt.Sprintf(
 			"layout version %d is moving their data; versions %v are still retained",

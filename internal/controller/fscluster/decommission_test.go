@@ -235,6 +235,16 @@ func TestRemovalTakesSeveralNodesInOneChange(t *testing.T) {
 		t.Fatalf("layouts = %+v, want one change to three members", applied)
 	}
 
+	// The pass that applied the change only knows what it computed; the next
+	// one reads back that nothing is retained.
+	for _, name := range []string{"decomm-many-3", "decomm-many-4"} {
+		if !exists(t, r, key, name) {
+			t.Errorf("node %q was removed by the pass that applied the change", name)
+		}
+	}
+
+	reconcile(t, r, key)
+
 	for _, name := range []string{"decomm-many-3", "decomm-many-4"} {
 		if exists(t, r, key, name) {
 			t.Errorf("node %q survived a completed layout change", name)

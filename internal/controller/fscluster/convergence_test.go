@@ -45,7 +45,7 @@ func TestRolloutGatesOnConvergence(t *testing.T) {
 	before := templateRevisions(t, r, key, nodes)
 
 	// An image bump wants to roll every node.
-	cluster.Spec.Image.Tag = "v0.14.1"
+	cluster.Spec.Image.Tag = "v0.99.0-test"
 
 	if err := r.Update(t.Context(), &cluster); err != nil {
 		t.Fatalf("bump the image: %v", err)

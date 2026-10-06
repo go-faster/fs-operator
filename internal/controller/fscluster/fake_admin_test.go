@@ -242,7 +242,13 @@ func (c *fakeClient) ApplyLayout(_ context.Context, roles []fsclient.Role, width
 	f.layout = &next
 	f.applies = append(f.applies, cloneLayout(next))
 
-	return cloneLayout(next), nil
+	// fs answers with the computed layout alone: the versions the change
+	// retained are only in a read. Answering with them here is how the
+	// operator once removed a node mid-transition and every test passed.
+	answer := cloneLayout(next)
+	answer.Retained = nil
+
+	return answer, nil
 }
 
 func (c *fakeClient) Nodes(context.Context) ([]fsclient.Node, error) {

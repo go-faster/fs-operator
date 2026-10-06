@@ -205,6 +205,11 @@ type pass struct {
 	// while the cluster moves their data off (SPEC §8.4).
 	decommission decommission
 
+	// layoutApplied is set when this pass applied a layout. Its view of the
+	// layout is then the apply response, which does not say what the change
+	// retained, so no node is removed until a later pass reads it back.
+	layoutApplied bool
+
 	// update is the rolling change in flight, if any.
 	update *fsv1alpha1.UpdateStatus
 

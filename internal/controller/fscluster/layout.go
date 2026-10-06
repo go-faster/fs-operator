@@ -101,6 +101,12 @@ func (r *Reconciler) reconcileLayout(ctx context.Context, p *pass) (pipeline.Out
 	r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventLayoutApplied,
 		"Applied layout version %d: %d node(s), widths %v", applied.Version, len(roles), widths)
 
+	// The apply response is the computed layout alone: it does not carry the
+	// versions the change retained, so read as it stands it would say nothing
+	// is moving and let a removed node go while it still holds data. Nothing
+	// after this step acts on this pass's view of the layout — removal waits
+	// for a pass that reads it back (layoutApplied).
+	p.layoutApplied = true
 	p.convergence.layout = &applied
 	p.convergence.converged = false
 	p.convergence.waiting = fmt.Sprintf("layout version %d was just applied", applied.Version)
