@@ -30,7 +30,7 @@ All three are namespaced; the namespace is the tenancy boundary.
 
 - [Configuration](guides/configuration.md) — every spec section
 - [Scaling](guides/scaling.md) — the layout, scale-up, removing nodes, envelope limits
-- [Upgrades](guides/upgrades.md) — rolling updates, rollback, upgrading from fs v0.13
+- [Upgrades](guides/upgrades.md) — rolling updates and rollback
 - [Storage](guides/storage.md) — volume size, expansion, reclaim policy
 - [Deletion](guides/deletion.md) — reclaim policy, re-creating a cluster
 - [Buckets and access keys](guides/buckets-and-keys.md)

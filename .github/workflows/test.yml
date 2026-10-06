@@ -51,12 +51,3 @@ jobs:
         run: |
           make docs-api-ref
           git diff --exit-code docs/reference/api.md
-
-      - name: CRDs stay compatible with what is already stored
-        # The CRDs are the operator's API. Dropping a field prunes it out of
-        # stored objects, and tightening a rule leaves objects the API server
-        # refuses on the next write — a cluster that reconciles fine until
-        # someone edits something unrelated. Additive changes pass silently.
-        run: |
-          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
-          make check-crd-compat

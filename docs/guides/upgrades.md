@@ -60,26 +60,6 @@ A configuration change is applied one of two ways, depending on what changed:
 
 You do not choose which path applies — the operator decides from the diff.
 
-## Upgrading from fs v0.13 (operator v0.8)
-
-fs v0.14 replaced its storage and cluster model — etcd, disks and weights,
-rebalancing and schema migrations are gone, replaced by one storage engine and
-a layout over peer nodes. It does not read data written by v0.13, and this
-operator cannot run a v0.13 cluster. There is no in-place upgrade:
-
-1. With the old operator still installed, create a **new** `FSCluster` from this
-   operator's examples alongside the old one — or in another Kubernetes
-   cluster if the CRDs cannot coexist — and copy the objects over with any S3
-   client:
-
-   ```sh
-   mc mirror old/bucket new/bucket        # or: aws s3 sync, rclone sync
-   ```
-
-2. Delete the old `FSCluster`s, then upgrade the operator and its CRDs. The
-   CRD changes are breaking: an object written for the old schema (with
-   `etcd`, `disks` or `scheme`) does not apply to the new one.
-
 ## Rollback
 
 Rollback is the same machinery in reverse: revert `spec.image.tag`, and the
