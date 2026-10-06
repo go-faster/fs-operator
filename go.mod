@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/go-faster/errors v0.8.0
-	github.com/go-faster/fs v0.14.1
+	github.com/go-faster/fs v0.15.0
 	github.com/google/go-cmp v0.7.0
 	github.com/minio/minio-go/v7 v7.3.0
 	github.com/onsi/ginkgo/v2 v2.27.4

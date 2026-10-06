@@ -37,7 +37,7 @@ const (
 
 	// DefaultImageTag is the pinned fs release this operator version is
 	// validated against; used when spec.image.tag is empty.
-	DefaultImageTag = "v0.14.1"
+	DefaultImageTag = "v0.15.0"
 
 	// DefaultLayoutWidth is the layout width of replicated data: fs keeps
 	// three copies (rf3).
