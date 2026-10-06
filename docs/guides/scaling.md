@@ -2,61 +2,60 @@
 
 Cluster membership is a deliberate, capacity-planned operation — there is no
 autoscaling for the data plane, by design. You change the topology in the spec;
-the operator adds or (in a later release) drains nodes.
+the operator changes the cluster **layout** to match, and fs moves the data.
+
+## The layout
+
+fs splits the data into partitions and assigns each to nodes — three of them for
+replicated data and metadata, k+m for an erasure-coded bucket. That assignment
+is the layout, and the operator owns it: every declared node is a member, with
+its rack and its rack's zone as failure domains and `storage.size` as its
+capacity. fs spreads each partition over zones first, then racks, then nodes.
+
+`spec.layout.widths` lists the widths to spread for. It defaults to `[3]`; a
+cluster with an `ec:4,2` bucket needs `[3, 6]`. Each width needs at least that
+many nodes.
+
+A layout change is a **transition**: fs moves the data to where the new version
+puts it while the previous version keeps serving, and writes go to both. When
+every node has synced the new version the old one is retired.
+`status.layout.retainedVersions` lists the versions still in transition; it is
+empty when no data is moving.
+
+The operator applies a layout only when every declared node is **up** in the
+cluster's own gossip view — so no partition is handed to a node nobody can
+reach — and never while a previous change is still in transition.
 
 ## The envelope
 
-go-faster/fs supports **3–16 nodes**. The replication scheme sets a floor on
-**distinct failure domains**:
-
-| Scheme | Minimum failure domains |
-|---|---|
-| `rf2.5`, `rf3` | 3 |
-| `ec:k,m` | k + m |
-
-A failure domain is a rack, or — in the flat topology — a single node. The
-operator refuses a spec whose topology cannot host its scheme
-(`SpecValid=False`, reason `SchemeTopologyMismatch`) and one outside the 3–16
-envelope (`UnsupportedTopology`) without mutating the running cluster. A cluster
-of 2 nodes is admitted for development only, with a warning event.
+go-faster/fs supports **1 node, or 3–16 nodes**. Two is refused by the API: a
+cluster keeps three copies of its data on distinct nodes. A width wider than the
+node count is refused (`SpecValid=False`, reason `LayoutTopologyMismatch`), and
+one wider than the distinct failure domains is admitted with a warning — some
+partitions then keep two slots in one domain, so losing that domain costs both.
 
 ## Single node
 
-`topology.nodes: 1` is a different thing from a small cluster. No scheme can be
-placed on one node — every one of them needs three distinct disks, or k+m — so
-that node runs **fs's non-clustered filesystem backend** instead:
+`topology.nodes: 1` is the development shape:
 
 ```yaml
 spec:
   topology:
     nodes: 1
   storage:
-    disks:
-      - name: d0
-        size: 5Gi
-  # no etcd
+    size: 5Gi
 ```
 
-- **Exactly one disk**, and it is the storage root. More is refused
-  (`UnsupportedTopology`); renaming it later is refused too, because the node
-  has no cluster to drain the data into.
-- **No `spec.etcd`.** There is no control plane to register in, so declaring one
-  is refused rather than quietly ignored.
-- **`spec.scheme` is ignored**, along with rebalancing, repair, scrub-driven
-  convergence and schema migration: there is one copy of every object on one
-  volume. `Converged` is trivially `True`, `SchemaCurrent` is not reported, and
-  `Ready` is `True` once the only node is serving.
-- **Per-bucket schemes are unavailable**: an `FSBucket` with `spec.scheme` on a
-  single-node cluster is `Ready=False`, reason `SchemeRejected`. Access keys and
-  public-read buckets work as usual.
+It has no peers and no layout to apply: one copy of every object on one volume,
+no repair, no failure tolerance. Losing the node loses the data. `Converged` is
+trivially `True`, and `Ready` is `True` once the node is serving. Per-bucket
+erasure coding is unavailable: an `FSBucket` with an `ec:k,m` scheme is
+`Ready=False`, reason `SchemeRejected`.
 
-What you give up is everything the failure domains were for: one copy of every
-object on one machine, no repair, no failure tolerance. Losing the node loses the
-data. And it **cannot be grown into a cluster in place** — the two backends store
-data differently, so raising `nodes` is refused; create a new `FSCluster` and copy
-the objects over. [`examples/00-single-node.yaml`](../../examples/00-single-node.yaml)
-is a complete one, and the operator warns about the shape at apply time and on
-the object.
+It **cannot be grown into a cluster in place** — raising `nodes` is refused;
+create a new `FSCluster` and copy the objects over.
+[`examples/00-single-node.yaml`](../../examples/00-single-node.yaml) is a
+complete one, and the operator warns about the shape at apply time.
 
 ## Scale up
 
@@ -66,10 +65,10 @@ Raise `spec.topology.nodes`, or a rack's `nodes`, or add a rack:
 kubectl patch fscluster prod --type merge -p '{"spec":{"topology":{"nodes":5}}}'
 ```
 
-Joining is **additive**: the new nodes' Secrets and StatefulSets are created,
-they register in etcd, and the auto-rebalancer moves data onto them. Several new
-nodes may join at once — only removals are serialized. `ClusterSizeAligned` is
-`False` (reason `ScalingUp`) until every declared node is running.
+The new nodes' Secrets and StatefulSets are created, they join through their
+peers, and once every one is up the operator applies a layout that includes
+them; fs moves their share onto them. `ClusterSizeAligned` is `False` (reason
+`ScalingUp`, then `LayoutPending`) until it has.
 
 For a **racked** topology, add a rack or grow a rack's node count:
 
@@ -86,76 +85,45 @@ Rack names are immutable per entry, and each node is pinned to its rack's zone
 or node selector — placement is never inferred from where a pod happened to
 land.
 
-## Scale down (decommission)
+## Scale down
 
-Lower `spec.topology.nodes`, or a rack's `nodes`, or remove a rack. The operator
-decommissions the nodes it no longer finds declared — **one at a time**, highest
-index first within the affected rack:
+Lower `spec.topology.nodes`, or a rack's `nodes`, or remove a rack. Every node
+the spec no longer declares leaves in **one** layout change:
 
-1. **Drain.** The node's config is re-rendered with every disk out of placement
-   and the node is restarted onto it (the same one-at-a-time machinery as an
-   upgrade). It keeps running and serving; it just stops taking new data, and
-   the auto-rebalancer begins moving what it holds onto the remaining nodes.
-2. **Wait until it is empty.** fs reports `has_data` per disk, and the operator
-   waits for every one of the node's disks to report `false`.
-3. **Remove.** Its StatefulSet and config Secret are deleted. Its PVCs follow
-   `spec.storage.reclaimPolicy` (`Retain` by default) through the StatefulSet's
-   claim retention policy.
-4. Wait for the cluster to reconverge, then start the next node.
+1. **Leave the layout.** The operator applies a layout without them. fs starts
+   moving their data to the nodes that remain; the previous version, which
+   still includes them, keeps serving reads meanwhile.
+2. **Keep running.** They stay exactly where they are until the transition
+   completes — `status.layout.retainedVersions` empty — because until then fs
+   still reads from them.
+3. **Remove.** Their StatefulSets and config Secrets are deleted. Their PVCs
+   follow `spec.storage.reclaimPolicy` (`Retain` by default).
 
-While this runs, `status.update.phase` is `Draining` with the node's name, and
-`ClusterSizeAligned` is `False` with reason `Draining` and a message saying what
-it is still waiting for — which disks still hold data, and how much.
+While this runs, `status.update.phase` is `Draining` and `ClusterSizeAligned`
+is `False` with reason `Draining` and a message saying what it waits for.
+Nothing acknowledged is lost on the way: that is what the transition is for.
 
-Killing a node without draining leaves the cluster to repair from surviving
-copies (allowed, but degraded), and taking a second domain down before the first
-has reconverged can make erasure-coded objects unrecoverable. That is why
-removals are serialized while joins are not.
+### A stalled transition
 
-### What stops a removal
+A transition completes when every node that holds data has synced it. A node
+that is gone for good — its volume lost, its machine gone — never does, and the
+transition (and any removal waiting on it) stalls, reporting `Converged=False`,
+reason `LayoutTransition`, and `ConvergenceTimeout` past
+`spec.updatePolicy.convergenceTimeout`. Nothing is forced and nothing is
+deleted.
 
-A node is deleted only when *every* one of these holds. Any of them unknown
-means the operator waits — indefinitely, if that is what it takes:
+If the node will not come back, release it from any other node:
 
-| Gate | Why |
-|---|---|
-| The node is running the drained config | Until it restarts, its disks still take writes |
-| Every node is ready and the cluster is converged | The rebalancer is what moves the data, and it cannot finish while the cluster is unsettled |
-| Every node is reporting | A silent node makes the cluster's view partial, and a partial view is not evidence a disk is empty |
-| Every disk reports `has_data: false` | The direct answer, from the node itself |
+```sh
+kubectl exec prod-1-0 -c fs -- fs layout skip prod-3
+```
 
-Note the last two. fs omits `has_data` when a node did not report or could not
-read a disk — absent means **unknown**, never drained. A cluster running fs
-older than **v0.10.0** reports no occupancy at all, so a decommission on it will
-drain the node and then wait forever rather than delete on a signal that is not
-there. Upgrade the cluster first.
-
-Occupancy is not inferred from capacity, and neither should you: `total_bytes` /
-`free_bytes` come from `statfs`, so they describe the filesystem. A disk holding
-no fragments still reports bytes in use. The byte figures in the drain message
-are progress, not the test.
-
-### A stalled drain
-
-If the rebalancer cannot place the data — no room on the remaining nodes, or a
-topology that cannot host the scheme without this node — the drain never
-finishes and the operator keeps waiting, reporting `Converged=False` with reason
-`ConvergenceTimeout` past `spec.updatePolicy.convergenceTimeout`. Nothing is
-forced and nothing is deleted. Restore the node count to undo it: a node that is
-declared again stops draining and returns to placement.
-
-## Total nodes may never drop below the scheme minimum
-
-A spec whose remaining node count would fall below the scheme's domain
-requirement is refused outright (`SpecValid=False`, reason
-`SchemeTopologyMismatch`) — no node is drained on the way to a cluster that
-cannot host its own data. Scaling all the way down to 1 is refused for a
-different reason (`UnsupportedTopology`): that is a different storage backend,
-not a smaller cluster, and the data does not come with it.
+Whatever only that node held is given up, so use it only for a node that is not
+coming back. The admin API equivalent is
+`POST /api/v1/cluster/nodes/{id}/skip`.
 
 ## Related
 
-- Growing a node's disks (not the node count) is [storage.md](storage.md).
-- The one-at-a-time rollout machinery that scaling shares is
-  [upgrades.md](upgrades.md).
+- Growing each node's volume (not the node count) is [storage.md](storage.md).
+- The one-at-a-time rollout machinery is [upgrades.md](upgrades.md).
 - The conditions and events are catalogued in [monitoring.md](monitoring.md).

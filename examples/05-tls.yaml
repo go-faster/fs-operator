@@ -2,7 +2,8 @@
 #
 # Point spec.s3.tls.secretName at a Secret with tls.crt/tls.key — here one
 # issued by cert-manager. fs serves HTTPS on the S3 port and hot-reloads the
-# certificate on renewal, so rotations need no restart. Generated FSAccessKey
+# certificate on renewal, so rotations need no restart. SSE-C (customer
+# keys) needs TLS: fs refuses those keys over plain HTTP. Generated FSAccessKey
 # credential Secrets carry an https:// endpoint to match.
 ---
 apiVersion: cert-manager.io/v1
@@ -31,13 +32,5 @@ spec:
     tls:
       secretName: fs-tls
   storage:
-    disks:
-      - name: d0
-        size: 100Gi
-        storageClass: fast-nvme
-  etcd:
-    external:
-      endpoints:
-        - http://etcd-0.etcd.fs-system:2379
-        - http://etcd-1.etcd.fs-system:2379
-        - http://etcd-2.etcd.fs-system:2379
+    size: 100Gi
+    storageClass: fast-nvme

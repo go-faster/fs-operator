@@ -3,7 +3,7 @@
 The operator rolls image and configuration changes across an `FSCluster` one
 node at a time, gated on the cluster reconverging between nodes — go-faster/fs's
 upgrade contract, encoded so you never take down a second failure domain while
-the cluster is still repairing.
+the cluster is still moving data.
 
 You change the spec; the operator does the choreography. There is no manual pod
 deletion.
@@ -14,13 +14,14 @@ Bump `spec.image.tag` to a new **pinned** fs release (never a floating tag —
 upgrades are deliberate):
 
 ```sh
-kubectl patch fscluster prod --type merge -p '{"spec":{"image":{"tag":"v0.6.1"}}}'
+kubectl patch fscluster prod --type merge -p '{"spec":{"image":{"tag":"v0.14.1"}}}'
 ```
 
 The operator then, for one node at a time:
 
 1. **Preflight** — waits until every pod is Ready and the cluster is
-   converged (repair queue empty, no rebalance running).
+   converged: every node up on the current layout, and no layout change in
+   transition.
 2. **Replace** — updates that node's StatefulSet; the StatefulSet controller
    replaces the pod. Racks are interleaved, so two nodes of one rack are never
    adjacent in the order.
@@ -45,70 +46,56 @@ kubectl get events --field-selector involvedObject.name=prod --sort-by=.lastTime
 
 A configuration change is applied one of two ways, depending on what changed:
 
-- **Hot reload — no restart.** Changes to credentials, grants, anonymously
-  readable buckets or the TLS certificate are applied by bumping the node's
+- **Hot reload — no restart.** Changes to credentials (FSAccessKeys), grants,
+  anonymously readable buckets or the TLS certificate are applied by bumping the node's
   config Secret and calling the admin reload endpoint. The operator embeds a
   revision marker in each config and reads it back (`config_revision`) to
   confirm every node has applied the change before `ConfigurationInSync` flips
   True. Kubelet Secret propagation lags (~1m), so this can take a minute.
-- **Rolling restart.** Any other configuration change (the replication
-  `scheme`, disk `weight`, rack membership, tuning that fs reads only at
-  startup) needs a process restart, and rolls the cluster exactly as an image
-  change does.
+- **Rolling restart.** Any other configuration change (turning TLS on or off,
+  telemetry switches, anything fs reads only at startup) needs a process
+  restart, and rolls the cluster exactly as an image change does. The peer
+  list is the exception: it changes whenever the cluster is scaled, and fs
+  reads it only to join, so it never restarts a node.
 
 You do not choose which path applies — the operator decides from the diff.
 
-## Schema migrations
+## Upgrading from fs v0.13 (operator v0.8)
 
-A new fs release may implement a newer on-disk **schema** than the cluster has
-recorded in etcd. fs's contract is that a schema migration runs only **after
-every node is on the new binary** (an old binary refuses to join a
-schema-migrated cluster).
+fs v0.14 replaced its storage and cluster model — etcd, disks and weights,
+rebalancing and schema migrations are gone, replaced by one storage engine and
+a layout over peer nodes. It does not read data written by v0.13, and this
+operator cannot run a v0.13 cluster. There is no in-place upgrade:
 
-So after an image rollout finishes and the cluster reconverges, the operator
-compares the binary's schema to the cluster's:
+1. With the old operator still installed, create a **new** `FSCluster` from this
+   operator's examples alongside the old one — or in another Kubernetes
+   cluster if the CRDs cannot coexist — and copy the objects over with any S3
+   client:
 
-- **`spec.updatePolicy.schemaMigration: Auto`** (default) — runs
-  `fs cluster migrate` as a Job (`<cluster>-migrate-<n>`). The migration is
-  etcd-elected and resumable, so the Job is safe to re-run. `status.update.phase`
-  is `Migrating` while it runs; `SchemaCurrent` flips True only once the
-  cluster schema actually catches up.
-- **`spec.updatePolicy.schemaMigration: Manual`** — the operator only surfaces
-  the pending migration (`SchemaCurrent=False`, reason `MigrationPending`). Run
-  it yourself when ready:
+   ```sh
+   mc mirror old/bucket new/bucket        # or: aws s3 sync, rclone sync
+   ```
 
-  ```sh
-  kubectl exec prod-0-0 -- fs cluster migrate --config /etc/fs/config.yaml
-  ```
-
-`status.schemaVersion` reports both versions:
-
-```yaml
-status:
-  schemaVersion:
-    cluster: 4   # recorded in etcd
-    binary: 5    # implemented by the deployed image
-```
+2. Delete the old `FSCluster`s, then upgrade the operator and its CRDs. The
+   CRD changes are breaking: an object written for the old schema (with
+   `etcd`, `disks` or `scheme`) does not apply to the new one.
 
 ## Rollback
 
 Rollback is the same machinery in reverse: revert `spec.image.tag`, and the
 operator rolls the cluster back node by node.
 
-**One rule from fs:** you cannot roll a binary back **past a schema
-migration**. A schema migration is a one-way step; an old binary refuses to
-join a cluster whose schema it does not implement, and its pod will CrashLoop
-with that explanation. Plan schema-bumping upgrades as commitments. See the
-go-faster/fs `UPGRADE.md` for the schema compatibility rules.
+**One rule from fs:** every node of a cluster runs the same release, and a
+release that changes its on-disk format says so in its notes — a rollback past
+one is a rebuild, not a rollout. Read the fs release notes before an upgrade.
 
 ## Relevant conditions
 
 | Condition | During an upgrade |
 |---|---|
-| `Converged` | `False` while the repair queue is draining or a rebalance runs; the rollout gates on it. |
+| `Converged` | `False` while a node is down or behind the current layout, or a layout change is in transition; the rollout gates on it. |
 | `ConfigurationInSync` | `False` until every node has applied the target configuration revision. |
 | `NodesHealthy` | `False` while a replaced pod is not yet Ready. |
-| `SchemaCurrent` | `False` while a migration is pending or running. |
-| `Ready` | Stays `True` as long as a write quorum of failure domains is serving — a correct one-at-a-time rollout does not drop it. |
+| `Ready` | Stays `True` as long as all but one failure domain are serving — a correct one-at-a-time rollout does not drop it. |
 
 See [monitoring.md](monitoring.md) for the full condition and event reference.

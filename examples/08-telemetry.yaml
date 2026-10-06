@@ -16,13 +16,7 @@ spec:
     nodes: 3
     podAntiAffinity: Preferred
   storage:
-    disks:
-      - name: d0
-        size: 100Gi
-  etcd:
-    external:
-      endpoints:
-        - http://etcd.default.svc:2379
+    size: 100Gi
 
   observability:
     # OTEL_LOG_LEVEL. The enum is exactly what the SDK can parse, because it

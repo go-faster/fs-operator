@@ -16,7 +16,7 @@ metadata:
 spec:
   clusterRef:
     name: fs-dev
-  scheme: "ec:4,2"      # optional; empty follows the cluster default
+  scheme: "ec:4,2"      # optional: rf3 | ec:k,m; empty leaves it alone
   reclaimPolicy: Retain # Retain | Delete
 ```
 
@@ -24,13 +24,29 @@ The controller creates the S3 bucket in the referenced cluster using the
 cluster's root credentials over its client Service. `bucketName` defaults to
 `metadata.name` and is immutable, as is `clusterRef`.
 
-**Scheme.** `spec.scheme` overrides the cluster's default replication scheme for
-this bucket's objects — `rf2.5`, `rf3` or `ec:k,m` (e.g. `ec:4,2`). Leave it
-empty to follow the cluster default. Changing it affects new writes cluster-wide
-within seconds; existing objects convert through repair/rebalance. A scheme the
-cluster cannot host (an unparseable value, or erasure coding that needs more
-nodes than the cluster has) is refused: `Ready=False`, reason `SchemeRejected`.
-`status.scheme` always reports the bucket's effective scheme.
+<a id="schemes"></a>**Scheme.** `spec.scheme` is how the bucket's data is
+stored: `rf3` (three replicas, the default for a new bucket) or `ec:k,m`
+(erasure coded, e.g. `ec:4,2`: 4 data + 2 parity shards on 6 nodes, 1.5×
+instead of 3×). Leave it empty to leave the bucket's scheme as it is. A change
+applies to data written from then on; existing data keeps the scheme it was
+written with. Blocks under 256 KiB and small inline objects stay replicated.
+
+An erasure scheme needs the cluster laid out for its width — `k+m` in the
+`FSCluster`'s `spec.layout.widths`, with at least that many nodes:
+
+```yaml
+kind: FSCluster
+spec:
+  topology:
+    nodes: 6
+  layout:
+    widths: [3, 6]
+```
+
+A scheme the cluster cannot host — no such width, or a single-node cluster —
+is refused: `Ready=False`, reason `SchemeRejected`, with fs's reason in the
+message. `status.scheme` reports the bucket's scheme as fs has it. See
+[`examples/04-erasure-coding.yaml`](../../examples/04-erasure-coding.yaml).
 
 **Reclaim policy.** On delete:
 
@@ -90,18 +106,26 @@ are mutually exclusive.
 
 ### How keys reach the cluster
 
-Credentials live in the cluster's **etcd control plane** (`auth.source: etcd`),
-sealed with a key derived from the cluster secret and hot-reloaded on every node
-— so a credential is cluster-wide, survives restarts and is encrypted at rest.
-The operator sets an `FSAccessKey` through the admin API: creating it, and
-re-creating it when its grants change or an imported Secret rotates. A key is
-`Ready` (reason `KeyAccepted`) once the cluster has accepted it;
+The `FSCluster` controller renders every `FSAccessKey` of the cluster, with its
+grants, into **every node's** configuration and hot-reloads the nodes — no
+restart. A grant change or an imported Secret's rotation is the same re-render
+and reload. A node that starts later reads the same configuration, so every
+node accepts the same keys.
+
+A key is `Ready` (reason `KeyAccepted`) once **every node** lists it; until then
+it is `ConfigReloadPending`, naming the nodes still missing it.
 `status.accessKey` shows the non-secret half for reference.
 
-Deleting an `FSAccessKey` revokes the credential from the cluster (and
-garbage-collects a generated Secret). Public-read buckets
-(`FSCluster.spec.auth.publicReadBuckets`) are managed the same way — reconciled
-into etcd through the admin API, not the config file.
+Deleting an `FSAccessKey` revokes it: the key is dropped from the rendered
+configuration and the nodes reload, and the object goes only once no node that
+answers still accepts it (a node that is down reads the new configuration when
+it starts). A generated Secret is then garbage-collected. Public-read buckets
+(`FSCluster.spec.auth.publicReadBuckets`) are rendered and reloaded the same
+way.
+
+Keys created directly through fs's admin API (`POST /api/v1/access-keys`) are
+not this: fs keeps those on the node that received the request only. Manage
+credentials with `FSAccessKey`.
 
 ## Status at a glance
 
