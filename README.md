@@ -41,9 +41,6 @@ object, development only, and it cannot be grown into a cluster in place.
 The [examples/](examples/) gallery goes from there to a zonal production
 shape.
 
-Clusters built for fs v0.13 (operator `v0.8.0` and earlier: etcd, disks)
-do not upgrade in place: recreate them and copy the objects over.
-
 ## Development
 
 Standard kubebuilder workflow:

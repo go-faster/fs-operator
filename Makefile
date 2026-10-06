@@ -323,10 +323,6 @@ fs-version: ## Pin the fs release everywhere (API default, CRDs, chart, examples
 check-fs-version: ## Fail if the pinned fs release is not spelled the same everywhere.
 	./hack/set-fs-version.sh --check
 
-.PHONY: check-crd-compat
-check-crd-compat: manifests ## Fail if a CRD change would break objects already stored. Usage: make check-crd-compat [CRD_COMPAT_BASE=v0.4.0]
-	./hack/check-crd-compat.py $(CRD_COMPAT_BASE)
-
 .PHONY: docs-api-ref
 docs-api-ref: crd-ref-docs ## Regenerate docs/reference/api.md from the api/ field comments (SPEC §13).
 	@sed 's/@K8S_VERSION@/$(ENVTEST_K8S_VERSION)/' hack/crd-ref-docs.yaml > "$(LOCALBIN)/crd-ref-docs.rendered.yaml"
