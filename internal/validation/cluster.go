@@ -190,10 +190,9 @@ func ClusterWarnings(spec *fsv1alpha1.FSClusterSpec) []string {
 
 // ClusterUpdate checks a change against what the spec used to be.
 //
-// Disk shrink and the single-node boundary, both here rather than in CEL for
-// the reason SPEC §8.5 gives: comparing every disk's old and new size costs
-// more than the API server's per-schema validation budget allows for a list
-// this long.
+// The single-node boundary and storage shrink: both compare the old spec with
+// the new one, which the webhook and the controller can do in Go more plainly
+// than a CEL transition rule on a quantity.
 func ClusterUpdate(old, updated *fsv1alpha1.FSClusterSpec) *Failure {
 	// A single node has no layout and no peers; growing it means applying a
 	// first layout to a node that already holds data as a one-node layout of

@@ -51,15 +51,6 @@ const (
 	// LabelRack names the fs failure domain a node is in.
 	LabelRack = "fs.go-faster.org/rack"
 
-	// LabelComponent separates the pieces the operator runs for a cluster.
-	// Node objects carry no component label, so the selectors that predate
-	// this — the peers Service, the disruption budget — keep matching exactly
-	// what they always did and never pick up an etcd pod.
-	LabelComponent = "app.kubernetes.io/component"
-
-	// ComponentEtcd marks the managed development etcd.
-	ComponentEtcd = "etcd"
-
 	// AppName is the application every managed pod runs.
 	AppName = "fs"
 

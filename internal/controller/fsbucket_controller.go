@@ -145,11 +145,11 @@ func (r *FSBucketReconciler) reconcile(ctx context.Context, req ctrl.Request) (c
 	switch exists, err := s3.BucketExists(ctx, name); {
 	case err != nil:
 		// Say what actually failed. "Not reachable yet" is the benign reading of
-		// this error and usually the right one, but it is not the only one: an
-		// adopted etcd prefix (SPEC §8.6) makes every S3 call fail with
-		// InvalidAccessKeyId against a cluster that is up and serving, and
-		// flattening that to a reachability message sends the reader to the
-		// network instead of to the key store.
+		// this error and usually the right one, but it is not the only one: a
+		// root credential the cluster does not accept makes every S3 call fail
+		// with InvalidAccessKeyId against a cluster that is up and serving,
+		// and flattening that to a reachability message sends the reader to
+		// the network instead of to the credentials.
 		return r.report(ctx, bucket, "", falseCondition(fsv1alpha1.ReasonClusterNotReady,
 			errors.Wrap(err, "check bucket").Error()), true)
 	case !exists:

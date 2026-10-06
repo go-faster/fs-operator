@@ -158,10 +158,10 @@ var _ = Describe("FSBucket Controller", func() {
 		Expect(ready.Reason).To(Equal(fsv1alpha1.ReasonSchemeRejected))
 	})
 
-	// A cluster that adopted a populated etcd prefix (SPEC §8.6) serves S3 and
-	// rejects the operator's root credential, so every bucket of it fails here.
-	// The condition has to carry that error: reported as a reachability problem
-	// it sends the reader to the network, and the cause is in the key store.
+	// A cluster that serves S3 but rejects the operator's root credential fails
+	// every bucket here. The condition has to carry that error: reported as a
+	// reachability problem it sends the reader to the network, and the cause
+	// is the credential.
 	It("reports what the S3 call actually failed with", func() {
 		makeCluster(ctx, "unauth-cluster")
 
