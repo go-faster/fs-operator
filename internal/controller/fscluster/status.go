@@ -154,6 +154,11 @@ func (r *Reconciler) reconcileStatus(ctx context.Context, p *pass) (pipeline.Out
 		}
 	}
 
+	// A single node has no peers to be up for; serving is all there is.
+	if p.cluster.Spec.SingleNode() {
+		status.UpNodes = p.health.ready
+	}
+
 	if layout := p.convergence.layout; layout != nil {
 		status.Layout = &fsv1alpha1.LayoutStatus{
 			Version: int64(layout.Version),      //nolint:gosec // a layout version is a small counter
@@ -246,6 +251,9 @@ func (r *Reconciler) summarizeConvergence(p *pass) {
 	}
 
 	switch {
+	case p.cluster.Spec.SingleNode():
+		p.setCondition(fsv1alpha1.ConditionConverged, metav1.ConditionTrue,
+			fsv1alpha1.ReasonConverged, "A single node has no layout to converge")
 	case p.convergence.converged:
 		p.setCondition(fsv1alpha1.ConditionConverged, metav1.ConditionTrue,
 			fsv1alpha1.ReasonConverged, "Every node is up on the current layout and no data is moving")

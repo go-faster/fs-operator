@@ -113,6 +113,13 @@ func (r *Reconciler) adminClient(baseURL, token string) (fsclient.Interface, err
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	object := &fsv1alpha1.FSCluster{}
 	if err := r.Get(ctx, req.NamespacedName, object); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Gone without a finalizer to catch it: stop reporting on it, or
+			// its gauges outlive it on a name nothing reconciles again (SPEC
+			// §10).
+			metrics.Forget(req.Namespace, req.Name)
+		}
+
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 

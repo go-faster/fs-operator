@@ -235,7 +235,7 @@ func TestReconcileRefusesLayoutTopologyMismatch(t *testing.T) {
 }
 
 // TestReconcileScalesUp covers the additive half: new nodes may all join at
-// once, since joining is what the rebalancer converges.
+// once, since each joins the layout when it is up.
 func TestReconcileScalesUp(t *testing.T) {
 	r, _ := reconciler(t)
 	key := createCluster(t, r, "scale-up", nil)
@@ -379,6 +379,12 @@ func TestReconcileSingleNode(t *testing.T) {
 
 	if c := condition(t, r, key, fsv1alpha1.ConditionReady); c == nil || c.Status != metav1.ConditionTrue {
 		t.Errorf("Ready = %v, want True once the only node is serving", c)
+	}
+
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	if cluster.Status.UpNodes != 1 {
+		t.Errorf("status.upNodes = %d, want the serving node counted", cluster.Status.UpNodes)
 	}
 
 	// No layout is ever applied to a single node.
