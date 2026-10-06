@@ -159,6 +159,66 @@ func TestRolloutCreatesNewNodesAtOnce(t *testing.T) {
 	}
 }
 
+// TestRolloutReplacesNodesThatAreDown covers the fresh cluster whose first
+// spec was wrong — an image that does not pull. No pod is Ready before the
+// first layout, so the one-at-a-time gate would wait forever on nodes only the
+// fix can bring up. A node that is already down costs nothing to replace.
+func TestRolloutReplacesNodesThatAreDown(t *testing.T) {
+	r, _ := reconciler(t)
+	key := createCluster(t, r, "rollout-down", nil)
+
+	reconcile(t, r, key)
+
+	var cluster fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	nodes := Nodes(&cluster)
+	before := templateRevisions(t, r, key, nodes)
+
+	cluster.Spec.Image.Tag = "v0.14.0-fixed"
+
+	if err := r.Update(t.Context(), &cluster); err != nil {
+		t.Fatalf("fix the image: %v", err)
+	}
+
+	reconcile(t, r, key)
+
+	if rolled := changedNodes(before, templateRevisions(t, r, key, nodes)); len(rolled) != len(nodes) {
+		t.Errorf("%d of %d down nodes replaced, want all of them at once", len(rolled), len(nodes))
+	}
+}
+
+// TestRolloutReplacesTheBrokenNodeFirst: one node of a laid-out cluster is
+// crash looping; the change that fixes it must reach it although the cluster
+// is not converged — the node it is waiting on is that one.
+func TestRolloutReplacesTheBrokenNodeFirst(t *testing.T) {
+	r, _, fake := reconcilerWithAdmin(t)
+	key := laidOut(t, r, fake, "rollout-broken", 3)
+
+	var cluster fsv1alpha1.FSCluster
+	get(t, r, key.Namespace, key.Name, &cluster)
+
+	nodes := Nodes(&cluster)
+
+	notServing(t, r, key, nodes[1].Name)
+	fake.setUp(false, nodes[1].Name)
+
+	before := templateRevisions(t, r, key, nodes)
+
+	cluster.Spec.Image.Tag = "v0.14.0-fixed"
+
+	if err := r.Update(t.Context(), &cluster); err != nil {
+		t.Fatalf("bump the image: %v", err)
+	}
+
+	reconcile(t, r, key)
+
+	rolled := changedNodes(before, templateRevisions(t, r, key, nodes))
+	if len(rolled) != 1 || rolled[0] != nodes[1].Name {
+		t.Errorf("rolled %v, want only the broken %s", rolled, nodes[1].Name)
+	}
+}
+
 // templateRevisions reads each node's stamped pod-template fingerprint.
 func templateRevisions(t *testing.T, r *Reconciler, key types.NamespacedName, nodes []Node) map[string]string {
 	t.Helper()

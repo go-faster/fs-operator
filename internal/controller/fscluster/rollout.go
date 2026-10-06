@@ -19,6 +19,7 @@ package fscluster
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -48,8 +49,8 @@ const (
 // time where that matters.
 //
 // The two halves are not symmetric, and that is the whole point. Adding nodes
-// is additive: they join, the rebalancer converges, and several may come up at
-// once. Replacing an existing node's pod takes a failure domain out of the
+// is additive: they come up, the layout step gives them a share, and several
+// may come up at once. Replacing an existing node's pod takes a failure domain out of the
 // cluster, so it happens strictly one node at a time, and only while every
 // other node is serving — fs's upgrade contract, encoded (SPEC §8.2).
 func (r *Reconciler) reconcileNodes(ctx context.Context, p *pass) (pipeline.Outcome, error) {
@@ -60,7 +61,7 @@ func (r *Reconciler) reconcileNodes(ctx context.Context, p *pass) (pipeline.Outc
 
 	if created > 0 {
 		r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventNodesCreating,
-			"Creating %d node(s); they join the cluster and the rebalancer converges", created)
+			"Creating %d node(s); they join the layout once they are up", created)
 	}
 
 	return r.roll(ctx, p, stale)
@@ -113,6 +114,32 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 
 	held := nodeSubject(holdNode)
 
+	// A stale node that is already down costs nothing more to replace, and
+	// replacing it may be what brings it back: a crash loop, or an image that
+	// does not pull, fixed by the very change being rolled. Those go first,
+	// all at once, without waiting on the rest — the gates below would wait
+	// forever on the one node only this replacement can heal. Before the
+	// first layout that is every node: no pod is Ready until fs has a layout
+	// to serve from.
+	if down := downSets(stale, p.health.notReady); len(down) > 0 {
+		for _, set := range down {
+			if err := r.apply(ctx, p.cluster, set); err != nil {
+				return pipeline.Outcome{}, err
+			}
+
+			r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventNodeRolling,
+				"Replacing node %q, which is not serving", set.Name)
+		}
+
+		p.update = &fsv1alpha1.UpdateStatus{
+			Phase:     fsv1alpha1.UpdatePhaseRollingNodes,
+			Node:      down[0].Name,
+			StartedAt: ptrTime(metav1.Now()),
+		}
+
+		return pipeline.RequeueAfter(pollInterval, "replacing nodes that are not serving")
+	}
+
 	// A node whose pod is not ready is a failure domain already missing.
 	// Taking a second one down is what the upgrade contract forbids.
 	if waiting := p.health.notReady; len(waiting) > 0 {
@@ -120,13 +147,17 @@ func (r *Reconciler) roll(ctx context.Context, p *pass, stale []*appsv1.Stateful
 			"waiting for node(s) %v to become ready before replacing another", waiting))
 	}
 
-	// Every pod is up, but the cluster must also have reconverged — the repair
-	// queue drained and no rebalance moving data — before another node's
-	// failure domain is taken down (SPEC §8.2). Unknown convergence (no node
-	// answered) holds too, rather than proceed blind.
+	// Every pod is up, but the cluster must also have reconverged — every
+	// node up on the current layout and no layout change moving data — before
+	// another node's failure domain is taken down (SPEC §8.2). Unknown
+	// convergence (no node answered) holds too, rather than proceed blind.
 	if !p.convergence.known || !p.convergence.converged {
-		return r.hold(p, phase, held,
-			"waiting for the cluster to reconverge (repair queue / rebalance) before replacing another node")
+		waiting := p.convergence.waiting
+		if waiting == "" {
+			waiting = "no node answered"
+		}
+
+		return r.hold(p, phase, held, "waiting for the cluster to reconverge before replacing another node: "+waiting)
 	}
 
 	next := stale[0]
@@ -182,6 +213,19 @@ func (r *Reconciler) hold(
 	r.Recorder.Eventf(p.object, corev1.EventTypeNormal, eventRolloutWait, "Rollout %s: %s", phase, reason)
 
 	return pipeline.RequeueAfter(pollInterval, reason)
+}
+
+// downSets are the stale StatefulSets whose node is not serving.
+func downSets(stale []*appsv1.StatefulSet, notReady []string) []*appsv1.StatefulSet {
+	var down []*appsv1.StatefulSet
+
+	for _, set := range stale {
+		if slices.Contains(notReady, set.Name) {
+			down = append(down, set)
+		}
+	}
+
+	return down
 }
 
 // rollOrder interleaves the racks of the nodes to roll, so that two nodes of
