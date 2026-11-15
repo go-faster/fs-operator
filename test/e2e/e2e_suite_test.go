@@ -202,7 +202,7 @@ func loadFSImage() error {
 		return err
 	}
 
-	return utils.LoadImageToKindClusterWithName(fsImage)
+	return utils.LoadPulledImageToKindClusterWithName(fsImage)
 }
 
 // imageRepository and imageTag split a reference for the chart's values, at
