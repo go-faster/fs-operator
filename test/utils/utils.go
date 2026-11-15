@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
@@ -146,6 +148,39 @@ func LoadImageToKindClusterWithName(name string) error {
 	}
 	cmd := exec.Command(kindBinary, kindOptions...)
 	_, err := Run(cmd)
+	return err
+}
+
+// LoadPulledImageToKindClusterWithName loads an image pulled from a registry
+// to the kind cluster.
+//
+// A pulled multi-platform image keeps the index that names every platform but
+// holds the layers of one. With the containerd image store "kind load
+// docker-image" saves that index as is, and the import on the node fails on
+// the first platform it cannot find ("content digest ...: not found"). Saving
+// the host platform alone gives an archive that is complete.
+func LoadPulledImageToKindClusterWithName(name string) error {
+	dir, err := os.MkdirTemp("", "kind-image-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	archive := filepath.Join(dir, "image.tar")
+	platform := "linux/" + runtime.GOARCH
+	if _, err := Run(exec.Command("docker", "save", "--platform", platform, "--output", archive, name)); err != nil {
+		return err
+	}
+
+	cluster := defaultKindCluster
+	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
+		cluster = v
+	}
+	kindBinary := defaultKindBinary
+	if v, ok := os.LookupEnv("KIND"); ok {
+		kindBinary = v
+	}
+	_, err = Run(exec.Command(kindBinary, "load", "image-archive", archive, "--name", cluster))
 	return err
 }
 
